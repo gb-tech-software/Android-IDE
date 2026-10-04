@@ -1,7 +1,12 @@
 package dev.android.ide.ui.screen
 
-import android.view.ViewGroup
 import android.graphics.BitmapFactory
+import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
@@ -68,6 +73,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
@@ -77,11 +83,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.android.ide.browser.BrowserDownload
+import dev.android.ide.browser.BrowserContextKind
+import dev.android.ide.browser.BrowserContextMenu
 import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 
 private const val MAX_VIEWPORT_WIDTH = 2400
+
+/**
+ * Keeps pull-to-refresh tied to the document rather than to GeckoView's native
+ * view bounds. Gecko renders the document internally, so canScrollVertically()
+ * alone can report that the view is at its top while the web page is still far
+ * below its own top.
+ */
+private class BrowserRefreshLayout(context: Context) : SwipeRefreshLayout(context) {
+    var pageScrollY: Int = 0
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,12 +124,19 @@ fun BrowserSurface(
     var previousScrollY by remember { mutableIntStateOf(0) }
     var tabSearchQuery by remember { mutableStateOf("") }
     val visibleGeckoView = remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
+    val focusManager = LocalFocusManager.current
 
-    LaunchedEffect(state.address) { addressText = state.address }
+    LaunchedEffect(state.address, addressFocused) { if (!addressFocused) addressText = state.address }
     LaunchedEffect(state.error) { if (state.error != null) errorVisible = true }
     BackHandler(enabled = state.selectedTabId != null) {
-        val selectedTab = state.tabs.firstOrNull { it.id == state.selectedTabId }
-        if (selectedTab?.canGoBack == true) browser.goBack() else onApplicationBack()
+        if (addressFocused) {
+            focusManager.clearFocus()
+            addressText = state.address
+            addressFocused = false
+        } else {
+            val selectedTab = state.tabs.firstOrNull { it.id == state.selectedTabId }
+            if (selectedTab?.canGoBack == true) browser.goBack() else onApplicationBack()
+        }
     }
 
     val browserColorScheme = when (state.settings.theme) {
@@ -165,6 +190,7 @@ private fun BrowserSurfaceContent(
     setPreviousScrollY: (Int) -> Unit,
 ) {
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
     Column(modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Android IDE Browser") },
@@ -226,11 +252,23 @@ private fun BrowserSurfaceContent(
                     OutlinedTextField(
                         value = addressText,
                         onValueChange = setAddressText,
-                        modifier = Modifier.weight(1f).onFocusChanged { setAddressFocused(it.isFocused) },
+                        modifier = Modifier.weight(1f).onFocusChanged { focusState ->
+                            if (focusState.isFocused && !addressFocused) {
+                                setAddressFocused(true)
+                                setAddressText("")
+                            } else if (!focusState.isFocused && addressFocused) {
+                                setAddressFocused(false)
+                                setAddressText(state.address)
+                            }
+                        },
                         singleLine = true,
                         label = { Text("Search or enter address") },
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { browser.navigate(addressText); setAddressFocused(false) }),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            browser.navigate(addressText)
+                            focusManager.clearFocus()
+                            setAddressFocused(false)
+                        }),
                         trailingIcon = if (addressFocused && addressText.isNotEmpty()) ({
                             IconButton(onClick = { setAddressText("") }) { Icon(Icons.Default.Close, "Clear address") }
                         }) else null,
@@ -238,14 +276,30 @@ private fun BrowserSurfaceContent(
                     IconButton(onClick = browser::goBack, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoBack == true) { Icon(Icons.Default.ArrowBack, "Back") }
                     IconButton(onClick = browser::goForward, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoForward == true) { Icon(Icons.Default.ArrowForward, "Forward") }
                 }
-                if (addressFocused && history.isNotEmpty()) {
+                if (addressFocused) {
+                    val firstSuggestion = browser.addressEditSuggestion()
+                    val normalizedQuery = addressText.trim()
+                    val matchingHistory = history
+                        .filter { it != firstSuggestion && (normalizedQuery.isBlank() || it.contains(normalizedQuery, ignoreCase = true)) }
+                        .take(8)
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(vertical = 4.dp)) {
-                            history.take(8).forEach { entry ->
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { setAddressText(entry) }.padding(start = 12.dp)) {
-                                    Text(entry, modifier = Modifier.weight(1f), maxLines = 1, style = MaterialTheme.typography.bodyMedium)
-                                    IconButton(onClick = { clearHistoryEntry(entry) }) { Icon(Icons.Default.Close, "Remove from history") }
-                                }
+                            firstSuggestion?.let { value ->
+                                AddressSuggestionRow(
+                                    value = value,
+                                    subtitle = state.tabs.firstOrNull { it.id == state.selectedTabId }?.title,
+                                    onSelect = { setAddressText(value) },
+                                )
+                            }
+                            if (normalizedQuery.isNotBlank() && normalizedQuery != firstSuggestion) {
+                                AddressSuggestionRow(value = normalizedQuery, onSelect = { setAddressText(normalizedQuery) })
+                            }
+                            matchingHistory.forEach { entry ->
+                                AddressSuggestionRow(
+                                    value = entry,
+                                    onSelect = { setAddressText(entry) },
+                                    onRemove = { clearHistoryEntry(entry) },
+                                )
                             }
                         }
                     }
@@ -257,15 +311,27 @@ private fun BrowserSurfaceContent(
             val label = if (progress.totalBytes > 0) "Downloading ${progress.name} · ${(progress.bytes * 100 / progress.totalBytes).toInt()}%" else "Downloading ${progress.name}…"
             Text(label, modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
         }
-        Box(modifier = Modifier.fillMaxSize().clickable { setUrlRowVisible(true) }) {
+        Box(modifier = Modifier.fillMaxSize().clickable {
+            if (addressFocused) {
+                focusManager.clearFocus()
+                setAddressFocused(false)
+                setAddressText(state.address)
+            }
+            setUrlRowVisible(true)
+        }) {
             state.selectedTabId?.let { tabId ->
                 AndroidView(
                     factory = { browserContext ->
-                        SwipeRefreshLayout(browserContext).apply {
+                        BrowserRefreshLayout(browserContext).apply {
                             val geckoView = org.mozilla.geckoview.GeckoView(browserContext)
                             visibleGeckoView.value = geckoView
                             addView(geckoView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                            setOnChildScrollUpCallback { _, _ -> geckoView.canScrollVertically(-1) }
+                            setOnChildScrollUpCallback { _, _ ->
+                                // GeckoView is not the document's scroll container. Its native
+                                // canScrollVertically result is only a fallback; Gecko's scroll
+                                // delegate supplies the authoritative page offset below.
+                                pageScrollY > 0 || geckoView.canScrollVertically(-1)
+                            }
                             setOnRefreshListener {
                                 browser.reload()
                             }
@@ -285,6 +351,10 @@ private fun BrowserSurfaceContent(
                                 refreshContainer.requestLayout()
                             }
                             browser.bind(view, tabId) { scrollY ->
+                                // SwipeRefreshLayout decides whether to intercept before GeckoView
+                                // receives a drag. Keep this value current so an upward/downward
+                                // page scroll remains a page scroll everywhere except document top.
+                                refreshContainer.pageScrollY = scrollY.coerceAtLeast(0)
                                 setUrlRowVisible(when {
                                     scrollY <= 0 -> true
                                     scrollY > previousScrollY + 2 -> false
@@ -377,6 +447,135 @@ private fun BrowserSurfaceContent(
     }
     if (errorVisible) {
         AlertDialog(onDismissRequest = { setErrorVisible(false); browser.clearError() }, title = { Text("Browser error") }, text = { Text(state.error.orEmpty()) }, confirmButton = { TextButton(onClick = { setErrorVisible(false); browser.clearError() }) { Text("OK") } })
+    }
+    state.contextMenu?.let { contextMenu ->
+        BrowserContextMenuSheet(
+            menu = contextMenu,
+            onDismiss = browser::dismissContextMenu,
+            onOpenLinkInNewTab = browser::openContextLinkInNewTab,
+            onOpenMediaInNewTab = browser::openContextMediaInNewTab,
+            onOpenCurrent = browser::loadContextUrlInCurrentTab,
+            onOpenMediaCurrent = browser::loadContextMediaInCurrentTab,
+        )
+    }
+}
+
+@Composable
+private fun AddressSuggestionRow(
+    value: String,
+    subtitle: String? = null,
+    onSelect: () -> Unit,
+    onRemove: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onSelect).padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.ArrowBack, "Use suggestion", modifier = Modifier.padding(horizontal = 8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(value, maxLines = 1, style = MaterialTheme.typography.bodyLarge)
+            subtitle?.takeIf { it.isNotBlank() }?.let {
+                Text(it, maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        onRemove?.let { remove ->
+            IconButton(onClick = remove) { Icon(Icons.Default.Close, "Remove from history") }
+        }
+    }
+}
+
+@Composable
+private fun BrowserContextMenuSheet(
+    menu: BrowserContextMenu,
+    onDismiss: () -> Unit,
+    onOpenLinkInNewTab: () -> Unit,
+    onOpenMediaInNewTab: () -> Unit,
+    onOpenCurrent: () -> Unit,
+    onOpenMediaCurrent: () -> Unit,
+) {
+    val context = LocalContext.current
+    val link = menu.linkUri
+    val media = menu.mediaUri
+    val primaryUrl = link ?: media
+    fun copy(label: String, value: String?) {
+        if (value.isNullOrBlank()) return
+        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(label, value))
+        onDismiss()
+    }
+    fun copyImage(value: String?) {
+        if (value.isNullOrBlank()) return
+        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(
+            ClipData.newUri(context.contentResolver, "Image", Uri.parse(value)),
+        )
+        onDismiss()
+    }
+    fun share(label: String, value: String?) {
+        if (value.isNullOrBlank()) return
+        val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, value) }
+        runCatching { context.startActivity(Intent.createChooser(intent, label)) }
+        onDismiss()
+    }
+    fun openWith(value: String?) {
+        if (value.isNullOrBlank()) return
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(value))
+        runCatching { context.startActivity(Intent.createChooser(intent, "Open with")) }
+        onDismiss()
+    }
+    fun searchImage(value: String?) {
+        if (value.isNullOrBlank()) return
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://lens.google.com/uploadbyurl?url=${Uri.encode(value)}"))
+        runCatching { context.startActivity(intent) }
+        onDismiss()
+    }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                when (menu.kind) {
+                    BrowserContextKind.LINK -> "Link"
+                    BrowserContextKind.IMAGE -> "Image"
+                    BrowserContextKind.VIDEO -> "Video"
+                    BrowserContextKind.AUDIO -> "Audio"
+                    BrowserContextKind.LINKED_MEDIA -> "Link and media"
+                },
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Text(
+                (menu.title ?: menu.altText ?: menu.textContent ?: primaryUrl ?: "Selected item").take(180),
+                maxLines = 2,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            if (link != null) {
+                BrowserContextAction("Open in new tab", onOpenLinkInNewTab)
+                BrowserContextAction("Preview page", onOpenCurrent)
+                BrowserContextAction("Copy link address") { copy("Link address", link) }
+                if (!menu.textContent.isNullOrBlank()) BrowserContextAction("Copy link text") { copy("Link text", menu.textContent) }
+                BrowserContextAction("Download link", onOpenCurrent)
+                BrowserContextAction("Share link") { share("Share link", link) }
+            }
+            if (media != null) {
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Open image in new tab" else "Open media in new tab", onOpenMediaInNewTab)
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Preview image" else "Play media", onOpenMediaCurrent)
+                if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Copy image") { copyImage(media) }
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Copy image address" else "Copy media address") { copy("Media address", media) }
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Download image" else "Download media", onOpenMediaCurrent)
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Share image" else "Share media") { share("Share media", media) }
+                if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Search this image") { searchImage(media) }
+            }
+            BrowserContextAction("Open with…") { openWith(primaryUrl) }
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).padding(top = 8.dp)) { Text("Cancel") }
+        }
+    }
+}
+
+@Composable
+private fun BrowserContextAction(label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 10.dp)) {
+        Text(label, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
     }
 }
 

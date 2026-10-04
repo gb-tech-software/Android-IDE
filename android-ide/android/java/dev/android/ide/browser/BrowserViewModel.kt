@@ -33,6 +33,7 @@ import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
 import org.mozilla.geckoview.WebExtension
 import java.io.File
+import java.net.URLDecoder
 import java.util.UUID
 
 private const val PREFS = "browser_state"
@@ -112,12 +113,24 @@ data class BrowserUiState(
     val permissionPrompt: BrowserPermissionPrompt? = null,
     val duplicateDownload: DuplicateDownloadPrompt? = null,
     val downloadProgress: BrowserDownloadProgress? = null,
+    val contextMenu: BrowserContextMenu? = null,
     val error: String? = null,
 )
 
 data class BrowserPermissionPrompt(val origin: String, val permission: String)
 data class DuplicateDownloadPrompt(val name: String, val sourceUrl: String, val existingUri: String)
 data class BrowserDownloadProgress(val name: String, val bytes: Long, val totalBytes: Long)
+
+enum class BrowserContextKind { LINK, IMAGE, VIDEO, AUDIO, LINKED_MEDIA }
+
+data class BrowserContextMenu(
+    val kind: BrowserContextKind,
+    val linkUri: String? = null,
+    val mediaUri: String? = null,
+    val title: String? = null,
+    val altText: String? = null,
+    val textContent: String? = null,
+)
 
 internal data class BrowserTabRuntime(
     val id: String,
@@ -129,6 +142,8 @@ internal data class BrowserTabRuntime(
     var sessionState: String? = null,
     var viewportWidth: Int? = null,
     var previewPath: String? = null,
+    var scrollY: Int = 0,
+    var scrollListener: ((Int) -> Unit)? = null,
 )
 
 /** Application-owned browser domain. It survives navigation away from the Browser surface. */
@@ -258,6 +273,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 publish()
                 persistTabs()
             }
+            override fun onContextMenu(
+                session: GeckoSession,
+                screenX: Int,
+                screenY: Int,
+                element: GeckoSession.ContentDelegate.ContextElement,
+            ) {
+                val link = element.linkUri?.takeIf(String::isNotBlank)
+                val media = element.srcUri?.takeIf(String::isNotBlank)
+                val kind = when {
+                    link != null && media != null -> BrowserContextKind.LINKED_MEDIA
+                    element.type == GeckoSession.ContentDelegate.ContextElement.TYPE_IMAGE -> BrowserContextKind.IMAGE
+                    element.type == GeckoSession.ContentDelegate.ContextElement.TYPE_VIDEO -> BrowserContextKind.VIDEO
+                    element.type == GeckoSession.ContentDelegate.ContextElement.TYPE_AUDIO -> BrowserContextKind.AUDIO
+                    link != null -> BrowserContextKind.LINK
+                    else -> return
+                }
+                _uiState.value = _uiState.value.copy(
+                    contextMenu = BrowserContextMenu(kind, link, media, element.title, element.altText, element.textContent),
+                )
+            }
             override fun onExternalResponse(session: GeckoSession, response: WebResponse) { beginDownload(response) }
         })
         tab.session.setPermissionDelegate(object : PermissionDelegate {
@@ -268,6 +303,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 pendingPermissionResult = result
                 _uiState.value = _uiState.value.copy(permissionPrompt = BrowserPermissionPrompt(origin, name))
                 return result
+            }
+        })
+        tab.session.setScrollDelegate(object : GeckoSession.ScrollDelegate {
+            override fun onScrollChanged(session: GeckoSession, scrollX: Int, scrollY: Int) {
+                tab.scrollY = scrollY.coerceAtLeast(0)
+                tab.scrollListener?.invoke(tab.scrollY)
             }
         })
     }
@@ -421,6 +462,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun reportError(message: String) { setError(message) }
+    fun dismissContextMenu() { _uiState.value = _uiState.value.copy(contextMenu = null) }
+    fun openContextLinkInNewTab() {
+        val url = _uiState.value.contextMenu?.linkUri ?: _uiState.value.contextMenu?.mediaUri ?: return
+        dismissContextMenu()
+        createTab(url)
+    }
+    fun openContextMediaInNewTab() {
+        val url = _uiState.value.contextMenu?.mediaUri ?: return
+        dismissContextMenu()
+        createTab(url)
+    }
+    fun loadContextUrlInCurrentTab() {
+        val url = _uiState.value.contextMenu?.linkUri ?: _uiState.value.contextMenu?.mediaUri ?: return
+        dismissContextMenu()
+        sessions[_uiState.value.selectedTabId]?.session?.loadUri(url)
+    }
+    fun loadContextMediaInCurrentTab() {
+        val url = _uiState.value.contextMenu?.mediaUri ?: return
+        dismissContextMenu()
+        sessions[_uiState.value.selectedTabId]?.session?.loadUri(url)
+    }
 
     private fun removeDownloadRecord(downloadId: String) {
         val updated = _uiState.value.downloads.filterNot { it.id == downloadId }
@@ -460,6 +522,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val history = (listOf(entered) + _uiState.value.history.filterNot { it == entered }).take(30)
         preferences.edit().putString(HISTORY_KEY, JSONArray(history).toString()).apply()
         tab.url = target
+        tab.scrollY = 0
+        tab.scrollListener?.invoke(0)
         tab.session.loadUri(target)
         _uiState.value = _uiState.value.copy(address = target, error = null)
         persistTabs()
@@ -514,6 +578,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         preferences.edit().putString(HISTORY_KEY, JSONArray(next).toString()).apply()
         _uiState.value = _uiState.value.copy(history = next)
     }
+    /**
+     * Returns the value that should be offered first when the address field is focused.
+     * Search results are recognized from the active search template, so no extra
+     * per-navigation origin state is needed.
+     */
+    fun addressEditSuggestion(): String? {
+        val current = sessions[_uiState.value.selectedTabId]?.url?.trim()
+            ?.takeUnless { it.isNullOrBlank() || it == DEFAULT_HOME }
+            ?: _uiState.value.address.trim().takeUnless { it.isBlank() || it == DEFAULT_HOME }
+            ?: return null
+        val template = SEARCH_ENGINES[_uiState.value.settings.searchEngine]
+            ?: _uiState.value.settings.customSearchUrl
+        val marker = "%s"
+        val markerIndex = template.indexOf(marker)
+        if (markerIndex >= 0) {
+            val prefix = template.substring(0, markerIndex)
+            val suffix = template.substring(markerIndex + marker.length)
+            if (current.startsWith(prefix) && (suffix.isEmpty() || current.endsWith(suffix))) {
+                val encoded = current.substring(prefix.length, current.length - suffix.length.coerceAtMost(current.length - prefix.length))
+                return runCatching { URLDecoder.decode(encoded, Charsets.UTF_8.name()) }
+                    .getOrElse { Uri.decode(encoded) }
+                    .replace('+', ' ')
+                    .takeIf { it.isNotBlank() }
+            }
+        }
+        return current
+    }
     fun setDownloadFolder(uri: String?) { updateSettings { it.copy(downloadFolder = uri) } }
     fun clearBrowserData() {
         sessions.values.forEach { it.session.purgeHistory() }
@@ -523,11 +614,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun clearError() { _uiState.value = _uiState.value.copy(error = null) }
     fun session(tabId: String): GeckoSession? = sessions[tabId]?.session
     fun bind(view: GeckoView, tabId: String, onScroll: (Int) -> Unit = {}) {
-        sessions[tabId]?.session?.let { session ->
-            view.setSession(session)
-            session.setScrollDelegate(object : GeckoSession.ScrollDelegate {
-                override fun onScrollChanged(session: GeckoSession, scrollX: Int, scrollY: Int) { onScroll(scrollY) }
-            })
+        sessions[tabId]?.let { tab ->
+            // The Android view itself does not expose Gecko's document scroll
+            // position. Preserve that position per tab and hand it to the surface
+            // immediately, before SwipeRefreshLayout decides whether to intercept.
+            tab.scrollListener = onScroll
+            view.setSession(tab.session)
+            onScroll(tab.scrollY)
         }
     }
 
