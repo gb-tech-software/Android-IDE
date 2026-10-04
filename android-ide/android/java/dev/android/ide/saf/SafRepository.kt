@@ -657,7 +657,7 @@ class SafRepository(private val context: Context) {
                 file.writeBytes(data)
                 true
             } else {
-                resolver.openOutputStream(Uri.parse(documentUriString), "wt")?.use { stream ->
+                resolver.openOutputStream(Uri.parse(documentUriString), "w")?.use { stream ->
                     stream.write(data)
                     stream.flush()
                     true

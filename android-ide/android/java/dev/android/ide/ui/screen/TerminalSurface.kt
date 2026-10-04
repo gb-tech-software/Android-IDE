@@ -214,7 +214,6 @@ fun TerminalSurface(
             )
         }
     }
-    }
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
     blockingFeedback?.let { report ->
         AlertDialog(
@@ -230,6 +229,7 @@ fun TerminalSurface(
                 Button(onClick = viewModel::clearTerminalFeedback) { Text("OK") }
             },
         )
+    }
     }
 }
 
