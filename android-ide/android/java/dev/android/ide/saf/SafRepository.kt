@@ -144,6 +144,11 @@ class SafRepository(private val context: Context) {
                     explanation = "The selected location is not a supported file or document-provider URI",
                 )
             }
+            if (!isSupportedProjectProvider(uri)) {
+                return@withContext unsupportedCapabilities(
+                    "Projects can be registered only in Android IDE storage or primary shared storage",
+                )
+            }
             val rootUri = mutationDocumentUri(location.stableId).toString()
             val flags = queryLongColumn(rootUri, DocumentsContract.Document.COLUMN_FLAGS)?.toInt()
                 ?: return@withContext permissionLostCapabilities("Android could not inspect the selected project folder")
@@ -181,6 +186,15 @@ class SafRepository(private val context: Context) {
                 },
             )
         }
+
+    /** Registration is intentionally limited to the two filesystems with a stable bridge. */
+    private fun isSupportedProjectProvider(uri: Uri): Boolean {
+        if (AndroidIdeDocumentsProvider.isProviderUri(uri)) return true
+        if (uri.authority != "com.android.externalstorage.documents") return false
+        return runCatching {
+            documentIdForUri(uri).substringBefore(':').equals("primary", ignoreCase = true)
+        }.getOrDefault(false)
+    }
 
     private data class LocalCapabilities(
         val readable: Boolean,
@@ -404,14 +418,14 @@ class SafRepository(private val context: Context) {
                 val idIdx   = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIdx = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeIdx = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                val sizeIdx = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+                val sizeIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
                 val modifiedIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
 
                 while (cursor.moveToNext()) {
                     val childDocId  = cursor.getString(idIdx) ?: continue
                     val displayName = cursor.getString(nameIdx) ?: ""
                     val mimeType    = cursor.getString(mimeIdx) ?: "application/octet-stream"
-                    val size        = if (cursor.isNull(sizeIdx)) 0L else cursor.getLong(sizeIdx)
+                    val size        = if (sizeIdx < 0 || cursor.isNull(sizeIdx)) 0L else cursor.getLong(sizeIdx)
                     val lastModifiedMs = if (modifiedIdx >= 0 && !cursor.isNull(modifiedIdx)) {
                         cursor.getLong(modifiedIdx)
                     } else {
@@ -1771,6 +1785,16 @@ class SafRepository(private val context: Context) {
 
     suspend fun documentExists(documentUriString: String): Boolean =
         getDisplayName(documentUriString) != null
+
+    /** Returns provider-reported byte length without opening and buffering the file. */
+    suspend fun documentSize(documentUriString: String): Long? = withContext(Dispatchers.IO) {
+        if (isFileUri(documentUriString)) {
+            fileFromUri(documentUriString)?.takeIf { it.isFile }?.length()
+        } else {
+            queryLongColumn(documentUriString, DocumentsContract.Document.COLUMN_SIZE)
+                ?.takeIf { it >= 0L }
+        }
+    }
 
     suspend fun isDirectoryDocument(documentUriString: String): Boolean = withContext(Dispatchers.IO) {
         if (isFileUri(documentUriString)) {

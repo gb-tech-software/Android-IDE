@@ -63,8 +63,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalDensity
@@ -1217,17 +1215,11 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.CODE -> Color(0xFF4F8CC9)
         FileIconKind.GENERIC -> Color(0xFF6B7280)
     }
-    val badgeColor = color.copy(alpha = if (muted) 0.28f else if (accent) 0.55f else 0.9f)
-    val badgeBackground = badgeColor.compositeOver(MaterialTheme.colorScheme.surface)
-    val badgeForeground = if (badgeBackground.luminance() > 0.179f) Color.Black else Color.White
-    Surface(
-        color = badgeColor,
-        shape = MaterialTheme.shapes.extraSmall,
-        modifier = Modifier.size(24.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = "$label file", tint = badgeForeground, modifier = Modifier.size(15.dp))
-        }
+    val iconTint = color.copy(alpha = if (muted) 0.45f else if (accent) 0.78f else 1f)
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(24.dp)) {
+        // Do not put code-file icons on a custom badge: the background masks
+        // their language-specific visual identity in tree and search results.
+        Icon(icon, contentDescription = "$label file", tint = iconTint, modifier = Modifier.size(18.dp))
     }
 }
 

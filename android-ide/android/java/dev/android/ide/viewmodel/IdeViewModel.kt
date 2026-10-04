@@ -9,7 +9,6 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.res.Configuration
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,8 +16,7 @@ import dev.android.ide.data.CrashRecoveryRepository
 import dev.android.ide.data.EditorSettingsRepository
 import dev.android.ide.data.ProjectRepository
 import dev.android.ide.data.SessionRepository
-import dev.android.ide.data.ThemeRepository
-import dev.android.ide.data.model.AppTheme
+import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.model.EditorSettings
 import dev.android.ide.data.model.Project
 import dev.android.ide.data.model.ProjectDetails
@@ -96,14 +94,13 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val projectMetadata   = ProjectMetadataStore(fileMutations)
     private val projectRepository  = ProjectRepository(application)
     private val sessionRepository  = SessionRepository(application)
-    private val themeRepository    = ThemeRepository(application)
     private val editorSettingsRepo = EditorSettingsRepository(application)
     private val crashRecovery      = CrashRecoveryRepository(application)
     private val lifecycleStore     = LifecycleStateStore(application)
+    private val themeResolver      = ThemeResolver(application)
 
     private val _uiState = MutableStateFlow(
         IdeUiState(
-            appTheme       = themeRepository.get(),
             recentProjects = projectRepository.getAll(),
             editorSettings = editorSettingsRepo.getEditorSettings(),
             volumeKeyMode  = editorSettingsRepo.getVolumeKeyMode(),
@@ -166,22 +163,12 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         saveSession()
     }
 
-    // ── Theme helpers ───────────────────────────────────────────────────────
-
-    private fun isSystemDark(): Boolean =
-        (getApplication<Application>().resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
-
-    /**
-     * Resolves the Monaco theme name from the current editor theme setting.
-     * "system" follows the device dark-mode state. "dark" / "light" are explicit.
-     */
+    /** Resolves Monaco's theme from the editor's independent four-way setting. */
     private fun resolveMonacoTheme(): String {
         val settings = _uiState.value.editorSettings
-        return when (settings.editorTheme) {
-            "light"  -> "light"
-            "dark"   -> "dark"
-            else     -> if (isSystemDark()) "dark" else "light"
+        return when (themeResolver.getEditorTheme(settings.editorTheme)) {
+            dev.android.ide.data.ResolvedTheme.DARK -> "dark"
+            dev.android.ide.data.ResolvedTheme.LIGHT -> "light"
         }
     }
 
@@ -354,11 +341,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         saveSession()
     }
 
-    // ── App theme ───────────────────────────────────────────────────────────
-
-    fun setTheme(theme: AppTheme) {
-        themeRepository.set(theme)
-        _uiState.update { it.copy(appTheme = theme) }
+    /** Refreshes the editor from the current resolved application theme. */
+    fun onApplicationThemeChanged() {
         if (_uiState.value.isEditorReady) {
             sendEditorCommand(EditorOutbound.SetTheme(resolveMonacoTheme()))
         }

@@ -1,3 +1,3 @@
 package dev.android.ide.data.model
 
-enum class AppTheme { DARK, LIGHT, SYSTEM }
+enum class AppTheme { DARK, LIGHT, DEVICE }

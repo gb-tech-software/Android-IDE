@@ -1,6 +1,6 @@
 // android-ide/android/java/dev/android/ide/data/ThemeRepository.kt
 //
-// Persists the user's chosen application theme (Dark / Light / System).
+// Persists the user's chosen application theme (Dark / Light / Follow device).
 
 package dev.android.ide.data
 
@@ -10,15 +10,21 @@ import dev.android.ide.data.model.AppTheme
 class ThemeRepository(context: Context) {
 
     companion object {
-        private const val PREFS = "ide_theme"
-        private const val KEY   = "app_theme"
+        private const val PREFS = "application_theme"
+        private const val LEGACY_PREFS = "ide_theme"
+        private const val KEY   = "application_theme"
+        private const val LEGACY_KEY = "app_theme"
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private val legacyPrefs = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE)
 
     fun get(): AppTheme = runCatching {
-        AppTheme.valueOf(prefs.getString(KEY, AppTheme.SYSTEM.name) ?: AppTheme.SYSTEM.name)
-    }.getOrElse { AppTheme.SYSTEM }
+        val stored = prefs.getString(KEY, null)
+            ?: legacyPrefs.getString(LEGACY_KEY, AppTheme.DEVICE.name)
+            ?: AppTheme.DEVICE.name
+        if (stored == "SYSTEM") AppTheme.DEVICE else AppTheme.valueOf(stored)
+    }.getOrElse { AppTheme.DEVICE }
 
     fun set(theme: AppTheme) {
         prefs.edit().putString(KEY, theme.name).apply()

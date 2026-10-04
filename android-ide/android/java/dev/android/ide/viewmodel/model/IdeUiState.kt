@@ -4,7 +4,6 @@
 
 package dev.android.ide.viewmodel.model
 
-import dev.android.ide.data.model.AppTheme
 import dev.android.ide.data.model.EditorSettings
 import dev.android.ide.data.model.Project
 import dev.android.ide.data.model.ProjectDetails
@@ -152,9 +151,6 @@ data class IdeUiState(
     // ── File operation dialog ──────────────────────────────────────────────
     /** Non-null when a file operation dialog is visible. */
     val fileOpDialog: FileOpDialog? = null,
-
-    // ── Theme ──────────────────────────────────────────────────────────────
-    val appTheme: AppTheme = AppTheme.SYSTEM,
 
     // ── Editor settings ────────────────────────────────────────────────────
     /** Persisted editor display and behaviour settings. */

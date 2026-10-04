@@ -76,6 +76,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.ContentScale
@@ -87,6 +88,8 @@ import dev.android.ide.browser.BrowserContextKind
 import dev.android.ide.browser.BrowserContextMenu
 import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
+import dev.android.ide.data.ThemeResolver
+import dev.android.ide.data.ResolvedTheme
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 
 private const val MAX_VIEWPORT_WIDTH = 2400
@@ -110,6 +113,8 @@ fun BrowserSurface(
     modifier: Modifier = Modifier,
 ) {
     val browser: BrowserViewModel = viewModel()
+    val context = LocalContext.current
+    val themeResolver = remember { ThemeResolver(context) }
     val state by browser.uiState.collectAsState()
     var addressText by remember { mutableStateOf(state.address) }
     var addressFocused by remember { mutableStateOf(false) }
@@ -139,14 +144,11 @@ fun BrowserSurface(
         }
     }
 
-    val browserColorScheme = when (state.settings.theme) {
-        "dark" -> darkColorScheme()
-        "light" -> lightColorScheme()
-        else -> null
+    val browserColorScheme = when (themeResolver.getBrowserTheme(state.settings.theme)) {
+        ResolvedTheme.DARK -> darkColorScheme()
+        ResolvedTheme.LIGHT -> lightColorScheme()
     }
-    if (browserColorScheme != null) MaterialTheme(colorScheme = browserColorScheme) {
-        BrowserSurfaceContent(modifier, state, browser, visibleGeckoView, addressText, { addressText = it }, addressFocused, { addressFocused = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabPreview(it, visibleGeckoView.value) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
-    } else {
+    MaterialTheme(colorScheme = browserColorScheme) {
         BrowserSurfaceContent(modifier, state, browser, visibleGeckoView, addressText, { addressText = it }, addressFocused, { addressFocused = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabPreview(it, visibleGeckoView.value) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
     }
 }
@@ -193,13 +195,13 @@ private fun BrowserSurfaceContent(
     val focusManager = LocalFocusManager.current
     Column(modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Android IDE Browser") },
+            title = { Text("Browser") },
             navigationIcon = { IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open Android IDE navigation") } },
             actions = {
                 IconButton(onClick = { if (state.loading) browser.stop() else browser.reload() }, enabled = state.selectedTabId != null) {
                     Icon(Icons.Default.Refresh, if (state.loading) "Stop loading" else "Refresh")
                 }
-                IconButton(onClick = { setMenuOpen(true) }) { Icon(Icons.Default.MoreVert, "Browser menu") }
+                IconButton(onClick = createTab) { Icon(Icons.Default.Add, "New tab") }
                 IconButton(onClick = openTabs) {
                     Box(
                         modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 6.dp),
@@ -208,7 +210,7 @@ private fun BrowserSurfaceContent(
                         Text(state.tabs.size.toString(), style = MaterialTheme.typography.labelLarge)
                     }
                 }
-                IconButton(onClick = createTab) { Icon(Icons.Default.Add, "New tab") }
+                IconButton(onClick = { setMenuOpen(true) }) { Icon(Icons.Default.MoreVert, "Browser menu") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { setMenuOpen(false) }) {
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.DeveloperMode, null) },
@@ -456,6 +458,7 @@ private fun BrowserSurfaceContent(
             onOpenMediaInNewTab = browser::openContextMediaInNewTab,
             onOpenCurrent = browser::loadContextUrlInCurrentTab,
             onOpenMediaCurrent = browser::loadContextMediaInCurrentTab,
+            onDownload = browser::downloadContextResource,
         )
     }
 }
@@ -492,6 +495,7 @@ private fun BrowserContextMenuSheet(
     onOpenMediaInNewTab: () -> Unit,
     onOpenCurrent: () -> Unit,
     onOpenMediaCurrent: () -> Unit,
+    onDownload: () -> Unit,
 ) {
     val context = LocalContext.current
     val link = menu.linkUri
@@ -527,11 +531,15 @@ private fun BrowserContextMenuSheet(
         runCatching { context.startActivity(intent) }
         onDismiss()
     }
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            Modifier.fillMaxWidth().padding(20.dp),
+            shape = RoundedCornerShape(28.dp),
         ) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
             Text(
                 when (menu.kind) {
                     BrowserContextKind.LINK -> "Link"
@@ -554,7 +562,7 @@ private fun BrowserContextMenuSheet(
                 BrowserContextAction("Preview page", onOpenCurrent)
                 BrowserContextAction("Copy link address") { copy("Link address", link) }
                 if (!menu.textContent.isNullOrBlank()) BrowserContextAction("Copy link text") { copy("Link text", menu.textContent) }
-                BrowserContextAction("Download link", onOpenCurrent)
+                BrowserContextAction("Download link", onDownload)
                 BrowserContextAction("Share link") { share("Share link", link) }
             }
             if (media != null) {
@@ -562,7 +570,7 @@ private fun BrowserContextMenuSheet(
                 BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Preview image" else "Play media", onOpenMediaCurrent)
                 if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Copy image") { copyImage(media) }
                 BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Copy image address" else "Copy media address") { copy("Media address", media) }
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Download image" else "Download media", onOpenMediaCurrent)
+                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Download image" else "Download media", onDownload)
                 BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Share image" else "Share media") { share("Share media", media) }
                 if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Search this image") { searchImage(media) }
             }

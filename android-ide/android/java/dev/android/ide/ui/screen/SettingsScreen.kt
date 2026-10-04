@@ -77,6 +77,7 @@ import androidx.compose.ui.platform.LocalContext
 import dev.android.ide.data.model.AppTheme
 import dev.android.ide.data.model.EditorSettings
 import dev.android.ide.data.model.VolumeKeyMode
+import dev.android.ide.data.model.TerminalSettings
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.ui.components.EDITOR_TOOLBAR_ACTIONS
 import dev.android.ide.ui.components.EditorToolbarGlyph
@@ -102,6 +103,10 @@ enum class SettingsCategory(val title: String, val description: String, val icon
 fun SettingsScreen(
     uiState: IdeUiState,
     ideViewModel: IdeViewModel,
+    applicationTheme: AppTheme,
+    onApplicationThemeChanged: (AppTheme) -> Unit,
+    terminalSettings: TerminalSettings,
+    onTerminalSettingsChanged: (TerminalSettings) -> Unit,
     onNavigationIconClick: (() -> Unit)? = null,
     scrollToSection: String? = null,
     onScrollConsumed: () -> Unit = {},
@@ -164,6 +169,10 @@ fun SettingsScreen(
                 category = selectedCategory,
                 uiState = uiState,
                 ideViewModel = ideViewModel,
+                applicationTheme = applicationTheme,
+                onApplicationThemeChanged = onApplicationThemeChanged,
+                terminalSettings = terminalSettings,
+                onTerminalSettingsChanged = onTerminalSettingsChanged,
                 modifier = Modifier.padding(innerPadding),
             )
         }
@@ -215,6 +224,10 @@ private fun SettingsCategoryContent(
     category: SettingsCategory,
     uiState: IdeUiState,
     ideViewModel: IdeViewModel,
+    applicationTheme: AppTheme,
+    onApplicationThemeChanged: (AppTheme) -> Unit,
+    terminalSettings: TerminalSettings,
+    onTerminalSettingsChanged: (TerminalSettings) -> Unit,
     modifier: Modifier,
 ) {
     val s = uiState.editorSettings
@@ -228,12 +241,12 @@ private fun SettingsCategoryContent(
             Text(category.description, color = colors.textSecondary, style = MaterialTheme.typography.bodyMedium)
         }
         when (category) {
-            SettingsCategory.GENERAL -> item { GeneralSettings(uiState, s, ideViewModel) }
+            SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
             SettingsCategory.EDITOR -> item { EditorSettingsContent(uiState, s, ideViewModel) }
             SettingsCategory.PROJECTS -> item { ProjectsSettingsContent() }
             SettingsCategory.GIT,
-            SettingsCategory.TERMINAL,
             SettingsCategory.EXTENSIONS -> item { DomainPlaceholder(category) }
+            SettingsCategory.TERMINAL -> item { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) }
             SettingsCategory.BROWSER -> item { BrowserSettingsContent() }
             SettingsCategory.CREDENTIALS -> item { DomainPlaceholder(category) }
             SettingsCategory.SECURITY -> item { StorageAccessSettings() }
@@ -307,13 +320,13 @@ private fun StorageAccessSettings() {
 }
 
 @Composable
-private fun GeneralSettings(uiState: IdeUiState, s: EditorSettings, ideViewModel: IdeViewModel) {
+private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChanged: (AppTheme) -> Unit, s: EditorSettings, ideViewModel: IdeViewModel) {
     SettingsCard {
         Text("App theme", style = MaterialTheme.typography.titleSmall)
         Column(Modifier.selectableGroup()) {
-            AppThemeOption("Dark", AppTheme.DARK, uiState.appTheme, ideViewModel)
-            AppThemeOption("Light", AppTheme.LIGHT, uiState.appTheme, ideViewModel)
-            AppThemeOption("System", AppTheme.SYSTEM, uiState.appTheme, ideViewModel)
+            AppThemeOption("Dark", AppTheme.DARK, applicationTheme, onApplicationThemeChanged)
+            AppThemeOption("Light", AppTheme.LIGHT, applicationTheme, onApplicationThemeChanged)
+            AppThemeOption("Follow device", AppTheme.DEVICE, applicationTheme, onApplicationThemeChanged)
         }
     }
     SettingsCard {
@@ -342,7 +355,8 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         Column(Modifier.selectableGroup()) {
             EditorThemeOption("Dark", "dark", s.editorTheme, s, ideViewModel)
             EditorThemeOption("Light", "light", s.editorTheme, s, ideViewModel)
-            EditorThemeOption("Follow app theme", "system", s.editorTheme, s, ideViewModel)
+            EditorThemeOption("Follow application", "application", s.editorTheme, s, ideViewModel)
+            EditorThemeOption("Follow device", "device", s.editorTheme, s, ideViewModel)
         }
         HorizontalDivider(color = colors.separator)
         SettingStepper("Code font size", "${s.fontSize} sp", {
@@ -550,6 +564,34 @@ private fun ProjectsSettingsContent() {
 }
 
 @Composable
+private fun TerminalSettingsContent(settings: TerminalSettings, onSettingsChanged: (TerminalSettings) -> Unit) {
+    SettingsCard {
+        Text("Terminal appearance", style = MaterialTheme.typography.titleSmall)
+        Text("Choose how the terminal resolves its colors. This setting is independent from the editor and browser.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+        Column(Modifier.selectableGroup()) {
+            listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device").forEach { (label, value) ->
+                Row(Modifier.fillMaxWidth().selectable(settings.theme == value, Role.RadioButton) { onSettingsChanged(settings.copy(theme = value)) }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(settings.theme == value, onClick = null)
+                    Text(label)
+                }
+            }
+        }
+        HorizontalDivider()
+        SettingStepper("Terminal text size", "${settings.textSize} sp", {
+            onSettingsChanged(settings.copy(textSize = settings.textSize - 1))
+        }, {
+            onSettingsChanged(settings.copy(textSize = settings.textSize + 1))
+        })
+    }
+    SettingsCard {
+        Text("Terminal shortcut toolbar", style = MaterialTheme.typography.titleSmall)
+        VisibilitySettingRow("Show shortcut toolbar", "Show terminal control and navigation shortcuts below the terminal.", settings.shortcutToolbarEnabled) {
+            onSettingsChanged(settings.copy(shortcutToolbarEnabled = it))
+        }
+    }
+}
+
+@Composable
 private fun BrowserSettingsContent() {
     val browser: BrowserViewModel = viewModel()
     val state by browser.uiState.collectAsState()
@@ -603,7 +645,7 @@ private fun BrowserSettingsContent() {
         Text("Appearance and browsing", style = MaterialTheme.typography.titleSmall)
         Row(Modifier.fillMaxWidth().clickable { themeSheetOpen = true }, verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(mapOf("system" to "Follow Android IDE theme", "light" to "Light", "dark" to "Dark")[state.settings.theme] ?: "Follow Android IDE theme")
+                Text(mapOf("system" to "Follow application", "application" to "Follow application", "device" to "Follow device", "light" to "Light", "dark" to "Dark")[state.settings.theme] ?: "Follow application")
                 Text("Browser theme", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
             }
             Text("Change", color = LocalIdeColors.current.textSecondary)
@@ -648,7 +690,7 @@ private fun BrowserSettingsContent() {
     if (themeSheetOpen) ModalBottomSheet(onDismissRequest = { themeSheetOpen = false }) {
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Browser theme", style = MaterialTheme.typography.titleLarge)
-            listOf("system" to "Follow Android IDE theme", "light" to "Light", "dark" to "Dark").forEach { (id, label) ->
+            listOf("dark" to "Dark", "light" to "Light", "application" to "Follow application", "device" to "Follow device").forEach { (id, label) ->
                 Row(Modifier.fillMaxWidth().clickable { browser.setTheme(id); themeSheetOpen = false }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = state.settings.theme == id, onClick = null)
                     Text(label)
@@ -702,9 +744,9 @@ private fun ChoiceSetting(title: String, choices: List<Pair<String, String>>, se
 }
 
 @Composable
-private fun AppThemeOption(label: String, theme: AppTheme, current: AppTheme, ideViewModel: IdeViewModel) {
+private fun AppThemeOption(label: String, theme: AppTheme, current: AppTheme, onThemeChanged: (AppTheme) -> Unit) {
     val selected = theme == current
-    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = { ideViewModel.setTheme(theme) }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = { onThemeChanged(theme) }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         RadioButton(selected, onClick = null); Spacer(Modifier.width(8.dp)); Text(label)
     }
 }

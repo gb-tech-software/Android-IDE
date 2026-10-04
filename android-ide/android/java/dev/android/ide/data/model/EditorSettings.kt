@@ -11,8 +11,8 @@ data class EditorSettings(
     val wordWrap: Boolean      = false,
     val lineNumbers: Boolean   = true,
     val autoSave: Boolean      = false,
-    /** Monaco theme: "dark" | "light" | "system" (follows app theme). */
-    val editorTheme: String    = "system",
+    /** Monaco theme: "dark" | "light" | "application" | "device". */
+    val editorTheme: String    = "application",
     /**
      * "none"      — whitespace never highlighted
      * "selection" — whitespace highlighted in selected text (default)

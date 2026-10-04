@@ -389,7 +389,7 @@ body { margin: 0; padding: 2rem; }
             })
             val fileUri = (created as? ExactCreateResult.Created)?.documentUri
                 ?: return cleanupCreatedRoot(rootUri, blocked("The starter file $relativePath could not be created; no project was registered", ErrorCategory.PERMISSION_LOST))
-            if (!files.writeText(fileUri, content)) {
+            if (!files.writeText(fileUri, content, dev.android.ide.saf.WriteVerification.STRICT)) {
                 return cleanupCreatedRoot(rootUri, blocked("The starter file $relativePath could not be verified; no project was registered", ErrorCategory.PERMISSION_LOST))
             }
         }

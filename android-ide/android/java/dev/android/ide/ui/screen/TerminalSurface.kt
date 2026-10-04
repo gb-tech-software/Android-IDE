@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.ZoomIn
+import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -55,6 +57,9 @@ import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
 import dev.android.ide.contracts.RuntimeAvailability
 import dev.android.ide.contracts.SessionAvailability
+import dev.android.ide.data.model.TerminalSettings
+import dev.android.ide.data.ThemeResolver
+import dev.android.ide.data.ResolvedTheme
 import dev.android.ide.ui.theme.operationStatusContainerColor
 import dev.android.ide.ui.theme.operationStatusContentColor
 
@@ -62,27 +67,31 @@ import dev.android.ide.ui.theme.operationStatusContentColor
 fun TerminalSurface(
     state: AppShellState,
     viewModel: AppShellViewModel,
-    editorTheme: String,
+    terminalSettings: TerminalSettings,
     onOpenNavigation: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    onSettingsChanged: (TerminalSettings) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var ctrlLatched by remember { mutableStateOf(false) }
     var altLatched by remember { mutableStateOf(false) }
     var escapeLatched by remember { mutableStateOf(false) }
-    var terminalTextSize by remember { mutableStateOf(14) }
+    var terminalTextSize by remember { mutableStateOf(terminalSettings.textSize) }
+    var appearanceMenuOpen by remember { mutableStateOf(false) }
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
     val runtimeAvailable = state.runtimeCapabilities?.availability == RuntimeAvailability.AVAILABLE
     val context = LocalContext.current
+    val themeResolver = remember { ThemeResolver(context) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val snackbarHostState = remember { SnackbarHostState() }
-    val terminalTheme = when (editorTheme) {
-        "light" -> TerminalTheme.LIGHT
-        "dark" -> TerminalTheme.DARK
-        else -> if (isSystemInDarkTheme()) TerminalTheme.DARK else TerminalTheme.LIGHT
+    val terminalTheme = when (themeResolver.getTerminalTheme(terminalSettings.theme)) {
+        ResolvedTheme.DARK -> TerminalTheme.DARK
+        ResolvedTheme.LIGHT -> TerminalTheme.LIGHT
     }
     val blockingFeedback = state.terminalFeedback?.takeIf(::requiresTerminalDialog)
+    LaunchedEffect(terminalSettings.textSize) { terminalTextSize = terminalSettings.textSize }
 
     fun clearLatchedKeys() {
         ctrlLatched = false
@@ -122,6 +131,7 @@ fun TerminalSurface(
             Column(Modifier.weight(1f)) {
                 Text("Terminal", style = MaterialTheme.typography.headlineSmall)
             }
+            IconButton(onClick = onOpenSettings) { Icon(Icons.Default.MoreVert, "Terminal settings") }
         }
         state.terminalFeedback?.let { report ->
             val contentColor = operationStatusContentColor(report.outcome)
@@ -171,16 +181,36 @@ fun TerminalSurface(
                                 readControl = { ctrlLatched },
                                 readAlt = { altLatched },
                                 clearModifiers = ::clearLatchedKeys,
+                                onScaleChanged = {
+                                    terminalView.post {
+                                        terminalTextSize = terminalView.textSize
+                                        onSettingsChanged(terminalSettings.copy(textSize = terminalView.textSize))
+                                    }
+                                },
                             ),
                         )
+                        var downAt = 0L
+                        var downX = 0f
+                        var downY = 0f
+                        var moved = false
+                        val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
                         terminalView.setOnTouchListener { view, event ->
-                            if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
-                                view.requestFocusFromTouch()
-                                (context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
-                                    ?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> { downAt = event.eventTime; downX = event.x; downY = event.y; moved = false }
+                                MotionEvent.ACTION_MOVE -> {
+                                    val dx = event.x - downX
+                                    val dy = event.y - downY
+                                    moved = moved || dx * dx + dy * dy > slop * slop
+                                }
+                                MotionEvent.ACTION_UP -> if (!moved && event.eventTime - downAt < android.view.ViewConfiguration.getLongPressTimeout()) {
+                                    view.requestFocusFromTouch()
+                                    (context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                                        ?.showSoftInput(view, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+                                }
+                                MotionEvent.ACTION_CANCEL -> moved = false
                             }
-                            // Termux TerminalView must receive the event for cursor,
-                            // selection, and PTY input handling.
+                            // Termux TerminalView must receive the event for scrolling,
+                            // cursor, selection, and PTY input handling.
                             false
                         }
                         viewModel.bindTerminalView(selected.id) { terminalView.postInvalidateOnAnimation() }
@@ -195,7 +225,7 @@ fun TerminalSurface(
                     if (live != null && view.mTermSession !== live) view.attachSession(live)
                 },
             )
-            TerminalShortcutToolbar(
+            if (terminalSettings.shortcutToolbarEnabled) TerminalShortcutToolbar(
                 ctrlLatched = ctrlLatched,
                 altLatched = altLatched,
                 escapeLatched = escapeLatched,
@@ -207,11 +237,26 @@ fun TerminalSurface(
                     clearLatchedKeys()
                 },
             )
-            TerminalAppearanceToolbar(
-                textSize = terminalTextSize,
-                onZoomIn = { terminalTextSize = (terminalTextSize + 1).coerceAtMost(32) },
-                onZoomOut = { terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8) },
-            )
+            Box(Modifier.fillMaxWidth()) {
+                IconButton(onClick = { appearanceMenuOpen = true }, modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Icon(Icons.Default.MoreVert, "Terminal appearance")
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = appearanceMenuOpen,
+                    onDismissRequest = { appearanceMenuOpen = false },
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Zoom out (${terminalTextSize}sp)") },
+                        leadingIcon = { Icon(Icons.Default.ZoomOut, null) },
+                        onClick = { terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8); onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize)); appearanceMenuOpen = false },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Zoom in (${terminalTextSize}sp)") },
+                        leadingIcon = { Icon(Icons.Default.ZoomIn, null) },
+                        onClick = { terminalTextSize = (terminalTextSize + 1).coerceAtMost(32); onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize)); appearanceMenuOpen = false },
+                    )
+                }
+            }
         }
     }
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
@@ -324,23 +369,6 @@ private fun TerminalShortcutButton(label: String, selected: Boolean = false, onC
     }
 }
 
-@Composable
-private fun TerminalAppearanceToolbar(
-    textSize: Int,
-    onZoomIn: () -> Unit,
-    onZoomOut: () -> Unit,
-) {
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TerminalShortcutButton("A−", false, onZoomOut)
-        Text("${textSize}sp", style = MaterialTheme.typography.labelMedium)
-        TerminalShortcutButton("A+", false, onZoomIn)
-    }
-}
-
 private fun encodeTerminalShortcut(
     shortcut: TerminalShortcut,
     ctrlLatched: Boolean,
@@ -372,8 +400,13 @@ private class IdeTerminalViewClient(
     private val readControl: () -> Boolean,
     private val readAlt: () -> Boolean,
     private val clearModifiers: () -> Unit,
+    private val onScaleChanged: () -> Unit,
 ) : TerminalViewClient {
-    override fun onScale(scale: Float) = scale.coerceIn(0.57f, 2.28f)
+    override fun onScale(scale: Float): Float {
+        val bounded = scale.coerceIn(0.57f, 2.28f)
+        onScaleChanged()
+        return bounded
+    }
     override fun onSingleTapUp(e: MotionEvent) = Unit
     override fun shouldBackButtonBeMappedToEscape() = false
     override fun shouldEnforceCharBasedInput() = true

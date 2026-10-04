@@ -22,8 +22,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.isSystemInDarkTheme
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.data.ThemeResolver
 import dev.android.ide.project.CreateProjectTemplate
 import dev.android.ide.ui.shell.AppShell
 import dev.android.ide.ui.screen.humanReadableStorageLocation
@@ -39,6 +39,11 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     val context = LocalContext.current
     val shellState by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
+    val themeResolver = remember { ThemeResolver(context) { viewModel.state.value.applicationTheme } }
+    val resolvedAppTheme = themeResolver.getAppTheme()
+    androidx.compose.runtime.LaunchedEffect(shellState.applicationTheme) {
+        ideViewModel.onApplicationThemeChanged()
+    }
     var createVisible by remember { mutableStateOf(false) }
     var createReviewVisible by remember { mutableStateOf(false) }
     var createName by remember { mutableStateOf("") }
@@ -130,14 +135,9 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
 
     val baseDensity = LocalDensity.current
     val uiScale = ideState.editorSettings.uiFontScale
-    val systemDark = isSystemInDarkTheme()
-    val resolvedDark = when (ideState.appTheme) {
-        dev.android.ide.data.model.AppTheme.DARK -> true
-        dev.android.ide.data.model.AppTheme.LIGHT -> false
-        dev.android.ide.data.model.AppTheme.SYSTEM -> systemDark
-    }
+    val resolvedDark = resolvedAppTheme == dev.android.ide.data.ResolvedTheme.DARK
     val rootView = LocalView.current
-    AndroidIDETheme(appTheme = ideState.appTheme) {
+    AndroidIDETheme(resolvedTheme = resolvedAppTheme) {
         val systemBarColor = MaterialTheme.colorScheme.background.toArgb()
         SideEffect {
             val activity = rootView.context as? Activity

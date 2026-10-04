@@ -1,14 +1,13 @@
-// Material 3 theme wrapper supporting Dark, Light, and System preferences.
+// Material 3 theme wrapper supporting Dark, Light, and device-following preferences.
 package dev.android.ide.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
-import dev.android.ide.data.model.AppTheme
+import dev.android.ide.data.ResolvedTheme
 
 private val IdeDarkColorScheme = darkColorScheme(
     primary = darkIdeColors.primary,
@@ -77,14 +76,10 @@ private val IdeLightColorScheme = lightColorScheme(
 /** Root theme composable; theme changes apply without restarting the app. */
 @Composable
 fun AndroidIDETheme(
-    appTheme: AppTheme = AppTheme.SYSTEM,
+    resolvedTheme: ResolvedTheme,
     content: @Composable () -> Unit,
 ) {
-    val isDark = when (appTheme) {
-        AppTheme.DARK -> true
-        AppTheme.LIGHT -> false
-        AppTheme.SYSTEM -> isSystemInDarkTheme()
-    }
+    val isDark = resolvedTheme == ResolvedTheme.DARK
     val colorScheme = if (isDark) IdeDarkColorScheme else IdeLightColorScheme
     val ideColors = if (isDark) darkIdeColors else lightIdeColors
 

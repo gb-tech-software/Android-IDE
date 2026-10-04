@@ -42,7 +42,7 @@ class EditorSettingsRepository(context: Context) {
         wordWrap             = prefs.getBoolean(KEY_WORD_WRAP, false),
         lineNumbers          = prefs.getBoolean(KEY_LINE_NUMBERS, true),
         autoSave             = prefs.getBoolean(KEY_AUTO_SAVE, false),
-        editorTheme          = prefs.getString(KEY_EDITOR_THEME, "system") ?: "system",
+        editorTheme          = prefs.getString(KEY_EDITOR_THEME, "application")?.let { if (it == "system") "application" else it } ?: "application",
         showKeyboardToolbar  = prefs.getBoolean(KEY_SHOW_KEYBOARD_BAR, true),
         showSymbolBar        = prefs.getBoolean(KEY_SHOW_SYMBOL_BAR, true),
         keyboardToolbarOrder = prefs.getString(KEY_KEYBOARD_TOOLBAR_ORDER, null)

@@ -2,13 +2,21 @@ package dev.android.ide.saf
 
 import dev.android.ide.viewmodel.model.FileNode
 
+/** Verification strength for a completed file write. */
+enum class WriteVerification {
+    /** Verify provider-reported byte length without buffering the file again. */
+    SIZE,
+    /** Read the resulting file and compare every byte with the requested content. */
+    STRICT,
+}
+
 /**
  * Application-wide file and folder mutation boundary.
  *
  * Every domain that changes storage uses this service. Provider-specific URI
  * behavior remains inside [SafRepository], while this service enforces the
  * postconditions visible to callers: exact names, confirmed presence/absence,
- * and byte-for-byte write/copy verification.
+ * and operation-appropriate write/copy verification.
  */
 class FileManagementService(private val saf: SafRepository) {
     /**
@@ -182,11 +190,28 @@ class FileManagementService(private val saf: SafRepository) {
 
     suspend fun read(sourceUri: String): ByteArray? = saf.readFile(sourceUri)
 
-    suspend fun write(sourceUri: String, content: ByteArray): Boolean =
-        saf.writeFile(sourceUri, content) && saf.readFile(sourceUri)?.contentEquals(content) == true
+    suspend fun write(
+        sourceUri: String,
+        content: ByteArray,
+        verification: WriteVerification = WriteVerification.SIZE,
+    ): Boolean {
+        if (!saf.writeFile(sourceUri, content)) return false
+        return when (verification) {
+            WriteVerification.SIZE ->
+                // Providers that do not expose size metadata cannot offer a
+                // stronger non-buffering check; STRICT is available for those
+                // workflows that require byte-for-byte confirmation.
+                saf.documentSize(sourceUri)?.let { it == content.size.toLong() } ?: true
+            WriteVerification.STRICT ->
+                saf.readFile(sourceUri)?.contentEquals(content) == true
+        }
+    }
 
-    suspend fun writeText(sourceUri: String, content: String): Boolean =
-        write(sourceUri, content.toByteArray(Charsets.UTF_8))
+    suspend fun writeText(
+        sourceUri: String,
+        content: String,
+        verification: WriteVerification = WriteVerification.SIZE,
+    ): Boolean = write(sourceUri, content.toByteArray(Charsets.UTF_8), verification)
 
     private companion object {
         const val DIRECTORY_MIME = "vnd.android.document/directory"

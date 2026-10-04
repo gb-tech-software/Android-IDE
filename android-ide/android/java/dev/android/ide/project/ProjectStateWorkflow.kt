@@ -18,28 +18,11 @@ class ProjectStateWorkflow(
     private val storage: ProjectStorageAdapter,
     private val metadata: ProjectMetadataAdapter,
 ) {
-    suspend fun registeredProjects(): List<ProjectIdentity> = registry.listRegistered().map { existing ->
-        val capabilities = storage.inspectProjectStorage(existing.location)
-        val refreshed = existing.copy(
-            location = existing.location.copy(
-                capabilityState = capabilities.state,
-                capabilityExplanation = capabilities.explanation,
-            ),
-        )
-        if (capabilities.state == CapabilityState.SUPPORTED &&
-            (existing.location.capabilityState != capabilities.state ||
-                existing.location.capabilityExplanation != capabilities.explanation)
-        ) {
-            registry.register(refreshed)
-        } else if (capabilities.state != CapabilityState.SUPPORTED) {
-            registry.markUnavailable(
-                existing.id,
-                capabilities.explanation ?: "Project location is unavailable",
-                capabilities.state,
-            )
-        }
-        refreshed
-    }
+    /**
+     * Project-list reads are registry reads only. Storage permission and metadata
+     * checks belong to an explicit project-open or project-operation request.
+     */
+    suspend fun registeredProjects(): List<ProjectIdentity> = registry.listRegistered()
 
     suspend fun inspectProjectStorage(location: ProjectLocation): ProjectStorageCapabilities =
         storage.inspectProjectStorage(location)

@@ -880,8 +880,10 @@ private fun SurfaceHost(
         Surface.TERMINAL -> TerminalSurface(
             state = state,
             viewModel = viewModel,
-            editorTheme = ideState.editorSettings.editorTheme,
+            terminalSettings = state.terminalSettings,
             onOpenNavigation = onOpenNavigation,
+            onOpenSettings = { onSettingsSection("Terminal"); onNavigate(Surface.SETTINGS) },
+            onSettingsChanged = viewModel::setTerminalSettings,
             modifier = modifier,
         )
         Surface.BROWSER -> BrowserSurface(
@@ -894,6 +896,10 @@ private fun SurfaceHost(
         Surface.SETTINGS -> SettingsScreen(
             uiState = ideState,
             ideViewModel = ideViewModel,
+            applicationTheme = state.applicationTheme,
+            onApplicationThemeChanged = viewModel::setApplicationTheme,
+            terminalSettings = state.terminalSettings,
+            onTerminalSettingsChanged = viewModel::setTerminalSettings,
             onNavigationIconClick = onOpenNavigation,
             scrollToSection = settingsSection,
             onScrollConsumed = onSettingsSectionConsumed,

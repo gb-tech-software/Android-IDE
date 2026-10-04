@@ -72,7 +72,7 @@ data class BrowserSettings(
     val customSearchUrl: String = "",
     val homePage: String = DEFAULT_HOME,
     val downloadFolder: String? = null,
-    val theme: String = "system",
+    val theme: String = "application",
     val developerToolsEnabled: Boolean = true,
     val desktopSiteDefault: Boolean = false,
 )
@@ -483,6 +483,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         dismissContextMenu()
         sessions[_uiState.value.selectedTabId]?.session?.loadUri(url)
     }
+    /** Starts a resource request; Gecko routes downloadable responses to beginDownload. */
+    fun downloadContextResource() {
+        val url = _uiState.value.contextMenu?.mediaUri ?: _uiState.value.contextMenu?.linkUri ?: return
+        dismissContextMenu()
+        sessions[_uiState.value.selectedTabId]?.session?.loadUri(url)
+    }
 
     private fun removeDownloadRecord(downloadId: String) {
         val updated = _uiState.value.downloads.filterNot { it.id == downloadId }
@@ -563,7 +569,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setSearchEngine(engine: String) { updateSettings { it.copy(searchEngine = engine) } }
     fun setCustomSearchUrl(url: String) { updateSettings { it.copy(customSearchUrl = url) } }
     fun setHomePage(url: String) { updateSettings { it.copy(homePage = url.ifBlank { DEFAULT_HOME }) } }
-    fun setTheme(theme: String) { updateSettings { it.copy(theme = theme) } }
+    fun setTheme(theme: String) { updateSettings { it.copy(theme = theme.takeIf { it in setOf("dark", "light", "application", "device") } ?: "application") } }
     fun setDesktopSiteDefault(enabled: Boolean) {
         updateSettings { it.copy(desktopSiteDefault = enabled) }
         sessions[_uiState.value.selectedTabId]?.let { tab ->
@@ -680,7 +686,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         customSearchUrl = preferences.getString(CUSTOM_SEARCH_KEY, "") ?: "",
         homePage = preferences.getString(HOME_PAGE_KEY, DEFAULT_HOME) ?: DEFAULT_HOME,
         downloadFolder = preferences.getString(DOWNLOAD_FOLDER_KEY, null),
-        theme = preferences.getString(THEME_KEY, "system") ?: "system",
+        theme = preferences.getString(THEME_KEY, "application")?.let { if (it == "system") "application" else it } ?: "application",
         developerToolsEnabled = preferences.getBoolean(DEVTOOLS_KEY, true),
         desktopSiteDefault = preferences.getBoolean(DESKTOP_SITE_KEY, false),
     )

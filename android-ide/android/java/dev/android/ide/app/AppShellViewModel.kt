@@ -23,6 +23,10 @@ import dev.android.ide.project.ProjectRestoreResult
 import dev.android.ide.project.CreateProjectTemplate
 import dev.android.ide.project.ProjectDetailsResult
 import dev.android.ide.data.model.ProjectDetails
+import dev.android.ide.data.model.AppTheme
+import dev.android.ide.data.model.TerminalSettings
+import dev.android.ide.data.ThemeRepository
+import dev.android.ide.data.TerminalSettingsRepository
 import dev.android.ide.saf.SafRepository
 import dev.android.ide.saf.FileManagementService
 import dev.android.ide.runtime.RuntimeStateStore
@@ -39,6 +43,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class AppShellState(
+    val applicationTheme: AppTheme = AppTheme.DEVICE,
+    val terminalSettings: TerminalSettings = TerminalSettings(),
     val surface: Surface = Surface.HOME,
     val projects: List<dev.android.ide.contracts.ProjectIdentity> = emptyList(),
     val projectSummaries: Map<String, ProjectSummary> = emptyMap(),
@@ -96,13 +102,31 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     private val applicationState = ApplicationStateStore(application)
     private val runtimeState = RuntimeStateStore(application)
     private val terminalRuntime = TerminalRuntimeAdapterImpl(application)
+    private val themeRepository = ThemeRepository(application)
+    private val terminalSettingsRepository = TerminalSettingsRepository(application)
     private var restoreJob: kotlinx.coroutines.Job? = null
     private var restoreGeneration = 0L
     private var projectRefreshGeneration = 0L
     private var folderInspectionGeneration = 0L
 
-    private val _state = MutableStateFlow(AppShellState())
+    private val _state = MutableStateFlow(
+        AppShellState(
+            applicationTheme = themeRepository.get(),
+            terminalSettings = terminalSettingsRepository.get(),
+        ),
+    )
     val state: StateFlow<AppShellState> = _state.asStateFlow()
+
+    fun setApplicationTheme(theme: AppTheme) {
+        themeRepository.set(theme)
+        _state.update { it.copy(applicationTheme = theme) }
+    }
+
+    fun setTerminalSettings(settings: TerminalSettings) {
+        val normalized = settings.copy(textSize = settings.textSize.coerceIn(8, 32))
+        terminalSettingsRepository.set(normalized)
+        _state.update { it.copy(terminalSettings = normalized) }
+    }
 
     init {
         terminalRuntime.setTerminalFeedbackListener { report ->
@@ -116,7 +140,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             lifecycle.restore()
             refreshProjects()
-            restoreLastProject()
         }
         viewModelScope.launch {
             runtimeState.ensureReady()
@@ -822,29 +845,8 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         val generation = ++projectRefreshGeneration
         val registered = projectManagement.registeredProjects()
         if (generation != projectRefreshGeneration) return
-        val currentIds = registered.map { it.id }.toSet()
         val warning = projectManagement.registryWarning()
         _state.update { it.copy(projects = registered, projectSummaries = emptyMap(), registryWarning = warning) }
-        val summaries = registered.associate { project ->
-            project.id to when (val result = projectManagement.loadDetails(project.id)) {
-                is ProjectDetailsResult.Loaded -> ProjectSummary(
-                    fileCount = result.details.fileCount,
-                    totalBytes = result.details.totalBytes,
-                    hasGit = result.details.git != null,
-                )
-                is ProjectDetailsResult.Unavailable -> ProjectSummary(
-                    status = result.reason,
-                )
-            }
-        }
-        if (generation == projectRefreshGeneration && _state.value.projects.map { it.id }.toSet() == currentIds) {
-            _state.update { it.copy(projectSummaries = summaries) }
-        }
     }
 
-    private suspend fun restoreLastProject() {
-        val lastProjectId = applicationState.lastProjectId() ?: return
-        projectManagement.restore(lastProjectId)
-        refreshProjects()
-    }
 }

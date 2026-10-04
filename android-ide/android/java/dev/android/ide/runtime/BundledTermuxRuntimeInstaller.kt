@@ -72,9 +72,9 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         "LANG=C.UTF-8",
         // The bundled shell is launched as an interactive, non-login shell and
         // the private Termux home does not contain a user-created profile on a
-        // fresh install. Set PS1 here so the prompt is present immediately and
-        // expands \w after every command, including commands that change cwd.
-        "PS1=\\u@\\h:\\w\\$ ",
+        // fresh install. Use POSIX command substitutions rather than Bash-only
+        // \u/\h/\w escapes so the bundled shell renders the real user and cwd.
+        "PS1=$(id -un)@android-ide:$(pwd)\\$ ",
     )
 
     /** Run the exact shell/cwd combination used by a new terminal session before advertising readiness. */

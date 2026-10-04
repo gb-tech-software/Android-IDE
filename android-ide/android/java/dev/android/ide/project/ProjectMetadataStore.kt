@@ -8,6 +8,7 @@ import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.ProjectMetadataAdapter
 import dev.android.ide.saf.ChildrenInspectionResult
 import dev.android.ide.saf.FileManagementService
+import dev.android.ide.saf.WriteVerification
 import dev.android.ide.contracts.ApplicationIdentity
 import org.json.JSONObject
 import java.time.Instant
@@ -56,7 +57,7 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
             val bytes = files.read(source.documentUri)
                 ?: return failed("Legacy project metadata could not be read", project.id, ErrorCategory.PERMISSION_LOST)
             val copied = when (val target = files.createFile(directories.approved, source.displayName, source.mimeType)) {
-                is dev.android.ide.saf.ExactCreateResult.Created -> files.write(target.documentUri, bytes)
+                is dev.android.ide.saf.ExactCreateResult.Created -> files.write(target.documentUri, bytes, WriteVerification.STRICT)
                 dev.android.ide.saf.ExactCreateResult.Duplicate -> {
                     val existing = (files.inspectChildren(directories.approved) as? ChildrenInspectionResult.Success)
                         ?.children?.firstOrNull { !it.isDirectory && it.displayName == source.displayName }
@@ -209,7 +210,7 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         if (existing?.isDirectory == true) return false
         val target = existing?.documentUri ?: (files.createFile(directories.approved, name, "application/json")
             as? dev.android.ide.saf.ExactCreateResult.Created)?.documentUri ?: return false
-        return files.write(target, content)
+        return files.write(target, content, WriteVerification.STRICT)
     }
 
     private fun complete(message: String, id: String) = OperationReport(OperationOutcome.COMPLETE, message, affectedIds = listOf(id))
