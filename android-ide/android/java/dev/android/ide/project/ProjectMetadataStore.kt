@@ -8,7 +8,6 @@ import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.ProjectMetadataAdapter
 import dev.android.ide.saf.ChildrenInspectionResult
 import dev.android.ide.saf.FileManagementService
-import dev.android.ide.saf.WriteVerification
 import dev.android.ide.contracts.ApplicationIdentity
 import org.json.JSONObject
 import java.time.Instant
@@ -37,9 +36,6 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         val created = files.createFolder(rootUri, ApplicationIdentity.TARGET_METADATA_DIRECTORY)
         val approvedUri = (created as? dev.android.ide.saf.ExactCreateResult.Created)?.documentUri
             ?: return null
-        if ((files.inspectChildren(approvedUri) as? ChildrenInspectionResult.Success) == null) {
-            return null
-        }
         return MetadataDirectories(approvedUri, legacy)
     }
 
@@ -57,7 +53,7 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
             val bytes = files.read(source.documentUri)
                 ?: return failed("Legacy project metadata could not be read", project.id, ErrorCategory.PERMISSION_LOST)
             val copied = when (val target = files.createFile(directories.approved, source.displayName, source.mimeType)) {
-                is dev.android.ide.saf.ExactCreateResult.Created -> files.write(target.documentUri, bytes, WriteVerification.STRICT)
+                is dev.android.ide.saf.ExactCreateResult.Created -> files.write(target.documentUri, bytes)
                 dev.android.ide.saf.ExactCreateResult.Duplicate -> {
                     val existing = (files.inspectChildren(directories.approved) as? ChildrenInspectionResult.Success)
                         ?.children?.firstOrNull { !it.isDirectory && it.displayName == source.displayName }
@@ -110,8 +106,17 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         else failed("Portable project identity could not be written", project.id, ErrorCategory.MALFORMED_METADATA)
     }
 
-    override suspend fun readWorkspaceDescriptor(projectId: String): ByteArray? =
-        readJson(projectId, "workspace.json")?.toString()?.toByteArray()
+    override suspend fun readWorkspaceDescriptor(projectId: String): ByteArray? {
+        val initialized = ensurePortableState(ProjectIdentity(
+            id = projectId,
+            name = projectId,
+            description = "",
+            location = ProjectLocation(projectId, projectId),
+            registeredAt = Instant.now(),
+        ))
+        if (initialized.outcome != OperationOutcome.COMPLETE) return null
+        return readJson(projectId, "workspace.json")?.toString()?.toByteArray()
+    }
 
     override suspend fun writeWorkspaceDescriptor(projectId: String, descriptor: ByteArray): OperationReport {
         val ok = writeRaw(projectId, "workspace.json", descriptor)
@@ -130,7 +135,17 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         else failed("Android IDE project metadata could not be removed", project.id, ErrorCategory.PERMISSION_LOST)
     }
 
-    suspend fun readWorkspace(projectId: String): JSONObject? = readJson(projectId, "workspace.json")
+    suspend fun readWorkspace(projectId: String): JSONObject? {
+        val initialized = ensurePortableState(ProjectIdentity(
+            id = projectId,
+            name = projectId,
+            description = "",
+            location = ProjectLocation(projectId, projectId),
+            registeredAt = Instant.now(),
+        ))
+        if (initialized.outcome != OperationOutcome.COMPLETE) return null
+        return readJson(projectId, "workspace.json")
+    }
 
     suspend fun writeWorkspace(projectId: String, workspace: JSONObject): Boolean =
         writeJson(projectId, "workspace.json", workspace.toString(2))
@@ -178,14 +193,6 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
     }
 
     private suspend fun readJson(root: String, name: String): JSONObject? {
-        if (ensurePortableState(ProjectIdentity(
-                id = root,
-                name = root,
-                description = "",
-                location = ProjectLocation(root, root),
-                registeredAt = Instant.now(),
-            )).outcome != OperationOutcome.COMPLETE
-        ) return null
         val directories = locate(root) ?: return null
         val file = (files.inspectChildren(directories.approved) as? ChildrenInspectionResult.Success)
             ?.children?.firstOrNull { !it.isDirectory && it.displayName == name } ?: return null
@@ -210,7 +217,7 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         if (existing?.isDirectory == true) return false
         val target = existing?.documentUri ?: (files.createFile(directories.approved, name, "application/json")
             as? dev.android.ide.saf.ExactCreateResult.Created)?.documentUri ?: return false
-        return files.write(target, content, WriteVerification.STRICT)
+        return files.write(target, content)
     }
 
     private fun complete(message: String, id: String) = OperationReport(OperationOutcome.COMPLETE, message, affectedIds = listOf(id))

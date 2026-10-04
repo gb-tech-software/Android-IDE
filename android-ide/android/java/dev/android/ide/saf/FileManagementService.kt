@@ -4,6 +4,8 @@ import dev.android.ide.viewmodel.model.FileNode
 
 /** Verification strength for a completed file write. */
 enum class WriteVerification {
+    /** Trust a successful provider write; higher-level workflows verify their result. */
+    NONE,
     /** Verify provider-reported byte length without buffering the file again. */
     SIZE,
     /** Read the resulting file and compare every byte with the requested content. */
@@ -15,8 +17,9 @@ enum class WriteVerification {
  *
  * Every domain that changes storage uses this service. Provider-specific URI
  * behavior remains inside [SafRepository], while this service enforces the
- * postconditions visible to callers: exact names, confirmed presence/absence,
- * and operation-appropriate write/copy verification.
+ * postconditions visible to callers: exact names and confirmed presence/absence.
+ * Write verification is opt-in because the owning workflow is responsible for
+ * deciding whether a file-level or operation-level comparison is appropriate.
  */
 class FileManagementService(private val saf: SafRepository) {
     /**
@@ -193,10 +196,11 @@ class FileManagementService(private val saf: SafRepository) {
     suspend fun write(
         sourceUri: String,
         content: ByteArray,
-        verification: WriteVerification = WriteVerification.SIZE,
+        verification: WriteVerification = WriteVerification.NONE,
     ): Boolean {
         if (!saf.writeFile(sourceUri, content)) return false
         return when (verification) {
+            WriteVerification.NONE -> true
             WriteVerification.SIZE ->
                 // Providers that do not expose size metadata cannot offer a
                 // stronger non-buffering check; STRICT is available for those
@@ -210,7 +214,7 @@ class FileManagementService(private val saf: SafRepository) {
     suspend fun writeText(
         sourceUri: String,
         content: String,
-        verification: WriteVerification = WriteVerification.SIZE,
+        verification: WriteVerification = WriteVerification.NONE,
     ): Boolean = write(sourceUri, content.toByteArray(Charsets.UTF_8), verification)
 
     private companion object {
