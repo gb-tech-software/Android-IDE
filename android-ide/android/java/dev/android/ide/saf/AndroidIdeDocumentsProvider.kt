@@ -227,8 +227,8 @@ class AndroidIdeDocumentsProvider : DocumentsProvider() {
             val uri = Uri.parse(uriString)
             if (uri.authority != AUTHORITY) return@runCatching null
             val documentId = when {
-                DocumentsContract.isTreeUri(uri) -> DocumentsContract.getTreeDocumentId(uri)
                 DocumentsContract.isDocumentUri(context, uri) -> DocumentsContract.getDocumentId(uri)
+                DocumentsContract.isTreeUri(uri) -> DocumentsContract.getTreeDocumentId(uri)
                 else -> return@runCatching null
             }
             val root = context.filesDir.resolve(USER_FILES_DIRECTORY).canonicalFile

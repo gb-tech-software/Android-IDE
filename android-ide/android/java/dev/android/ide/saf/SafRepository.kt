@@ -375,7 +375,10 @@ class SafRepository(private val context: Context) {
             val docId: String
             if (DocumentsContract.isTreeUri(parentUri)) {
                 treeUri = if (DocumentsContract.isDocumentUri(context, parentUri)) {
-                    DocumentsContract.buildTreeDocumentUri(parentUri.authority!!, documentIdForUri(parentUri))
+                    DocumentsContract.buildTreeDocumentUri(
+                        parentUri.authority!!,
+                        DocumentsContract.getTreeDocumentId(parentUri),
+                    )
                 } else parentUri
                 docId = documentIdForUri(parentUri)
             } else {
@@ -686,7 +689,7 @@ class SafRepository(private val context: Context) {
     ): String? = withContext(Dispatchers.IO) {
         if (!isValidLeafName(displayName)) return@withContext null
         try {
-            if (AndroidIdeDocumentsProvider.isProviderUri(parentUriString)) {
+            val createdUri = if (AndroidIdeDocumentsProvider.isProviderUri(parentUriString)) {
                 AndroidIdeDocumentsProvider.createLocalDocument(context, parentUriString, mimeType, displayName)
             } else if (isFileUri(parentUriString)) {
                 val parentDir = fileFromUri(parentUriString)?.canonicalFile ?: return@withContext null
@@ -702,15 +705,23 @@ class SafRepository(private val context: Context) {
                 if (success) Uri.fromFile(newFile).toString() else null
             } else {
                 val parentUri = Uri.parse(parentUriString)
-                val docUri = if (DocumentsContract.isTreeUri(parentUri) &&
-                    !DocumentsContract.isDocumentUri(context, parentUri)) {
-                    DocumentsContract.buildDocumentUriUsingTree(
-                        parentUri, DocumentsContract.getTreeDocumentId(parentUri)
-                    )
-                } else {
-                    parentUri
-                }
+                val docUri = if (DocumentsContract.isTreeUri(parentUri)) {
+                    mutationDocumentUri(parentUriString)
+                } else parentUri
                 DocumentsContract.createDocument(resolver, docUri, mimeType, displayName)?.toString()
+            }
+            if (createdUri == null) {
+                null
+            } else if (isFileUri(parentUriString)) {
+                createdUri
+            } else {
+                val parentUri = Uri.parse(parentUriString)
+                if (DocumentsContract.isTreeUri(parentUri)) {
+                    val createdDocumentId = documentIdForUri(Uri.parse(createdUri))
+                    DocumentsContract.buildDocumentUriUsingTree(parentUri, createdDocumentId).toString()
+                } else {
+                    createdUri
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "createFile failed (parent=$parentUriString, name=$displayName): ${e.message}", e)

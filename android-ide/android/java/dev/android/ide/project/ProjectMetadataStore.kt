@@ -36,6 +36,9 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         val created = files.createFolder(rootUri, ApplicationIdentity.TARGET_METADATA_DIRECTORY)
         val approvedUri = (created as? dev.android.ide.saf.ExactCreateResult.Created)?.documentUri
             ?: return null
+        if ((files.inspectChildren(approvedUri) as? ChildrenInspectionResult.Success) == null) {
+            return null
+        }
         return MetadataDirectories(approvedUri, legacy)
     }
 
@@ -202,7 +205,8 @@ class ProjectMetadataStore(private val files: FileManagementService) : ProjectMe
         ) return false
         val directories = locate(root) ?: return false
         val existing = (files.inspectChildren(directories.approved) as? ChildrenInspectionResult.Success)
-            ?.children?.firstOrNull { !it.isDirectory && it.displayName == name }
+            ?.children?.firstOrNull { it.displayName == name }
+        if (existing?.isDirectory == true) return false
         val target = existing?.documentUri ?: (files.createFile(directories.approved, name, "application/json")
             as? dev.android.ide.saf.ExactCreateResult.Created)?.documentUri ?: return false
         return files.write(target, content)
