@@ -188,6 +188,12 @@ public final class TerminalView extends View {
                 if (mEmulator == null || isSelectingText()) return true;
                 mScaleFactor *= scale;
                 mScaleFactor = mClient.onScale(mScaleFactor);
+                // The scale callback changes the logical zoom factor, but the
+                // renderer does not consume that factor directly. Recreate the
+                // renderer so font metrics, rows, columns, and PTY size follow
+                // the gesture instead of leaving zoom visually inert.
+                int textSize = Math.max(8, Math.min(32, Math.round(14f * mScaleFactor)));
+                if (mRenderer == null || mRenderer.mTextSize != textSize) setTextSize(textSize);
                 return true;
             }
 
@@ -504,9 +510,22 @@ public final class TerminalView extends View {
         updateSize();
     }
 
+    public int getTextSize() {
+        return mRenderer == null ? 14 : mRenderer.mTextSize;
+    }
+
     public void setTypeface(Typeface newTypeface) {
         mRenderer = new TerminalRenderer(mRenderer.mTextSize, newTypeface);
         updateSize();
+        invalidate();
+    }
+
+    /** Apply the terminal's base palette to the currently attached emulator. */
+    public void setTerminalColors(int background, int foreground, int cursor) {
+        if (mEmulator == null) return;
+        mEmulator.mColors.mCurrentColors[TextStyle.COLOR_INDEX_BACKGROUND] = background;
+        mEmulator.mColors.mCurrentColors[TextStyle.COLOR_INDEX_FOREGROUND] = foreground;
+        mEmulator.mColors.mCurrentColors[TextStyle.COLOR_INDEX_CURSOR] = cursor;
         invalidate();
     }
 

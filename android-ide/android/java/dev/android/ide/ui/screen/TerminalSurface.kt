@@ -6,7 +6,7 @@ import android.content.pm.PackageManager
 import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +28,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,7 +45,6 @@ import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -53,22 +55,44 @@ import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
 import dev.android.ide.contracts.RuntimeAvailability
 import dev.android.ide.contracts.SessionAvailability
-import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.ui.theme.operationStatusContainerColor
 import dev.android.ide.ui.theme.operationStatusContentColor
 
 @Composable
-fun TerminalSurface(state: AppShellState, viewModel: AppShellViewModel, onOpenNavigation: () -> Unit, modifier: Modifier = Modifier) {
+fun TerminalSurface(
+    state: AppShellState,
+    viewModel: AppShellViewModel,
+    editorTheme: String,
+    onOpenNavigation: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var ctrlLatched by remember { mutableStateOf(false) }
     var altLatched by remember { mutableStateOf(false) }
     var escapeLatched by remember { mutableStateOf(false) }
+    var terminalTextSize by remember { mutableStateOf(14) }
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
     val runtimeAvailable = state.runtimeCapabilities?.availability == RuntimeAvailability.AVAILABLE
     val context = LocalContext.current
-    val colors = LocalIdeColors.current
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val terminalTheme = when (editorTheme) {
+        "light" -> TerminalTheme.LIGHT
+        "dark" -> TerminalTheme.DARK
+        else -> if (isSystemInDarkTheme()) TerminalTheme.DARK else TerminalTheme.LIGHT
+    }
+    val blockingFeedback = state.terminalFeedback?.takeIf(::requiresTerminalDialog)
+
+    fun clearLatchedKeys() {
+        ctrlLatched = false
+        altLatched = false
+        escapeLatched = false
+    }
+
+    LaunchedEffect(state.terminalFeedback?.message) {
+        state.terminalFeedback?.takeUnless(::requiresTerminalDialog)?.let { snackbarHostState.showSnackbar(it.message) }
+    }
 
     LaunchedEffect(state.terminalFeedback) {
         if (state.terminalFeedback?.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
@@ -138,10 +162,17 @@ fun TerminalSurface(state: AppShellState, viewModel: AppShellViewModel, onOpenNa
                 modifier = Modifier.fillMaxWidth().weight(1f),
                     factory = { context ->
                     TerminalView(context, null).also { terminalView ->
-                        terminalView.setBackgroundColor(colors.terminalBackground.toArgb())
+                        terminalView.setBackgroundColor(terminalTheme.background)
+                        terminalView.setTextSize(terminalTextSize)
                         terminalView.isFocusable = true
                         terminalView.isFocusableInTouchMode = true
-                        terminalView.setTerminalViewClient(IdeTerminalViewClient())
+                        terminalView.setTerminalViewClient(
+                            IdeTerminalViewClient(
+                                readControl = { ctrlLatched },
+                                readAlt = { altLatched },
+                                clearModifiers = ::clearLatchedKeys,
+                            ),
+                        )
                         terminalView.setOnTouchListener { view, event ->
                             if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
                                 view.requestFocusFromTouch()
@@ -157,6 +188,9 @@ fun TerminalSurface(state: AppShellState, viewModel: AppShellViewModel, onOpenNa
                     }
                 },
                 update = { view ->
+                    view.setBackgroundColor(terminalTheme.background)
+                    if (view.textSize != terminalTextSize) view.setTextSize(terminalTextSize)
+                    view.setTerminalColors(terminalTheme.background, terminalTheme.foreground, terminalTheme.cursor)
                     val live = viewModel.terminalSession(selected.id)
                     if (live != null && view.mTermSession !== live) view.attachSession(live)
                 },
@@ -170,11 +204,43 @@ fun TerminalSurface(state: AppShellState, viewModel: AppShellViewModel, onOpenNa
                 onEscapeToggle = { escapeLatched = !escapeLatched },
                 onSend = { key ->
                     viewModel.sendTerminalInput(encodeTerminalShortcut(key, ctrlLatched, altLatched, escapeLatched))
+                    clearLatchedKeys()
                 },
+            )
+            TerminalAppearanceToolbar(
+                textSize = terminalTextSize,
+                onZoomIn = { terminalTextSize = (terminalTextSize + 1).coerceAtMost(32) },
+                onZoomOut = { terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8) },
             )
         }
     }
     }
+    SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
+    blockingFeedback?.let { report ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Terminal could not start") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(report.message)
+                    report.recoveryHint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
+            },
+            confirmButton = {
+                Button(onClick = viewModel::clearTerminalFeedback) { Text("OK") }
+            },
+        )
+    }
+}
+
+private fun requiresTerminalDialog(report: dev.android.ide.contracts.OperationReport): Boolean =
+    report.message.contains("clipboard", ignoreCase = true).not() &&
+        (report.outcome == dev.android.ide.contracts.OperationOutcome.BLOCKED ||
+            report.outcome == dev.android.ide.contracts.OperationOutcome.FAILED)
+
+private enum class TerminalTheme(val background: Int, val foreground: Int, val cursor: Int) {
+    DARK(0xFF101216.toInt(), 0xFFFFFFFF.toInt(), 0xFFFFFFFF.toInt()),
+    LIGHT(0xFFF4F5F7.toInt(), 0xFF202124.toInt(), 0xFF202124.toInt()),
 }
 
 private data class TerminalShortcut(val label: String, val sequence: String, val forceCtrl: Boolean = false)
@@ -258,6 +324,23 @@ private fun TerminalShortcutButton(label: String, selected: Boolean = false, onC
     }
 }
 
+@Composable
+private fun TerminalAppearanceToolbar(
+    textSize: Int,
+    onZoomIn: () -> Unit,
+    onZoomOut: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TerminalShortcutButton("A−", false, onZoomOut)
+        Text("${textSize}sp", style = MaterialTheme.typography.labelMedium)
+        TerminalShortcutButton("A+", false, onZoomIn)
+    }
+}
+
 private fun encodeTerminalShortcut(
     shortcut: TerminalShortcut,
     ctrlLatched: Boolean,
@@ -285,8 +368,12 @@ private fun ctrlModifiedCsi(sequence: String): String {
     return "\u001B[${parameter}${final}"
 }
 
-private class IdeTerminalViewClient : TerminalViewClient {
-    override fun onScale(scale: Float) = scale
+private class IdeTerminalViewClient(
+    private val readControl: () -> Boolean,
+    private val readAlt: () -> Boolean,
+    private val clearModifiers: () -> Unit,
+) : TerminalViewClient {
+    override fun onScale(scale: Float) = scale.coerceIn(0.57f, 2.28f)
     override fun onSingleTapUp(e: MotionEvent) = Unit
     override fun shouldBackButtonBeMappedToEscape() = false
     override fun shouldEnforceCharBasedInput() = true
@@ -294,13 +381,19 @@ private class IdeTerminalViewClient : TerminalViewClient {
     override fun isTerminalViewSelected() = true
     override fun copyModeChanged(copyMode: Boolean) = Unit
     override fun onKeyDown(keyCode: Int, e: KeyEvent, session: com.termux.terminal.TerminalSession) = false
-    override fun onKeyUp(keyCode: Int, e: KeyEvent) = false
+    override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean {
+        clearModifiers()
+        return false
+    }
     override fun onLongPress(event: MotionEvent) = false
-    override fun readControlKey() = false
-    override fun readAltKey() = false
+    override fun readControlKey() = readControl()
+    override fun readAltKey() = readAlt()
     override fun readShiftKey() = false
     override fun readFnKey() = false
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: com.termux.terminal.TerminalSession) = false
+    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: com.termux.terminal.TerminalSession): Boolean {
+        clearModifiers()
+        return false
+    }
     override fun onEmulatorSet() = Unit
     override fun logError(tag: String, message: String) = Unit
     override fun logWarn(tag: String, message: String) = Unit

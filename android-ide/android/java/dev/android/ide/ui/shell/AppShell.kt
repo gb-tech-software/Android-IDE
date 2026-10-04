@@ -877,7 +877,13 @@ private fun SurfaceHost(
             onFeedback = onFeedback,
             modifier = modifier,
         )
-        Surface.TERMINAL -> TerminalSurface(state, viewModel, onOpenNavigation, modifier)
+        Surface.TERMINAL -> TerminalSurface(
+            state = state,
+            viewModel = viewModel,
+            editorTheme = ideState.editorSettings.editorTheme,
+            onOpenNavigation = onOpenNavigation,
+            modifier = modifier,
+        )
         Surface.BROWSER -> BrowserSurface(
             onOpenNavigation = onOpenNavigation,
             onOpenSettings = { onSettingsSection("Browser"); onNavigate(Surface.SETTINGS) },

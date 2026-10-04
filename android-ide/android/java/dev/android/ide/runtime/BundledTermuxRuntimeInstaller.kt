@@ -63,12 +63,18 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         "HOME=${home.absolutePath}",
         "PREFIX=${prefix.absolutePath}",
         "PATH=${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
+        "SHELL=${File(prefix, "bin/sh").absolutePath}",
         "LD_LIBRARY_PATH=${File(prefix, "lib").absolutePath}",
         "TMPDIR=${File(prefix, "tmp").absolutePath}",
         "TMP=${File(prefix, "tmp").absolutePath}",
         "TEMP=${File(prefix, "tmp").absolutePath}",
         "TERM=xterm-256color",
         "LANG=C.UTF-8",
+        // The bundled shell is launched as an interactive, non-login shell and
+        // the private Termux home does not contain a user-created profile on a
+        // fresh install. Set PS1 here so the prompt is present immediately and
+        // expands \w after every command, including commands that change cwd.
+        "PS1=\\u@\\h:\\w\\$ ",
     )
 
     /** Run the exact shell/cwd combination used by a new terminal session before advertising readiness. */
