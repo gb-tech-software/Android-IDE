@@ -266,30 +266,30 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         val action = "${context.packageName}.app.reload_style"
         val packageName = context.packageName
         val script = """#!/system/bin/sh
-if [ "\$#" != "0" ]; then
+if [ "${'$'}#" != "0" ]; then
     echo 'usage: termux-setup-storage'
-    echo 'Use without arguments to ensure storage permission granted and symlinks to storage available in \$HOME/storage'
+    echo 'Use without arguments to ensure storage permission granted and symlinks to storage available in ${'$'}HOME/storage'
     exit 1
 fi
 
-if [ -d "\$HOME/storage" ]; then
+if [ -d "${'$'}HOME/storage" ]; then
     printf '\n'
     printf "\\tIt appears that directory '~/storage' already exists.\\n"
     printf "\\tThis script is going to rebuild its structure from scratch, wiping all dangling files.\\n"
     printf "\\tThe actual storage content IS NOT going to be deleted.\\n\\n"
     printf 'Do you want to continue? (y/n) '
     read -r choice
-    case "\$choice" in
+    case "${'$'}choice" in
         Y|y) ;;
         *) echo "Aborting configuration and leaving directory '~/storage' intact."; exit 1 ;;
     esac
 fi
 
-user_id="\${TERMUX__USER_ID:-0}"
-case "\$user_id" in
+user_id="${'$'}{TERMUX__USER_ID:-0}"
+case "${'$'}user_id" in
     ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
 esac
-am broadcast --user "\$user_id" -a "$action" --es "$action" storage "$packageName" > /dev/null
+am broadcast --user "${'$'}user_id" -a "$action" --es "$action" storage "$packageName" > /dev/null
 """
         command.writeText(script)
         setMode(command, EXECUTABLE_FILE_MODE)
