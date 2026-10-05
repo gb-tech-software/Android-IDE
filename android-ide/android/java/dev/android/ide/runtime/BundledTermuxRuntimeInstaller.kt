@@ -17,6 +17,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     private val prefix = File(context.filesDir, "usr")
     private val userFiles = File(context.filesDir, "home")
     private val home get() = userFiles
+    private val storageBridge = TermuxStorageBridge(context, home)
     private val defaultPackagesMarker = File(context.filesDir, ".android-ide-default-packages-2026.09.30-r1")
 
     /** Runtime packages are installed through the terminal's own package manager; no second UI is needed. */
@@ -47,6 +48,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
             if (!repairRuntimeExecutables(includeNpm = false)) {
                 throw IOException("The bundled shell or package manager is missing or not executable")
             }
+            installStorageSetupCommand()
             shellStartupFailure()?.let { throw IOException(it) }
             OperationReport(OperationOutcome.COMPLETE, "Bundled Termux runtime initialized")
         }.getOrElse { error ->
@@ -57,6 +59,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     fun prefix(): File = prefix
     fun home(): File = home
     fun userFilesRoot(): File = userFiles
+    fun rebuildStorageLinks(): OperationReport = storageBridge.rebuildLinks()
 
     /** The same environment is used by the preflight probe and the interactive PTY. */
     fun sessionEnvironment(): Array<String> = arrayOf(
@@ -257,6 +260,40 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
             ?.filter { it.isFile || Files.isSymbolicLink(it.toPath()) }
             ?.forEach { setMode(it, EXECUTABLE_FILE_MODE) }
     }.isSuccess
+
+    private fun installStorageSetupCommand() {
+        val command = File(prefix, "bin/termux-setup-storage")
+        val action = "${context.packageName}.app.reload_style"
+        val packageName = context.packageName
+        val script = """#!/system/bin/sh
+if [ "\$#" != "0" ]; then
+    echo 'usage: termux-setup-storage'
+    echo 'Use without arguments to ensure storage permission granted and symlinks to storage available in \$HOME/storage'
+    exit 1
+fi
+
+if [ -d "\$HOME/storage" ]; then
+    printf '\n'
+    printf "\\tIt appears that directory '~/storage' already exists.\\n"
+    printf "\\tThis script is going to rebuild its structure from scratch, wiping all dangling files.\\n"
+    printf "\\tThe actual storage content IS NOT going to be deleted.\\n\\n"
+    printf 'Do you want to continue? (y/n) '
+    read -r choice
+    case "\$choice" in
+        Y|y) ;;
+        *) echo "Aborting configuration and leaving directory '~/storage' intact."; exit 1 ;;
+    esac
+fi
+
+user_id="\${TERMUX__USER_ID:-0}"
+case "\$user_id" in
+    ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
+esac
+am broadcast --user "\$user_id" -a "$action" --es "$action" storage "$packageName" > /dev/null
+"""
+        command.writeText(script)
+        setMode(command, EXECUTABLE_FILE_MODE)
+    }
 
     private fun ensureDirectory(directory: File, mode: Int, label: String) {
         if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {

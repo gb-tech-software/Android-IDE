@@ -570,7 +570,7 @@ private fun TerminalSettingsContent(settings: TerminalSettings, onSettingsChange
         Text("Choose how the terminal resolves its colors. This setting is independent from the editor and browser.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
         Column(Modifier.selectableGroup()) {
             listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device").forEach { (label, value) ->
-                Row(Modifier.fillMaxWidth().selectable(settings.theme == value, Role.RadioButton) { onSettingsChanged(settings.copy(theme = value)) }, verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().selectable(selected = settings.theme == value, role = Role.RadioButton) { onSettingsChanged(settings.copy(theme = value)) }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(settings.theme == value, onClick = null)
                     Text(label)
                 }

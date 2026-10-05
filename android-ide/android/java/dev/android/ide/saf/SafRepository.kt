@@ -189,7 +189,7 @@ class SafRepository(private val context: Context) {
 
     /** Registration is intentionally limited to the two filesystems with a stable bridge. */
     private fun isSupportedProjectProvider(uri: Uri): Boolean {
-        if (AndroidIdeDocumentsProvider.isProviderUri(uri)) return true
+        if (AndroidIdeDocumentsProvider.isProviderUri(uri.toString())) return true
         if (uri.authority != "com.android.externalstorage.documents") return false
         return runCatching {
             documentIdForUri(uri).substringBefore(':').equals("primary", ignoreCase = true)

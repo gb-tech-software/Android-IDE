@@ -580,6 +580,8 @@ private fun BrowserContextMenuSheet(
     }
 }
 
+}
+
 @Composable
 private fun BrowserContextAction(label: String, onClick: () -> Unit) {
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 10.dp)) {
