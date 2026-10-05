@@ -371,7 +371,7 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
                 clipboard.setPrimaryClip(ClipData.newPlainText("Terminal selection", text))
             }
             terminalFeedbackListener?.invoke(
-                if (result.isSuccess) OperationReport(OperationOutcome.COMPLETE, "Terminal selection copied to clipboard")
+                if (result.isSuccess) OperationReport(OperationOutcome.COMPLETE, "Text copied")
                 else OperationReport(OperationOutcome.FAILED, "Could not copy terminal selection to the system clipboard", ErrorCategory.UNAVAILABLE_RUNTIME),
             )
         }
@@ -386,7 +386,7 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
                 if (bytes.isNotEmpty()) session.write(bytes, 0, bytes.size)
             }
             terminalFeedbackListener?.invoke(
-                if (result.isSuccess) OperationReport(OperationOutcome.COMPLETE, "Clipboard text sent to the terminal")
+                if (result.isSuccess) OperationReport(OperationOutcome.COMPLETE, "Text pasted")
                 else OperationReport(OperationOutcome.BLOCKED, result.exceptionOrNull()?.message ?: "Could not read the system clipboard", ErrorCategory.UNAVAILABLE_RUNTIME),
             )
         }

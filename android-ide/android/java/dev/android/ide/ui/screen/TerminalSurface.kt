@@ -60,8 +60,6 @@ import dev.android.ide.contracts.SessionAvailability
 import dev.android.ide.data.model.TerminalSettings
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
-import dev.android.ide.ui.theme.operationStatusContainerColor
-import dev.android.ide.ui.theme.operationStatusContentColor
 
 @Composable
 fun TerminalSurface(
@@ -132,18 +130,6 @@ fun TerminalSurface(
                 Text("Terminal", style = MaterialTheme.typography.headlineSmall)
             }
             IconButton(onClick = onOpenSettings) { Icon(Icons.Default.MoreVert, "Terminal settings") }
-        }
-        state.terminalFeedback?.let { report ->
-            val contentColor = operationStatusContentColor(report.outcome)
-            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = operationStatusContainerColor(report.outcome))) {
-                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Terminal status", style = MaterialTheme.typography.titleSmall, color = contentColor)
-                    Text(report.message, style = MaterialTheme.typography.bodySmall, color = contentColor)
-                    report.recoveryHint?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = contentColor)
-                    }
-                }
-            }
         }
         state.terminalProgress?.let { progress ->
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -259,7 +245,7 @@ fun TerminalSurface(
             }
         }
     }
-    SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp))
+    SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.TopCenter).padding(16.dp))
     blockingFeedback?.let { report ->
         AlertDialog(
             onDismissRequest = {},
