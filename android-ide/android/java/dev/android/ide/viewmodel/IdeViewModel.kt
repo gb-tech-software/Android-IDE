@@ -1134,7 +1134,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         editorFileLoading = false,
                         fileOpDialog = FileOpDialog.BinaryOpenError(displayName, documentUri),
-                        statusMessage = null,
+                        statusMessage = "",
                     )
                 }
             }
@@ -2887,7 +2887,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(statusMessage = "This file is unavailable for safe browser preview") }
             return null
         }
-        _uiState.update { it.copy(statusMessage = null) }
+        _uiState.update { it.copy(statusMessage = "") }
         return document.toURI().toString()
     }
 

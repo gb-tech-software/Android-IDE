@@ -917,7 +917,7 @@ class SafRepository(private val context: Context) {
             '/' !in name && '\\' !in name && !name.any(Char::isISOControl)
 
     /** Every exact child-name collision is unsafe, regardless of file type. */
-    private fun conflictsWithRequestedEntry(existing: FileNode, requestedMimeType: String): Boolean = true
+    private fun conflictsWithRequestedEntry(existing: FileNode, requestedMimeType: String): Boolean { return true }
 
     // ── Copy ───────────────────────────────────────────────────────────────
 
@@ -1591,8 +1591,8 @@ class SafRepository(private val context: Context) {
     private suspend fun documentExistsIn(parentUriString: String, documentUriString: String): Boolean =
         documentExistsInVerified(parentUriString, documentUriString) ?: true
 
-    private suspend fun documentExistsInVerified(parentUriString: String, documentUriString: String): Boolean? =
-        when (val inspection = inspectChildren(parentUriString)) {
+    private suspend fun documentExistsInVerified(parentUriString: String, documentUriString: String): Boolean? {
+        return when (val inspection = inspectChildren(parentUriString)) {
             is ChildrenInspectionResult.Success -> {
                 var ambiguous = false
                 for (child in inspection.children) {
@@ -1606,6 +1606,7 @@ class SafRepository(private val context: Context) {
             }
             is ChildrenInspectionResult.Failed -> null
         }
+    }
 
     /** An inaccessible item URI is absent only when an accessible parent proves its identity is not listed. */
     private suspend fun verifiedAbsentIn(documentUriString: String, parentUriString: String): Boolean =

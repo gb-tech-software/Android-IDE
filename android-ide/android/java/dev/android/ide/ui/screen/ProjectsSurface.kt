@@ -210,8 +210,7 @@ fun ProjectsSurface(
         if (state.statusMessage != null && !state.operationInProgress &&
             state.operationReport == null && state.acquiredProjectId == null
         ) {
-            val statusColor = state.operationReport?.let { operationStatusColor(it.outcome) }
-                ?: MaterialTheme.colorScheme.onSurfaceVariant
+            val statusColor = MaterialTheme.colorScheme.onSurfaceVariant
             Text(state.statusMessage!!, color = statusColor, style = MaterialTheme.typography.bodySmall)
         }
         if (state.selectedProjectIds.isNotEmpty()) {
