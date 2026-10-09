@@ -1,6 +1,5 @@
 package dev.android.ide.runtime
 
-import android.content.Context
 import dev.android.ide.contracts.ErrorCategory
 import dev.android.ide.contracts.LanguageServerAdapter
 import dev.android.ide.contracts.LanguageServerFeature
@@ -9,7 +8,7 @@ import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.editor.LanguageServerRegistry
-import dev.android.ide.filesystem.AndroidIdeFileSystem
+import dev.android.ide.workspace.ProjectWorkspaceService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,12 +31,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * reported ready until its initialize response has been received.
  */
 class LanguageServerRuntimeAdapterImpl(
-    context: Context,
+    private val workspace: ProjectWorkspaceService,
+    private val installer: BundledTermuxRuntimeInstaller,
     private val onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit = { _, _, _ -> },
 ) : LanguageServerAdapter {
-    private val appContext = context.applicationContext
-    private val installer = BundledTermuxRuntimeInstaller(appContext)
-    private val fileSystem = AndroidIdeFileSystem.from(appContext).resources
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val nextRequestId = AtomicInteger(1)
     private val processes = ConcurrentHashMap<Key, LiveServer>()
@@ -45,7 +42,7 @@ class LanguageServerRuntimeAdapterImpl(
     override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus {
         val definition = LanguageServerRegistry.forLanguage(languageId)
             ?: return unavailable(project, languageId, "No language server is registered for $languageId")
-        val resolution = fileSystem.resolveProject(project)
+        val resolution = workspace.resolve(project)
         val cwd = resolution.terminalPath
             ?.let(::File)
             ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }

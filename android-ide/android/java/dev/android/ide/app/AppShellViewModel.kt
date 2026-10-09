@@ -3,18 +3,10 @@
 package dev.android.ide.app
 
 import android.app.Application
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import dev.android.ide.data.ProjectRepository
-import dev.android.ide.filesystem.AndroidIdeFileSystem
-import dev.android.ide.project.ProjectStorageAdapterImpl
-import dev.android.ide.project.ProjectManagementService
-import dev.android.ide.project.ProjectMetadataStore
-import dev.android.ide.project.ProjectRegistryStore
 import dev.android.ide.contracts.Surface
 import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.ProjectLocation
@@ -22,19 +14,12 @@ import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.ErrorCategory
 import dev.android.ide.contracts.TerminalStorageSetupPermission
-import dev.android.ide.lifecycle.LifecycleCoordinatorImpl
 import dev.android.ide.project.ProjectRestoreResult
 import dev.android.ide.project.CreateProjectTemplate
 import dev.android.ide.project.ProjectDetailsResult
 import dev.android.ide.data.model.ProjectDetails
 import dev.android.ide.data.model.AppTheme
 import dev.android.ide.data.model.TerminalSettings
-import dev.android.ide.data.ThemeRepository
-import dev.android.ide.data.TerminalSettingsRepository
-import dev.android.ide.saf.SafRepository
-import dev.android.ide.saf.FileManagementService
-import dev.android.ide.runtime.RuntimeStateStore
-import dev.android.ide.runtime.TerminalRuntimeAdapterImpl
 import com.termux.terminal.TerminalSession
 import dev.android.ide.contracts.RuntimeCapabilities
 import dev.android.ide.contracts.SessionDescriptor
@@ -114,19 +99,15 @@ data class TerminalStorageSetupRequest(
 )
 
 class AppShellViewModel(application: Application) : AndroidViewModel(application) {
-    private val fileSystem = AndroidIdeFileSystem.from(application)
-    private val saf = fileSystem.documents
-    private val files = fileSystem.operations
-    private val storage = fileSystem.projects
-    private val registry = ProjectRegistryStore(ProjectRepository(application), storage)
-    private val metadata = ProjectMetadataStore(files)
-    private val projectManagement = ProjectManagementService(registry, storage, files, metadata)
-    private val lifecycle = LifecycleCoordinatorImpl(application)
-    private val applicationState = ApplicationStateStore(application)
-    private val runtimeState = RuntimeStateStore(application)
-    private val terminalRuntime = TerminalRuntimeAdapterImpl(application)
-    private val themeRepository = ThemeRepository(application)
-    private val terminalSettingsRepository = TerminalSettingsRepository(application)
+    private val services = ApplicationServices.from(application)
+    private val saf = services.fileSystem.documents
+    private val projectManagement = services.projectManagement
+    private val lifecycle = services.lifecycleCoordinator
+    private val applicationState = services.applicationStateStore
+    private val runtimeState = services.runtimeStateStore
+    private val terminalRuntime = services.terminalRuntime
+    private val themeRepository = services.themeRepository
+    private val terminalSettingsRepository = services.terminalSettingsRepository
     private var restoreJob: kotlinx.coroutines.Job? = null
     private var restoreGeneration = 0L
     private var projectRefreshGeneration = 0L
@@ -459,31 +440,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun reportStatus(message: String) {
         _state.update { it.copy(statusMessage = message, operationReport = null) }
-    }
-
-    fun copyProjectRemoteUrls(projectId: String) {
-        viewModelScope.launch {
-            _state.update { it.copy(detailsLoading = true, statusMessage = null) }
-            when (val result = projectManagement.loadDetails(projectId)) {
-                is ProjectDetailsResult.Loaded -> {
-                    val remotes = result.details.git?.remotes.orEmpty()
-                    val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
-                    if (remotes.isEmpty()) {
-                        reportStatus("No Git remote URLs are configured for this project")
-                    } else if (clipboard == null) {
-                        reportStatus("The system clipboard is unavailable")
-                    } else {
-                        val text = remotes.joinToString("\n") { remote ->
-                            "${remote.name}\t${remote.url.substringBefore('?').substringBefore('#')}"
-                        }
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Git remote URLs", text))
-                        reportStatus("Copied ${remotes.size} Git remote URL(s)")
-                    }
-                }
-                is ProjectDetailsResult.Unavailable -> reportStatus(result.reason)
-            }
-            _state.update { it.copy(detailsLoading = false) }
-        }
     }
 
     fun clearOperationFeedback() {

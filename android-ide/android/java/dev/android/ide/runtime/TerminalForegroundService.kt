@@ -10,7 +10,7 @@ import android.os.IBinder
 
 /** Visible lifecycle boundary for long-running terminal work. */
 class TerminalForegroundService : Service() {
-    private val sessionStore by lazy { RuntimeSessionStore(applicationContext) }
+    private val sessionStore by lazy { TerminalSessionPersistence(applicationContext) }
 
     override fun onCreate() {
         super.onCreate()

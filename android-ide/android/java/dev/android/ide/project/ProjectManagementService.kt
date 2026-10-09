@@ -3,7 +3,7 @@ package dev.android.ide.project
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.contracts.ProjectLocation
-import dev.android.ide.contracts.ProjectStorageCapabilities
+import dev.android.ide.contracts.StorageCapabilities
 import dev.android.ide.data.model.ProjectDetails
 import dev.android.ide.saf.FileManagementService
 
@@ -19,17 +19,18 @@ class ProjectManagementService(
     storage: ProjectStorageAdapterImpl,
     files: FileManagementService,
     metadata: ProjectMetadataStore,
+    gitMetadata: GitMetadataReader,
 ) {
     private val registryStore = registry
     private val storageAdapter = storage
     private val state = ProjectStateWorkflow(registry, storage, metadata)
     private val acquisition = ProjectAcquisitionWorkflow(registry, storage, metadata, files)
     private val mutations = ProjectMutationWorkflow(registry, storage, metadata, files)
-    private val details = ProjectDetailsWorkflow(registry, storage)
+    private val details = ProjectDetailsWorkflow(registry, files, gitMetadata)
 
     suspend fun registeredProjects(): List<ProjectIdentity> = state.registeredProjects()
     suspend fun restore(projectId: String): ProjectRestoreResult = state.restore(projectId)
-    suspend fun inspectStorage(location: ProjectLocation): ProjectStorageCapabilities = state.inspectProjectStorage(location)
+    suspend fun inspectStorage(location: ProjectLocation): StorageCapabilities = state.inspectProjectStorage(location)
     suspend fun isSameOrDescendant(rootUri: String, candidateUri: String): Boolean? =
         storageAdapter.isSameOrDescendant(rootUri, candidateUri)
     suspend fun registryWarning(): String? = registryStore.warning()

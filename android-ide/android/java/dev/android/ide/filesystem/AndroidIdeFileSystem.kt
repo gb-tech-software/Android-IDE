@@ -1,15 +1,15 @@
 package dev.android.ide.filesystem
 
 import android.content.Context
-import dev.android.ide.project.ProjectStorageAdapterImpl
 import dev.android.ide.saf.FileManagementService
 import dev.android.ide.saf.SafBackedFileSystem
 import dev.android.ide.saf.SafRepository
 
 /**
- * Application-scoped filesystem module. Domains obtain provider-backed file,
- * project-storage, and resource-resolution operations from this shared owner;
- * provider URI interpretation stays inside its SAF-backed adapters.
+ * Application-scoped filesystem primitive module. Domains obtain provider-backed
+ * documents, generic mutations, and resource-resolution operations here.
+ * Project registration and project-relative workflows are composed above this
+ * module, while provider URI interpretation stays inside its SAF adapters.
  */
 class AndroidIdeFileSystem private constructor(context: Context) {
     private val appContext = context.applicationContext
@@ -17,7 +17,6 @@ class AndroidIdeFileSystem private constructor(context: Context) {
     val documents: SafRepository = SafRepository(appContext)
     val operations: FileManagementService = FileManagementService(documents)
     val resources: SafBackedFileSystem = SafBackedFileSystem(appContext, documents)
-    val projects: ProjectStorageAdapterImpl = ProjectStorageAdapterImpl(documents, operations)
 
     companion object {
         @Volatile

@@ -19,11 +19,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.WarningAmber
@@ -48,7 +46,7 @@ import kotlin.math.ceil
 import dev.android.ide.contracts.Surface
 import dev.android.ide.ui.theme.LocalIdeColors
 
-/** Home is an orientation surface only: it owns no project, process, tab, or Git summary. */
+/** Home is an orientation surface only: it owns no project, process, or tab summary. */
 @Composable
 fun HomeSurface(
     onNavigate: (Surface) -> Unit,
@@ -64,9 +62,7 @@ fun HomeSurface(
         add(HomeDestinationData(Icons.Default.FolderOpen, "Projects", "Manage your projects and workspace", true) { onNavigate(Surface.PROJECTS) })
         add(HomeDestinationData(Icons.Default.Code, "Editor", "Edit code and manage project files", true) { onNavigate(Surface.EDITOR) })
         add(HomeDestinationData(Icons.Default.Terminal, "Terminal", "Access your project and workspace from a command line interface", true) { onNavigate(Surface.TERMINAL) })
-        add(HomeDestinationData(Icons.Default.MergeType, "Git", "Version Control and Remote Backups", true) { onNavigate(Surface.GIT) })
         add(HomeDestinationData(Icons.Default.Language, "Browser", "Browse the web and preview your code.", true) { onNavigate(Surface.BROWSER) })
-        add(HomeDestinationData(Icons.Default.Extension, "Extensions", "Install and manage Add-ons.", true) { onNavigate(Surface.EXTENSIONS) })
         add(HomeDestinationData(Icons.Default.Settings, "Settings", "Customize your workspace and app preferences", true) { onNavigate(Surface.SETTINGS) })
         val recoveryText = when (crashRecoveryCount) {
             1 -> "1 unsaved file is available to restore"

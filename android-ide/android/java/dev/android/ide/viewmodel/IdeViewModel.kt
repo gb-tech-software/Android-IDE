@@ -12,11 +12,6 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import dev.android.ide.data.CrashRecoveryRepository
-import dev.android.ide.data.EditorSettingsRepository
-import dev.android.ide.data.ProjectRepository
-import dev.android.ide.data.SessionRepository
-import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.model.EditorSettings
 import dev.android.ide.data.model.Project
 import dev.android.ide.data.model.ProjectDetails
@@ -30,20 +25,15 @@ import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.LanguageServerFeature
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.ProjectLocation
-import dev.android.ide.filesystem.AndroidIdeFileSystem
-import dev.android.ide.lifecycle.LifecycleStateStore
+import dev.android.ide.contracts.StorageLocation
 import dev.android.ide.saf.ChildrenInspectionResult
 import dev.android.ide.saf.DocumentPresence
 import dev.android.ide.saf.ExactCreateResult
 import dev.android.ide.saf.PathResolutionResult
 import dev.android.ide.saf.PathResolutionScope
 import dev.android.ide.saf.SafeMutationResult
-import dev.android.ide.saf.SafRepository
-import dev.android.ide.saf.FileManagementService
-import dev.android.ide.project.ProjectMetadataStore
 import dev.android.ide.saf.TextDocumentCodec
-import dev.android.ide.project.ProjectStorageAdapterImpl
-import dev.android.ide.runtime.LanguageServerRuntimeAdapterImpl
+import dev.android.ide.app.ApplicationServices
 import dev.android.ide.viewmodel.model.AppScreen
 import dev.android.ide.viewmodel.model.EditorTab
 import dev.android.ide.viewmodel.model.FileNode
@@ -53,6 +43,7 @@ import dev.android.ide.viewmodel.model.IdeUiState
 import dev.android.ide.viewmodel.model.ProjectSwitchRequest
 import dev.android.ide.project.ResourcePathResolution
 import dev.android.ide.project.ResourcePathResolver
+import dev.android.ide.project.ProjectDetailsResult
 import dev.android.ide.viewmodel.model.ancestorsOf
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
@@ -106,18 +97,20 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private var projectSearchGeneration = 0L
     private val searchBatchSize = 16
 
-    private val fileSystem         = AndroidIdeFileSystem.from(application)
-    private val safRepository      = fileSystem.documents
-    private val storageAdapter     = fileSystem.projects
-    private val fileMutations      = fileSystem.operations
-    private val resourcePaths       = ResourcePathResolver()
-    private val projectMetadata   = ProjectMetadataStore(fileMutations)
-    private val projectRepository  = ProjectRepository(application)
-    private val sessionRepository  = SessionRepository(application)
-    private val editorSettingsRepo = EditorSettingsRepository(application)
-    private val crashRecovery      = CrashRecoveryRepository(application)
-    private val lifecycleStore     = LifecycleStateStore(application)
-    private val themeResolver      = ThemeResolver(application)
+    private val services          = ApplicationServices.from(application)
+    private val fileSystem        = services.fileSystem
+    private val safRepository     = fileSystem.documents
+    private val storageAdapter    = services.projectStorage
+    private val fileMutations     = fileSystem.operations
+    private val resourcePaths     = ResourcePathResolver()
+    private val projectMetadata   = services.projectMetadata
+    private val projectManagement = services.projectManagement
+    private val projectRepository = services.projectRepository
+    private val sessionRepository = services.sessionRepository
+    private val editorSettingsRepo = services.editorSettingsRepository
+    private val crashRecovery     = services.crashRecoveryRepository
+    private val lifecycleStore    = services.lifecycleStateStore
+    private val themeResolver     = services.themeResolver
 
     private val _uiState = MutableStateFlow(
         IdeUiState(
@@ -136,7 +129,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val _editorCommand = MutableSharedFlow<EditorOutbound>(extraBufferCapacity = 16)
     val editorCommand: SharedFlow<EditorOutbound> = _editorCommand.asSharedFlow()
 
-    private val languageServers = LanguageServerRuntimeAdapterImpl(application) { projectId, serverId, message ->
+    private val languageServers = services.languageServerAdapter { projectId, serverId, message ->
         _editorCommand.tryEmit(
             EditorOutbound.LanguageServerMessage(
                 projectId = projectId,
@@ -535,7 +528,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             displayLabel = displayName,
             userVisiblePath = treeUriString,
         )
-        val capabilities = fileMutations.inspectStorage(location)
+        val capabilities = fileMutations.inspectStorage(StorageLocation(location.stableId, location.displayLabel, location.userVisiblePath))
         if (capabilities.state != CapabilityState.SUPPORTED) {
             projectRepository.upsert(
                 Project(
@@ -666,55 +659,16 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshProjectMetadata() {
         viewModelScope.launch {
             _uiState.update { it.copy(projectMetadataLoading = true) }
-            val projects = projectRepository.getAll()
             _uiState.update { it.copy(projectDetailsByUri = emptyMap() ) }
-            val capabilitiesByUri = mutableMapOf<String, dev.android.ide.contracts.ProjectStorageCapabilities>()
-            val verifiedProjects = projects.map { project ->
-                val capabilities = fileMutations.inspectStorage(
-                    ProjectLocation(
-                        stableId = project.stableLocationId,
-                        displayLabel = project.locationLabel,
-                        userVisiblePath = project.locationLabel,
-                    ),
-                )
-                capabilitiesByUri[project.uri] = capabilities
-                project.copy(
-                    capabilityState = capabilities.state,
-                    capabilityMessage = capabilities.explanation,
-                ).also { verified ->
-                    if (verified.capabilityState != project.capabilityState ||
-                        verified.capabilityMessage != project.capabilityMessage
-                    ) projectRepository.upsert(verified)
+            val details = projectManagement.registeredProjects().mapNotNull { identity ->
+                when (val result = projectManagement.loadDetails(identity.id)) {
+                    is ProjectDetailsResult.Loaded -> result.details.project.uri to result.details
+                    is ProjectDetailsResult.Unavailable -> null
                 }
-            }
-            val details = verifiedProjects.mapNotNull { project ->
-                val metadata = fileMutations.inspectTree(project.uri) ?: return@mapNotNull null
-                project.uri to ProjectDetails(
-                    project = project,
-                    description = metadata.description,
-                    creationTimeMs = metadata.creationTimeMs ?: project.createdMs,
-                    lastModifiedTimeMs = metadata.lastModifiedTimeMs,
-                    storageProvider = metadata.storageProvider,
-                    storagePath = metadata.storagePath,
-                    fileCount = metadata.fileCount,
-                    folderCount = metadata.folderCount,
-                    totalBytes = metadata.totalBytes,
-                    storageCapabilities = capabilitiesByUri[project.uri]
-                        ?: fileMutations.inspectStorage(
-                            ProjectLocation(
-                                stableId = project.stableLocationId,
-                                displayLabel = project.locationLabel,
-                                userVisiblePath = project.locationLabel,
-                                capabilityState = project.capabilityState,
-                            ),
-                        ),
-                    languageBytes = metadata.languageBytes,
-                    git = metadata.git,
-                )
             }.toMap()
             _uiState.update {
                 it.copy(
-                    recentProjects = projectRepository.getAll(),
+                    recentProjects = details.values.map { it.project },
                     projectDetailsByUri = details,
                     projectMetadataLoading = false,
                 )

@@ -294,31 +294,6 @@ internal fun ImportZipProjectDialog(
 }
 
 @Composable
-internal fun CloneGitProjectDialog(
-    visible: Boolean,
-    busy: Boolean,
-    feedback: String?,
-    repository: String,
-    onRepositoryChange: (String) -> Unit,
-    onClone: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    if (!visible) return
-    AlertDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Clone Git repository") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(repository, onRepositoryChange, label = { Text("Repository URL") }, enabled = !busy, singleLine = true)
-                feedback?.let { Text(it, color = if (it.startsWith("Coming soon")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-            }
-        },
-        confirmButton = { Button(onClick = onClone, enabled = repository.isNotBlank() && !busy) { Text(if (busy) "Cloning…" else "Clone project") } },
-        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
-    )
-}
-
-@Composable
 private fun AcquisitionPicker(
     value: String?,
     format: (String) -> String,

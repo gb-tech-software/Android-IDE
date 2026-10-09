@@ -23,17 +23,14 @@ import android.os.Environment
 import android.os.FileObserver
 import android.provider.DocumentsContract
 import android.util.Log
-import dev.android.ide.data.model.GitDetails
-import dev.android.ide.data.model.GitRemote
 import dev.android.ide.editor.EditorLanguageRegistry
 import dev.android.ide.editor.FileIconKind
 import dev.android.ide.contracts.CapabilityState
-import dev.android.ide.contracts.ProjectStorageCapabilities
-import dev.android.ide.contracts.ProjectLocation
+import dev.android.ide.contracts.StorageCapabilities
+import dev.android.ide.contracts.StorageLocation
 import dev.android.ide.viewmodel.model.FileNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.BufferedInputStream
 import java.io.File
@@ -41,14 +38,12 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.FileVisitResult
 import java.nio.file.LinkOption
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
-import java.util.zip.InflaterInputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -90,15 +85,6 @@ data class StorageTreeInspection(
     val folderCount: Int,
     val totalBytes: Long,
     val languageBytes: Map<String, Long>,
-    val git: GitDetails?,
-)
-
-private data class MetadataEntry(
-    val relativePath: String,
-    val uri: String,
-    val isDirectory: Boolean,
-    val size: Long,
-    val lastModifiedMs: Long?,
 )
 
 class SafRepository(private val context: Context) {
@@ -162,12 +148,12 @@ class SafRepository(private val context: Context) {
      * Inspect a selected provider by its granted access and declared document
      * capabilities, not by its brand. Runtime access remains a separate check.
      */
-    suspend fun inspectProjectStorage(location: ProjectLocation): ProjectStorageCapabilities =
+    suspend fun inspectStorage(location: StorageLocation): StorageCapabilities =
         withContext(Dispatchers.IO) {
             if (isFileUri(location.stableId)) return@withContext inspectLocalFileCapabilities(location.stableId)
             val uri = Uri.parse(location.stableId)
             if (uri.scheme != "content" || uri.authority.isNullOrBlank()) {
-                return@withContext ProjectStorageCapabilities(
+                return@withContext StorageCapabilities(
                     state = CapabilityState.UNSUPPORTED,
                     readable = false,
                     writable = false,
@@ -205,7 +191,7 @@ class SafRepository(private val context: Context) {
             // project/editor operations even when a terminal cannot use it.
             val providerReadable = true
             val providerReady = providerReadable && providerWritable
-            ProjectStorageCapabilities(
+            StorageCapabilities(
                 state = if (providerReady) CapabilityState.SUPPORTED else CapabilityState.UNSUPPORTED,
                 readable = providerReadable,
                 writable = providerWritable,
@@ -261,7 +247,7 @@ class SafRepository(private val context: Context) {
         val observed: Boolean,
     )
 
-    private suspend fun inspectLocalFileCapabilities(uri: String): ProjectStorageCapabilities {
+    private suspend fun inspectLocalFileCapabilities(uri: String): StorageCapabilities {
         val selectedRoot = fileFromUri(uri)
         if (selectedRoot != null && Files.isSymbolicLink(selectedRoot.toPath())) {
             return unsupportedCapabilities("A symbolic link cannot be registered as a project root")
@@ -271,7 +257,7 @@ class SafRepository(private val context: Context) {
         val local = localFileCapabilities(root)
         val providerReady = root.isDirectory && local.readable && local.writable
         val localWorkspaceAvailable = providerReady && isApprovedLocalWorkspaceLocation(uri, root)
-        return ProjectStorageCapabilities(
+        return StorageCapabilities(
             state = if (providerReady) CapabilityState.SUPPORTED else CapabilityState.UNSUPPORTED,
             readable = local.readable,
             writable = local.writable,
@@ -458,7 +444,7 @@ class SafRepository(private val context: Context) {
             null
         }
 
-    private fun unsupportedCapabilities(message: String) = ProjectStorageCapabilities(
+    private fun unsupportedCapabilities(message: String) = StorageCapabilities(
         state = CapabilityState.UNSUPPORTED,
         readable = false,
         writable = false,
@@ -469,7 +455,7 @@ class SafRepository(private val context: Context) {
         explanation = message,
     )
 
-    private fun permissionLostCapabilities(message: String) = ProjectStorageCapabilities(
+    private fun permissionLostCapabilities(message: String) = StorageCapabilities(
         state = CapabilityState.PERMISSION_LOST,
         readable = false,
         writable = false,
@@ -1082,10 +1068,8 @@ class SafRepository(private val context: Context) {
      */
     suspend fun inspectTree(rootUriString: String): StorageTreeInspection? =
         withContext(Dispatchers.IO) {
-            // Keep only the small subset needed by Git inspection. Project size and
-            // language totals are accumulated as the provider is walked; source and
-            // dependency files never become an in-memory metadata list.
-            val gitEntries = mutableListOf<MetadataEntry>()
+            // Accumulate only generic tree metrics while walking the provider.
+            // Domain readers interpret special directories separately.
             val languageBytes = mutableMapOf<String, Long>()
             var fileCount = 0
             var folderCount = 0
@@ -1120,18 +1104,12 @@ class SafRepository(private val context: Context) {
                     child.lastModifiedMs?.let { latestModifiedMs = maxOf(latestModifiedMs ?: it, it) }
                     if (child.isDirectory) {
                         folderCount++
-                        if (relativePath == ".git" || relativePath.startsWith(".git/")) {
-                            gitEntries += MetadataEntry(relativePath, child.documentUri, true, child.size.coerceAtLeast(0L), child.lastModifiedMs)
-                        }
                     } else {
                         fileCount++
                         val size = child.size.coerceAtLeast(0L)
                         totalBytes += size
                         val language = languageLabel(relativePath)
-                        if (!relativePath.startsWith(".git/")) languageBytes[language] = (languageBytes[language] ?: 0L) + size
-                        if (relativePath.startsWith(".git/")) {
-                            gitEntries += MetadataEntry(relativePath, child.documentUri, false, size, child.lastModifiedMs)
-                        }
+                        languageBytes[language] = (languageBytes[language] ?: 0L) + size
                     }
                     val childLocalDirectory = localDirectory?.resolve(child.displayName)?.takeIf { it.isDirectory }
                     if (child.isDirectory && !walk(child.documentUri, relativePath, childLocalDirectory)) {
@@ -1158,7 +1136,6 @@ class SafRepository(private val context: Context) {
                 folderCount = folderCount,
                 totalBytes = totalBytes,
                 languageBytes = languageBytes.toSortedMap(),
-                git = gitDetails(gitEntries),
             )
         }
 
@@ -1351,106 +1328,6 @@ class SafRepository(private val context: Context) {
             Uri.decode(documentId)
         }.getOrElse { uriString }
     }
-
-    private suspend fun gitDetails(entries: List<MetadataEntry>): GitDetails? {
-        if (entries.none { it.relativePath == ".git" }) return null
-        val files = entries.filterNot { it.isDirectory }.associateBy { it.relativePath }
-        val headText = readUtf8(files[".git/HEAD"]?.uri)?.trim()
-        val branchRef = headText
-            ?.takeIf { it.startsWith("ref: ") }
-            ?.removePrefix("ref: ")
-            ?.trim()
-        val branch = branchRef?.removePrefix("refs/heads/")
-        val packedRefs = readUtf8(files[".git/packed-refs"]?.uri)
-            .orEmpty()
-            .lineSequence()
-            .filter { it.isNotBlank() && !it.startsWith("#") && !it.startsWith("^") }
-            .mapNotNull { line ->
-                val parts = line.split(' ', limit = 2)
-                if (parts.size == 2 && parts[1].startsWith("refs/heads/")) {
-                    parts[1].removePrefix("refs/heads/") to parts[0]
-                } else {
-                    null
-                }
-            }
-            .toMap()
-        val branchRefs = entries
-            .filter { !it.isDirectory && it.relativePath.startsWith(".git/refs/heads/") }
-            .associate {
-                it.relativePath.removePrefix(".git/refs/heads/") to
-                    (readUtf8(it.uri)?.trim().orEmpty())
-            }
-        val branches = (branchRefs.keys + packedRefs.keys)
-            .filter { it.isNotBlank() }
-            .distinct()
-            .sorted()
-        val headCommit = when {
-            branchRef != null -> branchRefs[branch.orEmpty()] ?: packedRefs[branch.orEmpty()]
-            !headText.isNullOrBlank() && !headText.startsWith("ref: ") -> headText
-            else -> null
-        }?.takeIf { it.matches(Regex("[0-9a-fA-F]{40}")) }
-
-        val remotes = parseGitRemotes(readUtf8(files[".git/config"]?.uri).orEmpty())
-        val commit = headCommit?.let {
-            parseCommit(readUtf8Bytes(files[".git/objects/${it.take(2)}/${it.drop(2)}"]?.uri))
-        }
-
-        return GitDetails(
-            currentBranch = branch,
-            branches = branches,
-            remotes = remotes,
-            headCommit = headCommit,
-            latestCommitMessage = commit?.first,
-            latestCommitTimeMs = commit?.second,
-        )
-    }
-
-    private fun parseGitRemotes(config: String): List<GitRemote> {
-        var current: String? = null
-        val remotes = mutableListOf<GitRemote>()
-        config.lineSequence().forEach { raw ->
-            val line = raw.trim()
-            val section = Regex("""\[remote\s+"([^"]+)"\]""").matchEntire(line)
-            if (section != null) {
-                current = section.groupValues[1]
-            } else if (current != null && line.startsWith("url")) {
-                val url = line.substringAfter('=', "").trim()
-                if (url.isNotEmpty()) {
-                    remotes += GitRemote(current!!, url)
-                    current = null
-                }
-            } else if (line.startsWith("[") && !line.startsWith("[remote")) {
-                current = null
-            }
-        }
-        return remotes
-    }
-
-    private fun parseCommit(bytes: ByteArray?): Pair<String?, Long?>? {
-        if (bytes == null) return null
-        return runCatching {
-            val inflated = InflaterInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
-            val text = inflated.toString(StandardCharsets.UTF_8)
-            val body = text.substringAfter("\u0000", "")
-            val message = body.substringAfter("\n\n", "").trim()
-                .lineSequence()
-                .firstOrNull()
-                ?.takeIf { it.isNotBlank() }
-            val timestamp = Regex("""^committer .+ (\d+) [+-]\d+$""", RegexOption.MULTILINE)
-                .find(body)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toLongOrNull()
-                ?.times(1000L)
-            message to timestamp
-        }.getOrNull()
-    }
-
-    private suspend fun readUtf8(uri: String?): String? =
-        uri?.let { readFile(it)?.toString(StandardCharsets.UTF_8) }
-
-    private suspend fun readUtf8Bytes(uri: String?): ByteArray? =
-        uri?.let { readFile(it) }
 
     private suspend fun copyDirectoryWithExactName(
         sourceUriString: String,

@@ -11,7 +11,7 @@ import org.json.JSONObject
  * Persists durable session descriptors only. PTYs, process handles, and output remain
  * owned by the runtime/service implementation and are never serialized here.
  */
-class RuntimeSessionStore(context: Context) {
+class TerminalSessionPersistence(context: Context) {
     private val store = RuntimeStateStore(context)
 
     fun readAll(): List<SessionDescriptor> {

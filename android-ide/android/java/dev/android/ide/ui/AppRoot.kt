@@ -65,8 +65,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     var zipDestination by remember { mutableStateOf<String?>(null) }
     var feedback by remember { mutableStateOf<String?>(null) }
     var pickerFeedback by remember { mutableStateOf<String?>(null) }
-    var gitCloneVisible by remember { mutableStateOf(false) }
-    var gitRepository by remember { mutableStateOf("") }
     var operationKind by remember { mutableStateOf<ProjectOperationKind?>(null) }
     var operationProjectId by remember { mutableStateOf<String?>(null) }
     var operationName by remember { mutableStateOf("") }
@@ -175,7 +173,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
             },
             onImportFolder = { openFolder.launch(null) },
             onImportZip = { openZip.launch(arrayOf("application/zip", "application/octet-stream")) },
-            onCloneGit = { feedback = null; gitRepository = ""; gitCloneVisible = true },
             onExportProject = { projectId -> viewModel.clearOperationFeedback(); pendingExportProjectId = projectId; exportReviewVisible = true },
             onExportProjects = { projectIds -> pendingBatchExportIds = projectIds; batchExportDestinationPicker.launch(null) },
             onDuplicateProject = { projectId ->
@@ -256,15 +253,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 validName = ::projectNameIsValid,
             )
         }
-        CloneGitProjectDialog(
-            visible = gitCloneVisible,
-            busy = shellState.operationInProgress,
-            feedback = feedback,
-            repository = gitRepository,
-            onRepositoryChange = { gitRepository = it },
-            onClone = { feedback = "Git's user interface is not currently available. Use Terminal for git clone and other Git commands." },
-            onDismiss = { gitCloneVisible = false; feedback = null },
-        )
         pickerFeedback?.let { message ->
             AlertDialog(
                 onDismissRequest = { pickerFeedback = null },

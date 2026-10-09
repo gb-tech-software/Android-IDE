@@ -167,8 +167,8 @@ class FileManagementService(private val saf: SafRepository) {
     suspend fun isSameOrDescendant(rootUri: String, candidateUri: String): Boolean? =
         saf.isSameOrDescendant(rootUri, candidateUri)
 
-    suspend fun inspectStorage(location: dev.android.ide.contracts.ProjectLocation): dev.android.ide.contracts.ProjectStorageCapabilities =
-        saf.inspectProjectStorage(location)
+    suspend fun inspectStorage(location: dev.android.ide.contracts.StorageLocation): dev.android.ide.contracts.StorageCapabilities =
+        saf.inspectStorage(location)
 
     fun localFilesystemPath(uri: String): String? = saf.localFilesystemPath(uri)
 

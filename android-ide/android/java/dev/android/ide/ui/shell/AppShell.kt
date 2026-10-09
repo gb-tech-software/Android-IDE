@@ -28,11 +28,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.BugReport
@@ -81,7 +79,6 @@ import dev.android.ide.CrashReportSummary
 import dev.android.ide.contracts.Surface
 import dev.android.ide.CrashReporter
 import dev.android.ide.ui.screen.HomeSurface
-import dev.android.ide.ui.screen.GitSurface
 import dev.android.ide.ui.screen.CrashConsoleSurface
 import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.ui.theme.operationStatusColor
@@ -105,7 +102,6 @@ fun AppShell(
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
     onImportZip: () -> Unit,
-    onCloneGit: () -> Unit,
     onExportProject: (String) -> Unit,
     onExportProjects: (Set<String>) -> Unit,
     onDuplicateProject: (String) -> Unit,
@@ -249,7 +245,6 @@ fun AppShell(
             onCreateProject = onCreateProject,
             onImportFolder = onImportFolder,
             onImportZip = onImportZip,
-            onCloneGit = onCloneGit,
             onExportProject = onExportProject,
             onExportProjects = onExportProjects,
             onDuplicateProject = onDuplicateProject,
@@ -307,7 +302,6 @@ fun AppShell(
                             onCreateProject = { onCreateProject(null); moreOpen = false; coroutineScope.launch { drawerState.close() } },
                             onImportFolder = { onImportFolder(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
                             onImportZip = { onImportZip(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
-                            onCloneGit = { onCloneGit(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
                             onFeedback = { phaseFeedback = it },
                             onSettingsSection = { section -> settingsSection = section; navigate(Surface.SETTINGS, closeSidebar = true) },
                             onDismissDrawer = { coroutineScope.launch { drawerState.close() } },
@@ -454,7 +448,6 @@ private fun ContextualNavigation(
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
     onImportZip: () -> Unit,
-    onCloneGit: () -> Unit,
     onFeedback: (String) -> Unit,
     onSettingsSection: (String) -> Unit,
     onDismissDrawer: () -> Unit,
@@ -512,12 +505,10 @@ private fun ContextualNavigation(
                                 NavigationGridItem(Icons.Default.FolderOpen, "Projects") { onNavigate(Surface.PROJECTS, true) }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                NavigationGridItem(Icons.Default.Extension, "Extensions") { onNavigate(Surface.EXTENSIONS, true) }
                                 NavigationGridItem(Icons.Default.Settings, "Settings") { onNavigate(Surface.SETTINGS, true) }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 NavigationGridItem(Icons.Default.BugReport, "Console") { onNavigate(Surface.DIAGNOSTICS, true) }
-                                NavigationGridItem(Icons.Default.MergeType, "Git") { onNavigate(Surface.GIT, true) }
                             }
                         }
                         Text("Recent projects", style = MaterialTheme.typography.titleSmall)
@@ -835,7 +826,6 @@ private fun SurfaceHost(
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
     onImportZip: () -> Unit,
-    onCloneGit: () -> Unit,
     onExportProject: (String) -> Unit,
     onExportProjects: (Set<String>) -> Unit,
     onDuplicateProject: (String) -> Unit,
@@ -873,7 +863,7 @@ private fun SurfaceHost(
             onShare = onShareCrashReport,
             onExport = onExportCrashReport,
         )
-        Surface.PROJECTS -> ProjectsSurface(state, viewModel, onCreateProject, onImportFolder, onImportZip, onCloneGit, onExportProject, onExportProjects, onDuplicateProject, onRelocateProject, viewModel::copyProjectRemoteUrls, viewModel::openTerminalForProject, onFeedback, onOpenNavigation, modifier)
+        Surface.PROJECTS -> ProjectsSurface(state, viewModel, onCreateProject, onImportFolder, onImportZip, onExportProject, onExportProjects, onDuplicateProject, onRelocateProject, viewModel::openTerminalForProject, onFeedback, onOpenNavigation, modifier)
         Surface.PROJECT_DETAILS -> ProjectDetailsSurface(state, viewModel, onExportProject, onDuplicateProject, onRelocateProject, onOpenNavigation, modifier)
         Surface.EDITOR -> EditorSurface(
             shellState = state,
@@ -904,7 +894,6 @@ private fun SurfaceHost(
             onInitialNavigationConsumed = viewModel::consumeBrowserNavigationRequest,
             modifier = modifier,
         )
-        Surface.GIT -> GitSurface(state, viewModel, onOpenNavigation, modifier)
         Surface.SETTINGS -> SettingsScreen(
             uiState = ideState,
             ideViewModel = ideViewModel,
@@ -930,7 +919,6 @@ private fun DomainPlaceholderSurface(title: String, modifier: Modifier, onOpenNa
         Text(
             when (title) {
                 "Browser" -> "Browser is not currently available. Use Terminal to start and inspect local development servers."
-                "Extensions" -> "Extensions are not currently available in this build."
                 else -> "$title not available. Coming soon (phase ${placeholderPhase(title)})"
             },
             modifier = Modifier.padding(20.dp),
@@ -946,8 +934,6 @@ private fun placeholderPhase(label: String): Int = when (label) {
     "Open Terminal" -> 3
     "Browser", "New tab", "Back", "Forward", "Reload", "Downloads", "Developer tools", "Viewport",
     "Open Browser or Preview" -> 5
-    "Git", "Open Git", "Status", "Changed files", "Stage", "Unstage", "Commit", "History", "Branches", "Fetch", "Pull", "Push", "Global Git Settings", "Manage Credentials", "Provider management", "Credential-store configuration", "SSH and known-host configuration", "Global ignore rules" -> 6
-    "Extensions", "Install extension", "Update", "Remove", "Permissions", "Extension permissions" -> 8
     else -> 8
 }
 
@@ -959,8 +945,6 @@ private fun surfaceTitle(surface: Surface): String = when (surface) {
     Surface.EDITOR -> "Editor"
     Surface.TERMINAL -> "Terminal"
     Surface.BROWSER -> "Browser"
-    Surface.GIT -> "Git"
-    Surface.EXTENSIONS -> "Extensions"
     Surface.SETTINGS -> "Settings"
 }
 

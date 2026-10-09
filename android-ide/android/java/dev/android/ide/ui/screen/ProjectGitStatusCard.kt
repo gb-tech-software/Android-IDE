@@ -15,10 +15,9 @@ import androidx.compose.ui.unit.dp
 import dev.android.ide.data.model.GitDetails
 import java.net.URI
 
-/** Shared, read-only repository status shown in Git and Project Details. */
+/** Read-only repository metadata sourced from the project's Git directory. */
 @Composable
 fun ProjectGitStatusCard(
-    hasGit: Boolean?,
     git: GitDetails?,
     modifier: Modifier = Modifier,
 ) {
@@ -32,22 +31,20 @@ fun ProjectGitStatusCard(
         ) {
             Text("Git", style = MaterialTheme.typography.titleMedium)
             Text(
-                when (hasGit) {
-                    true -> "Git repository detected"
-                    false -> "No Git repository detected"
-                    null -> if (git != null) "Git repository detected" else "Repository status is not available yet"
-                },
+                if (git != null) "Git repository detected" else "No Git repository detected",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            if (hasGit != false && git != null) {
-                GitStatusLine("Current checkout", git.currentBranch ?: "Detached or unavailable")
-                git.latestCommitMessage?.let { GitStatusLine("Latest commit", it) }
+            if (git != null) {
+                GitStatusLine("Current branch", git.currentBranch ?: "Detached or unavailable")
                 if (git.branches.isNotEmpty()) {
-                    GitStatusLine("Branches (${git.branches.size})", git.branches.take(6).joinToString(", "))
+                    GitStatusLine("Local branches (${git.branches.size})", git.branches.take(6).joinToString(", "))
                     if (git.branches.size > 6) {
                         Text("And ${git.branches.size - 6} more", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                git.latestCommitMessage?.let { GitStatusLine("Last commit message", it) }
+                git.latestCommitAuthor?.let { GitStatusLine("Last commit author", it) }
+                git.headCommit?.let { GitStatusLine("Last commit hash", it) }
                 if (git.remotes.isEmpty()) {
                     GitStatusLine("Remotes", "None configured")
                 } else {
@@ -59,12 +56,6 @@ fun ProjectGitStatusCard(
                         Text("And ${git.remotes.size - 5} more", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-            } else if (hasGit == true) {
-                Text(
-                    "Repository details are still loading or unavailable.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }

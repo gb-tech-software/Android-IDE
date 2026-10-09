@@ -40,7 +40,6 @@ fun HomeScreen(
         ) { Text(if (hasProject) "Editor" else "Open a project for Editor") }
         OutlinedButton(onClick = { onNavigate(AppScreen.TERMINAL) }) { Text("Terminal") }
         OutlinedButton(onClick = { onNavigate(AppScreen.BROWSER) }) { Text("Browser") }
-        OutlinedButton(onClick = { onNavigate(AppScreen.GIT) }) { Text("Git") }
         OutlinedButton(onClick = { onNavigate(AppScreen.SETTINGS) }) { Text("Settings") }
     }
 }

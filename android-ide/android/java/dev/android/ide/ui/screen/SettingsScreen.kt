@@ -30,10 +30,8 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Terminal
@@ -91,12 +89,10 @@ enum class SettingsCategory(val title: String, val description: String, val icon
     GENERAL("General", "App theme and interface-wide preferences", Icons.Default.Palette),
     EDITOR("Editor", "Editor appearance, code behavior, keyboard, and file tree", Icons.Default.Code),
     PROJECTS("Projects", "Project creation and storage preferences", Icons.Default.FolderOpen),
-    GIT("Git", "Repository identity, history, and source control", Icons.Default.MergeType),
-    CREDENTIALS("Credentials", "Git accounts, tokens, and secure sign-in data", Icons.Default.Lock),
+    CREDENTIALS("Credentials", "Secure sign-in data", Icons.Default.Lock),
     SECURITY("Security", "Storage access, Android permissions, and protected data", Icons.Default.Lock),
     TERMINAL("Terminal", "Terminal runtime and session preferences", Icons.Default.Terminal),
     BROWSER("Browser", "Browser preview and web-project preferences", Icons.Default.Language),
-    EXTENSIONS("Extensions", "Language tools and editor extensions", Icons.Default.Extension),
 }
 
 @Composable
@@ -130,7 +126,6 @@ fun SettingsScreen(
             "Credentials", "Manage Credentials" -> SettingsCategory.CREDENTIALS
             "Terminal" -> SettingsCategory.TERMINAL
             "Browser" -> SettingsCategory.BROWSER
-            "Git" -> SettingsCategory.GIT
             else -> null
         }
         if (category != null) selectedCategoryName = category.name
@@ -244,8 +239,6 @@ private fun SettingsCategoryContent(
             SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
             SettingsCategory.EDITOR -> item { EditorSettingsContent(uiState, s, ideViewModel) }
             SettingsCategory.PROJECTS -> item { ProjectsSettingsContent() }
-            SettingsCategory.GIT,
-            SettingsCategory.EXTENSIONS -> item { DomainPlaceholder(category) }
             SettingsCategory.TERMINAL -> item { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) }
             SettingsCategory.BROWSER -> item { BrowserSettingsContent() }
             SettingsCategory.CREDENTIALS -> item { DomainPlaceholder(category) }

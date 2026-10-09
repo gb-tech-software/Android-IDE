@@ -26,6 +26,4 @@ enum class AppScreen {
     /** Browser surface is unavailable until the browser service is implemented. */
     BROWSER,
 
-    /** Git surface is unavailable until the Git service is implemented. */
-    GIT,
 }

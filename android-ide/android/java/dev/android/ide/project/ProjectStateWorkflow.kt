@@ -3,7 +3,7 @@
 package dev.android.ide.project
 
 import dev.android.ide.contracts.CapabilityState
-import dev.android.ide.contracts.ProjectStorageCapabilities
+import dev.android.ide.contracts.StorageCapabilities
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
@@ -24,7 +24,7 @@ class ProjectStateWorkflow(
      */
     suspend fun registeredProjects(): List<ProjectIdentity> = registry.listRegistered()
 
-    suspend fun inspectProjectStorage(location: ProjectLocation): ProjectStorageCapabilities =
+    suspend fun inspectProjectStorage(location: ProjectLocation): StorageCapabilities =
         storage.inspectProjectStorage(location)
 
     suspend fun restore(projectId: String): ProjectRestoreResult {
@@ -122,7 +122,7 @@ class ProjectStateWorkflow(
 sealed interface ProjectRestoreResult {
     data class Restored(
         val identity: ProjectIdentity,
-        val capabilities: ProjectStorageCapabilities,
+        val capabilities: StorageCapabilities,
     ) : ProjectRestoreResult
 
     data class Unavailable(val reason: String) : ProjectRestoreResult

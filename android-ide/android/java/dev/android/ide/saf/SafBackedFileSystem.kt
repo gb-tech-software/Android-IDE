@@ -7,7 +7,7 @@ import dev.android.ide.contracts.FileSystemLocation
 import dev.android.ide.contracts.FileSystemNode
 import dev.android.ide.contracts.FileSystemResolution
 import dev.android.ide.contracts.FileSystemAdapter
-import dev.android.ide.contracts.ProjectLocation
+import dev.android.ide.contracts.StorageLocation
 import java.io.File
 
 /**
@@ -27,8 +27,8 @@ class SafBackedFileSystem(
     override suspend fun resolve(location: FileSystemLocation): FileSystemResolution {
         val providerUri = location.resourceUri
         val localPath = saf.localFilesystemPath(providerUri)
-        val capabilities = saf.inspectProjectStorage(
-            ProjectLocation(
+        val capabilities = saf.inspectStorage(
+            StorageLocation(
                 stableId = providerUri,
                 displayLabel = location.displayLabel,
                 userVisiblePath = providerUri,

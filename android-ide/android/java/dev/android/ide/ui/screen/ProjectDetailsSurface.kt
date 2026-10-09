@@ -101,27 +101,7 @@ fun ProjectDetailsSurface(
                         actionFeedback = "The project storage path is unavailable. Refresh project details and try again."
                     }
                 },
-                onCopyRemoteUrls = {
-                    val git = state.projectDetails?.git
-                    if (state.detailsLoading) {
-                        actionFeedback = "Git details are still loading. Refresh the project details and try again."
-                    } else if (git == null || git.remotes.isEmpty()) {
-                        actionFeedback = "No Git remote URLs are configured for this project."
-                    } else {
-                        val payload = git.remotes.joinToString("\n") { remote ->
-                            "${remote.name}\t${safeGitRemoteUrl(remote.url)}"
-                        }
-                        val clipboard = context.getSystemService(ClipboardManager::class.java)
-                        if (clipboard == null) {
-                            actionFeedback = "The system clipboard is unavailable."
-                        } else {
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Git remote URLs", payload))
-                            actionFeedback = "Copied ${git.remotes.size} Git remote URL(s). Embedded URL credentials and query parameters were omitted."
-                        }
-                    }
-                },
                 onOpenEditor = { viewModel.navigate(Surface.EDITOR) },
-                onOpenGit = { viewModel.navigate(Surface.GIT) },
                 onOpenTerminal = { project?.id?.let(viewModel::openTerminalForProject) },
                 onOpenBrowser = { viewModel.navigate(Surface.BROWSER) },
                 onRemoveFromRegistry = { viewModel.clearOperationFeedback(); confirmRemove = true },
@@ -291,7 +271,7 @@ fun ProjectDetailsSurface(
             }
         }
         if (project != null) {
-            ProjectGitStatusCard(hasGit = projectSummary?.hasGit, git = details?.git)
+            ProjectGitStatusCard(git = details?.git)
         }
         }
     }

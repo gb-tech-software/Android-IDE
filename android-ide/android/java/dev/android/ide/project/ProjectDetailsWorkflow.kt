@@ -8,24 +8,28 @@ import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.contracts.ProjectRegistryAdapter
 import dev.android.ide.data.model.Project
 import dev.android.ide.data.model.ProjectDetails
+import dev.android.ide.saf.FileManagementService
+import dev.android.ide.contracts.StorageLocation
 
 class ProjectDetailsWorkflow(
     private val registry: ProjectRegistryAdapter,
-    private val storage: ProjectStorageAdapterImpl,
+    private val files: FileManagementService,
+    private val gitMetadata: GitMetadataReader,
 ) {
     suspend fun load(projectId: String): ProjectDetailsResult {
         val identity = registry.listRegistered().firstOrNull { it.id == projectId }
             ?: return ProjectDetailsResult.Unavailable("Project is not registered")
-        val capabilities = storage.inspectProjectStorage(identity.location)
+        val capabilities = files.inspectStorage(StorageLocation(identity.location.stableId, identity.location.displayLabel, identity.location.userVisiblePath))
         if (capabilities.state != CapabilityState.SUPPORTED) {
             return ProjectDetailsResult.Unavailable(
                 capabilities.explanation ?: "Project location is unavailable",
             )
         }
-        val metadata = storage.inspectTree(identity.location)
+        val metadata = files.inspectTree(identity.location.stableId)
             ?: return ProjectDetailsResult.Unavailable(
                 "Project contents could not be inspected completely; metrics were not estimated",
             )
+        val git = gitMetadata.read(identity.location.stableId)
         val project = Project(
             name = identity.name,
             description = identity.description,
@@ -49,7 +53,7 @@ class ProjectDetailsWorkflow(
                 totalBytes = metadata.totalBytes,
                 storageCapabilities = capabilities,
                 languageBytes = metadata.languageBytes,
-                git = metadata.git,
+                git = git,
             ),
         )
     }

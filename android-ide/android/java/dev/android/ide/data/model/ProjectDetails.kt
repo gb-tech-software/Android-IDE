@@ -6,7 +6,7 @@
 
 package dev.android.ide.data.model
 
-import dev.android.ide.contracts.ProjectStorageCapabilities
+import dev.android.ide.contracts.StorageCapabilities
 
 data class ProjectDetails(
     val project: Project,
@@ -18,7 +18,7 @@ data class ProjectDetails(
     val fileCount: Int,
     val folderCount: Int,
     val totalBytes: Long,
-    val storageCapabilities: ProjectStorageCapabilities,
+    val storageCapabilities: StorageCapabilities,
     val languageBytes: Map<String, Long> = emptyMap(),
     val git: GitDetails? = null,
 )
@@ -34,5 +34,5 @@ data class GitDetails(
     val remotes: List<GitRemote>,
     val headCommit: String?,
     val latestCommitMessage: String?,
-    val latestCommitTimeMs: Long?,
+    val latestCommitAuthor: String?,
 )

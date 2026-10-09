@@ -16,6 +16,7 @@ import android.provider.MediaStore
 import android.view.View
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.android.ide.app.ApplicationServices
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +26,6 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoResult
-import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate
@@ -35,21 +35,6 @@ import org.mozilla.geckoview.WebExtension
 import java.io.File
 import java.net.URLDecoder
 import java.util.UUID
-
-private const val PREFS = "browser_state"
-private const val TABS_KEY = "tabs"
-private const val SELECTED_TAB_KEY = "selected_tab"
-private const val DOWNLOADS_KEY = "downloads"
-private const val SEARCH_ENGINE_KEY = "search_engine"
-private const val CUSTOM_SEARCH_KEY = "custom_search"
-private const val HOME_PAGE_KEY = "home_page"
-private const val DOWNLOAD_FOLDER_KEY = "download_folder"
-private const val THEME_KEY = "theme"
-private const val DEVTOOLS_KEY = "developer_tools_enabled"
-private const val DESKTOP_SITE_KEY = "desktop_site_default"
-private const val HISTORY_KEY = "navigation_history"
-private const val DEFAULT_HOME = "https://www.google.com"
-private const val DEFAULT_SEARCH = "google"
 
 private data class PendingDuplicateDownload(
     val name: String,
@@ -151,8 +136,8 @@ internal data class BrowserTabRuntime(
 /** Application-owned browser domain. It survives navigation away from the Browser surface. */
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
     private val context = application.applicationContext
-    private val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private val runtime = GeckoRuntime.create(context)
+    private val stateStore = ApplicationServices.from(application).browserStateStore
+    private val runtime = ApplicationServices.from(application).browserRuntime
     private val sessions = linkedMapOf<String, BrowserTabRuntime>()
     private var pendingDuplicateBody: PendingDuplicateDownload? = null
     private var pendingPermissionResult: GeckoResult<Int>? = null
@@ -188,7 +173,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun restoreTabs() {
-        val stored = runCatching { JSONArray(preferences.getString(TABS_KEY, "[]")) }.getOrDefault(JSONArray())
+        val stored = runCatching { stateStore.readTabs() }.getOrDefault(JSONArray())
         if (stored.length() == 0) {
             createTab()
             return
@@ -205,7 +190,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 select = false,
             )
         }
-        val selected = preferences.getString(SELECTED_TAB_KEY, null)
+        val selected = stateStore.selectedTabId()
         selectTab(selected?.takeIf(sessions::containsKey) ?: sessions.keys.first())
     }
 
@@ -518,7 +503,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
         if (sessions[tabId]?.isTemporary != true) {
-            preferences.edit().putString(SELECTED_TAB_KEY, tabId).apply()
+            stateStore.saveSelectedTab(tabId)
         }
         publish(selectedId = tabId)
     }
@@ -542,11 +527,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         // Deliberate address-bar navigation turns a disposable preview into a normal tab.
         if (tab.isTemporary) {
             tab.isTemporary = false
-            preferences.edit().putString(SELECTED_TAB_KEY, tab.id).apply()
+            stateStore.saveSelectedTab(tab.id)
         }
         val target = resolveAddress(entered)
         val history = (listOf(entered) + _uiState.value.history.filterNot { it == entered }).take(30)
-        preferences.edit().putString(HISTORY_KEY, JSONArray(history).toString()).apply()
+        stateStore.saveHistory(history)
         tab.url = target
         tab.scrollY = 0
         tab.scrollListener?.invoke(0)
@@ -627,7 +612,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
     fun clearHistoryEntry(value: String) {
         val next = _uiState.value.history.filterNot { it == value }
-        preferences.edit().putString(HISTORY_KEY, JSONArray(next).toString()).apply()
+        stateStore.saveHistory(next)
         _uiState.value = _uiState.value.copy(history = next)
     }
     /**
@@ -660,7 +645,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setDownloadFolder(uri: String?) { updateSettings { it.copy(downloadFolder = uri) } }
     fun clearBrowserData() {
         sessions.values.forEach { it.session.purgeHistory() }
-        preferences.edit().remove(TABS_KEY).remove(DOWNLOADS_KEY).remove(HISTORY_KEY).apply()
+        stateStore.clearTabs(); stateStore.clearHistoryAndDownloads()
         _uiState.value = _uiState.value.copy(downloads = emptyList(), history = emptyList())
     }
     fun clearError() { _uiState.value = _uiState.value.copy(error = null) }
@@ -728,41 +713,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         sessions.values.filterNot { it.isTemporary }.forEach { tab -> array.put(JSONObject().apply {
             put("id", tab.id); put("url", tab.url); put("title", tab.title); put("viewportWidth", tab.viewportWidth ?: 0); tab.previewPath?.let { put("previewPath", it) }; tab.sessionState?.let { put("state", it) }
         }) }
-        preferences.edit().putString(TABS_KEY, array.toString()).apply()
+        stateStore.saveTabs(array)
     }
 
-    private fun readSettings() = BrowserSettings(
-        searchEngine = preferences.getString(SEARCH_ENGINE_KEY, DEFAULT_SEARCH) ?: DEFAULT_SEARCH,
-        customSearchUrl = preferences.getString(CUSTOM_SEARCH_KEY, "") ?: "",
-        homePage = preferences.getString(HOME_PAGE_KEY, DEFAULT_HOME) ?: DEFAULT_HOME,
-        downloadFolder = preferences.getString(DOWNLOAD_FOLDER_KEY, null),
-        theme = preferences.getString(THEME_KEY, "application")?.let { if (it == "system") "application" else it } ?: "application",
-        developerToolsEnabled = preferences.getBoolean(DEVTOOLS_KEY, true),
-        desktopSiteDefault = preferences.getBoolean(DESKTOP_SITE_KEY, false),
-    )
+    private fun readSettings() = stateStore.readSettings()
 
-    private fun readHistory(): List<String> = runCatching {
-        val array = JSONArray(preferences.getString(HISTORY_KEY, "[]"))
-        List(array.length()) { array.getString(it) }.filter(String::isNotBlank)
-    }.getOrDefault(emptyList())
+    private fun readHistory(): List<String> = stateStore.readHistory()
 
     private fun updateSettings(transform: (BrowserSettings) -> BrowserSettings) {
         val next = transform(_uiState.value.settings)
-        preferences.edit().putString(SEARCH_ENGINE_KEY, next.searchEngine).putString(CUSTOM_SEARCH_KEY, next.customSearchUrl)
-            .putString(HOME_PAGE_KEY, next.homePage).putString(THEME_KEY, next.theme).putBoolean(DEVTOOLS_KEY, next.developerToolsEnabled)
-            .putBoolean(DESKTOP_SITE_KEY, next.desktopSiteDefault).apply()
-        if (next.downloadFolder == null) preferences.edit().remove(DOWNLOAD_FOLDER_KEY).apply() else preferences.edit().putString(DOWNLOAD_FOLDER_KEY, next.downloadFolder).apply()
+        stateStore.saveSettings(next)
         _uiState.value = _uiState.value.copy(settings = next)
     }
 
     private fun readDownloads(): List<BrowserDownload> = runCatching {
-        val array = JSONArray(preferences.getString(DOWNLOADS_KEY, "[]"))
+        val array = stateStore.readDownloads()
         List(array.length()) { index -> array.getJSONObject(index).let { BrowserDownload(it.getString("id"), it.getString("name"), it.getString("uri"), it.getString("sourceUrl"), it.optString("mimeType", "application/octet-stream"), it.optLong("size"), it.optLong("timestamp")) } }
     }.getOrDefault(emptyList())
 
     private fun persistDownloads(downloads: List<BrowserDownload>) {
         val array = JSONArray(); downloads.forEach { item -> array.put(JSONObject().apply { put("id", item.id); put("name", item.name); put("uri", item.uri); put("sourceUrl", item.sourceUrl); put("mimeType", item.mimeType); put("size", item.size); put("timestamp", item.timestamp) }) }
-        preferences.edit().putString(DOWNLOADS_KEY, array.toString()).apply()
+        stateStore.saveDownloads(array)
     }
 
     private fun setError(message: String) { _uiState.value = _uiState.value.copy(error = message) }
