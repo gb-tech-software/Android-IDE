@@ -18,8 +18,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
-import java.io.InputStream
-import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -76,11 +74,12 @@ class LanguageServerRuntimeAdapterImpl(
                 .start()
             val status = LanguageServerStatus(definition.id, project.id, languageId, available = true)
             val initializeId = nextRequestId.getAndIncrement()
-            val live = LiveServer(process, status, initializeId)
+            val transport = LanguageServerProtocolTransport(process.inputStream, process.outputStream)
+            val live = LiveServer(process, transport, status, initializeId)
             processes[key] = live
-            scope.launch { readMessages(key, process.inputStream) }
+            scope.launch { readMessages(key, transport) }
             scope.launch { process.errorStream.bufferedReader().useLines { lines -> lines.forEach { /* server diagnostics stay out of stdout */ } } }
-            writeFrame(process.outputStream, initializeRequest(initializeId, project, cwd))
+            transport.write(initializeRequest(initializeId, project, cwd))
 
             val initialization = withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { live.initialized.await() }
             if (initialization == null || !initialization.successful) {
@@ -88,7 +87,7 @@ class LanguageServerRuntimeAdapterImpl(
                 runCatching { process.destroy() }
                 return@runCatching unavailable(project, languageId, "${definition.id} did not complete LSP initialization")
             }
-            writeFrame(process.outputStream, initializedNotification())
+            transport.write(initializedNotification())
             status.copy(initialized = true, supportedFeatures = initialization.features)
         }.getOrElse { error ->
             processes.remove(key)
@@ -101,7 +100,7 @@ class LanguageServerRuntimeAdapterImpl(
         val live = processes[key] ?: return unavailableReport("Language server is unavailable")
         if (!live.initialized.isCompleted) return unavailableReport("Language server is still initializing")
         return runCatching {
-            writeFrame(live.process.outputStream, message)
+            live.transport.write(message)
             OperationReport(OperationOutcome.COMPLETE, "Language-server message sent")
         }.getOrElse {
             processes.remove(key)
@@ -116,8 +115,8 @@ class LanguageServerRuntimeAdapterImpl(
         runCatching {
             if (live.initialized.isCompleted) {
                 val shutdownId = nextRequestId.getAndIncrement()
-                writeFrame(live.process.outputStream, request(shutdownId, "shutdown", JSONObject()))
-                writeFrame(live.process.outputStream, notification("exit", JSONObject()))
+                live.transport.write(request(shutdownId, "shutdown", JSONObject()))
+                live.transport.write(notification("exit", JSONObject()))
             }
             live.process.destroy()
         }
@@ -135,20 +134,9 @@ class LanguageServerRuntimeAdapterImpl(
         scope.cancel()
     }
 
-    private suspend fun readMessages(key: Key, input: InputStream) {
+    private suspend fun readMessages(key: Key, transport: LanguageServerProtocolTransport) {
         try {
-            while (true) {
-                val header = readUntilHeaderEnd(input) ?: break
-                val length = Regex("Content-Length:\\s*(\\d+)", RegexOption.IGNORE_CASE)
-                    .find(header)?.groupValues?.get(1)?.toIntOrNull() ?: break
-                val body = ByteArray(length)
-                var offset = 0
-                while (offset < length) {
-                    val read = input.read(body, offset, length - offset)
-                    if (read < 0) break
-                    offset += read
-                }
-                if (offset != length) break
+            transport.readFrames { body ->
                 val text = body.toString(Charsets.UTF_8)
                 val live = processes[key]
                 if (live != null) {
@@ -239,26 +227,6 @@ class LanguageServerRuntimeAdapterImpl(
             put("params", params)
         }.toString().toByteArray(Charsets.UTF_8)
 
-    private fun readUntilHeaderEnd(input: InputStream): String? {
-        val bytes = ArrayList<Byte>()
-        while (true) {
-            val value = input.read()
-            if (value < 0) return null
-            bytes += value.toByte()
-            if (bytes.takeLast(4).toByteArray().contentEquals(byteArrayOf(13, 10, 13, 10))) {
-                return bytes.toByteArray().toString(Charsets.US_ASCII)
-            }
-        }
-    }
-
-    private fun writeFrame(output: OutputStream, message: ByteArray) {
-        synchronized(output) {
-            output.write("Content-Length: ${message.size}\r\n\r\n".toByteArray(Charsets.US_ASCII))
-            output.write(message)
-            output.flush()
-        }
-    }
-
     private fun unavailable(project: ProjectIdentity, languageId: String, explanation: String) =
         LanguageServerStatus(
             serverId = LanguageServerRegistry.forLanguage(languageId)?.id ?: languageId,
@@ -278,6 +246,7 @@ class LanguageServerRuntimeAdapterImpl(
     )
     private data class LiveServer(
         val process: Process,
+        val transport: LanguageServerProtocolTransport,
         @Volatile var status: LanguageServerStatus,
         val initializeId: Int,
         val initialized: CompletableDeferred<InitializationResult> = CompletableDeferred(),

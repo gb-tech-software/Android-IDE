@@ -100,7 +100,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val services          = ApplicationServices.from(application)
     private val fileSystem        = services.fileSystem
     private val safRepository     = fileSystem.documents
-    private val storageAdapter    = services.projectStorage
     private val fileMutations     = fileSystem.operations
     private val resourcePaths     = ResourcePathResolver()
     private val projectMetadata   = services.projectMetadata
@@ -668,7 +667,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             }.toMap()
             _uiState.update {
                 it.copy(
-                    recentProjects = details.values.map { it.project },
+                    recentProjects = projectRepository.getAll(),
                     projectDetailsByUri = details,
                     projectMetadataLoading = false,
                 )
@@ -1248,29 +1247,13 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         rootUri: String? = _uiState.value.projectRootUri,
     ): LanguageServerContext? {
         rootUri ?: return null
-        val stored = projectRepository.getAll().firstOrNull {
-            it.stableLocationId == rootUri || it.uri == rootUri
-        } ?: return null
-        val project = dev.android.ide.contracts.ProjectIdentity(
-            id = stored.stableLocationId,
-            name = stored.name,
-            description = stored.description,
-            location = ProjectLocation(
-                stableId = stored.stableLocationId,
-                displayLabel = stored.locationLabel,
-                userVisiblePath = stored.uri,
-                capabilityState = stored.capabilityState,
-                capabilityExplanation = stored.capabilityMessage,
-            ),
-            registeredAt = java.time.Instant.ofEpochMilli(stored.createdMs),
-            lastOpenedAt = java.time.Instant.ofEpochMilli(stored.lastOpenedMs),
-        )
+        val project = projectManagement.registeredProjectAt(rootUri) ?: return null
         val status = languageServers.start(project, languageId)
         if (!status.available && status.explanation != null) {
             _uiState.update { it.copy(statusMessage = "Language intelligence unavailable: ${status.explanation}") }
         }
         return if (status.available && status.initialized) {
-            LanguageServerContext(stored.stableLocationId, status.serverId, status.supportedFeatures)
+            LanguageServerContext(project.id, status.serverId, status.supportedFeatures)
         } else {
             null
         }
@@ -1627,12 +1610,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun sendLanguageServerNotificationForTab(tab: EditorTab, method: String, params: JSONObject) {
         val rootUri = _uiState.value.projectRootUri ?: return
-        val stored = projectRepository.getAll().firstOrNull {
-            it.stableLocationId == rootUri || it.uri == rootUri
-        } ?: return
+        val project = projectManagement.registeredProjectAt(rootUri) ?: return
         val definition = LanguageServerRegistry.forLanguage(tab.language) ?: return
         sendLanguageServerNotification(
-            LanguageServerContext(stored.stableLocationId, definition.id),
+            LanguageServerContext(project.id, definition.id),
             method,
             params,
         )
@@ -1641,9 +1622,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private fun onLanguageServerMessage(rawMessage: String) {
         val tab = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
         val rootUri = _uiState.value.projectRootUri ?: return
-        val stored = projectRepository.getAll().firstOrNull {
-            it.stableLocationId == rootUri || it.uri == rootUri
-        } ?: return
+        val project = projectManagement.registeredProjectAt(rootUri) ?: return
         val definition = LanguageServerRegistry.forLanguage(tab.language) ?: return
         val message = runCatching { JSONObject(rawMessage) }.getOrNull() ?: return
         message.optJSONObject("params")
@@ -1651,7 +1630,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             ?.put("uri", languageServerDocumentUri(tab.documentUri))
         viewModelScope.launch {
             val report = languageServers.send(
-                stored.stableLocationId,
+                project.id,
                 definition.id,
                 message.toString().toByteArray(Charsets.UTF_8),
             )

@@ -43,7 +43,7 @@ class ApplicationServices private constructor(application: Application) {
     val lifecycleStateStore = LifecycleStateStore(context)
     val themeResolver = ThemeResolver(context)
     val browserStateStore = BrowserStateStore(context)
-    val browserRuntime = GeckoRuntime.create(context)
+    val browserRuntime by lazy { GeckoRuntime.create(context) }
 
     val applicationStateStore = ApplicationStateStore(context)
     val runtimeStateStore = RuntimeStateStore(context)

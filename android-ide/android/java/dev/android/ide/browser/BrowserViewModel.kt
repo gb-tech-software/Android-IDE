@@ -749,7 +749,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         persistTabs(); persistDownloads(_uiState.value.downloads)
         sessions.values.forEach { it.session.close() }
-        runtime.shutdown()
         super.onCleared()
     }
 }

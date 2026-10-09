@@ -29,6 +29,7 @@ class ProjectManagementService(
     private val details = ProjectDetailsWorkflow(registry, files, gitMetadata)
 
     suspend fun registeredProjects(): List<ProjectIdentity> = state.registeredProjects()
+    fun registeredProjectAt(value: String): ProjectIdentity? = registryStore.findByLocation(value)
     suspend fun restore(projectId: String): ProjectRestoreResult = state.restore(projectId)
     suspend fun inspectStorage(location: ProjectLocation): StorageCapabilities = state.inspectProjectStorage(location)
     suspend fun isSameOrDescendant(rootUri: String, candidateUri: String): Boolean? =

@@ -9,6 +9,7 @@ import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.RuntimeCapabilities
+import dev.android.ide.contracts.RuntimeAvailability
 import dev.android.ide.contracts.RuntimeWorkspaceAdapter
 import dev.android.ide.contracts.SessionDescriptor
 import dev.android.ide.contracts.TerminalProjectAccess
@@ -46,7 +47,7 @@ class TerminalRuntimeAdapterImpl(
     override suspend fun capabilities(): RuntimeCapabilities = installation.capabilities()
 
     override suspend fun inspectProjectAccess(project: ProjectIdentity): TerminalProjectAccess {
-        if (!capabilities().availability.isAvailable()) return TerminalProjectAccess(false, "Terminal is unavailable")
+        if (capabilities().availability != RuntimeAvailability.AVAILABLE) return TerminalProjectAccess(false, "Terminal is unavailable")
         val resolution = workspace.resolve(project)
         return TerminalProjectAccess(
             available = resolution.terminalAccessible,
@@ -109,6 +110,4 @@ class TerminalRuntimeAdapterImpl(
 
     private fun unavailable(message: String) = OperationReport(OperationOutcome.BLOCKED, message, ErrorCategory.UNAVAILABLE_RUNTIME)
 
-    private fun RuntimeCapabilities.isAvailable(): Boolean =
-        availability == dev.android.ide.contracts.RuntimeAvailability.AVAILABLE
 }

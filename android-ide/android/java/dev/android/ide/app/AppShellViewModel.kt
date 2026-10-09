@@ -434,7 +434,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         terminalRuntime.setTerminalFeedbackListener(null)
-        terminalRuntime.shutdown()
         super.onCleared()
     }
 

@@ -8,6 +8,7 @@ import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.ErrorCategory
 import dev.android.ide.contracts.MutationPreflight
 import dev.android.ide.contracts.OperationReport
+import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.ProjectRegistryAdapter
@@ -25,6 +26,11 @@ class ProjectRegistryStore(
     override suspend fun listRegistered(): List<ProjectIdentity> = repository.getAll().map(::toIdentity)
 
     fun warning(): String? = repository.readAll().warning
+
+    fun findByLocation(value: String): ProjectIdentity? =
+        repository.getAll()
+            .firstOrNull { it.stableLocationId == value || it.uri == value }
+            ?.let(::toIdentity)
 
     override suspend fun preflightRegistration(project: ProjectIdentity): MutationPreflight =
         registrationMutex.withLock { projectContainmentPreflight(project) }
@@ -116,5 +122,17 @@ class ProjectRegistryStore(
         locationLabel = location.displayLabel,
         capabilityState = location.capabilityState,
         capabilityMessage = location.capabilityExplanation,
+    )
+
+    private fun complete(message: String, id: String) = OperationReport(
+        outcome = OperationOutcome.COMPLETE,
+        message = message,
+        affectedIds = listOf(id),
+    )
+
+    private fun blocked(message: String, id: String) = OperationReport(
+        outcome = OperationOutcome.BLOCKED,
+        message = message,
+        affectedIds = listOf(id),
     )
 }

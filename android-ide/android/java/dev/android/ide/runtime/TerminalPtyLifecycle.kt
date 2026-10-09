@@ -127,10 +127,10 @@ class TerminalPtyLifecycle(
     fun terminateChildProcess(processId: String): OperationReport {
         val targetPid = processId.toLongOrNull()?.takeIf { it > 0 }
             ?: return OperationReport(OperationOutcome.BLOCKED, "The selected child process is invalid", ErrorCategory.PROCESS_LOSS)
-        val owner = sessions.values.firstOrNull { live ->
+        if (sessions.values.firstOrNull { live ->
             val shellPid = live.session.getPid().toLong()
             shellPid > 0 && targetPid != shellPid && processGroup(targetPid) == shellPid
-        } ?: return OperationReport(OperationOutcome.BLOCKED, "That process is not owned by an active terminal session", ErrorCategory.PROCESS_LOSS)
+        } == null) return OperationReport(OperationOutcome.BLOCKED, "That process is not owned by an active terminal session", ErrorCategory.PROCESS_LOSS)
         val groupId = processGroup(targetPid) ?: return unavailable("The child process is no longer available")
         return runCatching {
             Os.kill(-groupId.toInt(), OsConstants.SIGTERM)
