@@ -5,9 +5,12 @@ package dev.android.ide.app
 import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.android.ide.data.ProjectRepository
+import dev.android.ide.filesystem.AndroidIdeFileSystem
 import dev.android.ide.project.ProjectStorageAdapterImpl
 import dev.android.ide.project.ProjectManagementService
 import dev.android.ide.project.ProjectMetadataStore
@@ -18,6 +21,7 @@ import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.ErrorCategory
+import dev.android.ide.contracts.TerminalStorageSetupPermission
 import dev.android.ide.lifecycle.LifecycleCoordinatorImpl
 import dev.android.ide.project.ProjectRestoreResult
 import dev.android.ide.project.CreateProjectTemplate
@@ -40,7 +44,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.io.File
+import java.util.UUID
 
 data class AppShellState(
     val applicationTheme: AppTheme = AppTheme.DEVICE,
@@ -68,10 +77,14 @@ data class AppShellState(
     val terminalOutput: String = "",
     val terminalProgress: String? = null,
     val terminalFeedback: OperationReport? = null,
+    val terminalStorageSetupRequest: TerminalStorageSetupRequest? = null,
     val navigationPromptVisible: Boolean = false,
     val pendingNavigation: Surface? = null,
     val pendingBackNavigation: Boolean = false,
+    val pendingBrowserNavigation: BrowserNavigationRequest? = null,
 )
+
+data class BrowserNavigationRequest(val id: String, val url: String, val temporary: Boolean = false)
 
 data class FolderInspection(
     val path: String,
@@ -88,13 +101,23 @@ data class ProjectSummary(
     val fileCount: Int? = null,
     val totalBytes: Long? = null,
     val hasGit: Boolean? = null,
+    val localStorageConfirmed: Boolean = false,
+    val localWorkspaceAvailable: Boolean = false,
     val status: String? = null,
 )
 
+enum class TerminalStorageSetupStage { AWAITING_PERMISSION, RUNNING }
+
+data class TerminalStorageSetupRequest(
+    val id: String,
+    val stage: TerminalStorageSetupStage = TerminalStorageSetupStage.AWAITING_PERMISSION,
+)
+
 class AppShellViewModel(application: Application) : AndroidViewModel(application) {
-    private val saf = SafRepository(application)
-    private val files = FileManagementService(saf)
-    private val storage = ProjectStorageAdapterImpl(saf, files)
+    private val fileSystem = AndroidIdeFileSystem.from(application)
+    private val saf = fileSystem.documents
+    private val files = fileSystem.operations
+    private val storage = fileSystem.projects
     private val registry = ProjectRegistryStore(ProjectRepository(application), storage)
     private val metadata = ProjectMetadataStore(files)
     private val projectManagement = ProjectManagementService(registry, storage, files, metadata)
@@ -107,6 +130,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     private var restoreJob: kotlinx.coroutines.Job? = null
     private var restoreGeneration = 0L
     private var projectRefreshGeneration = 0L
+    private val projectSummaryJobs = mutableMapOf<String, Job>()
     private var folderInspectionGeneration = 0L
 
     private val _state = MutableStateFlow(
@@ -179,15 +203,8 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun createTerminalSession(workingDirectory: String? = null, name: String = "") {
         viewModelScope.launch {
-            val previousDirectory = _state.value.terminalSessions
-                .firstOrNull { it.id == _state.value.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
-                ?.workingDirectory
-            // Direct/global sessions inherit a still-usable session directory; otherwise null
-            // deliberately selects the initialized Termux home. Explicit paths remain strict.
-            val inheritedDirectory = workingDirectory ?: previousDirectory
-                ?.takeIf(terminalRuntime::isUsableWorkingDirectory)
             val session = terminalRuntime.createSession(
-                inheritedDirectory,
+                workingDirectory,
                 name.trim().ifBlank { "Untitled session" },
             )
             _state.update { state ->
@@ -220,11 +237,15 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             } ?: project
             val access = terminalRuntime.inspectProjectAccess(terminalProject)
             if (!access.available) {
-                reportTerminalLaunchFailure(OperationReport(
-                    OperationOutcome.BLOCKED,
-                    access.explanation ?: "The selected project or folder cannot be opened in Terminal",
-                    ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
-                ))
+                val message = access.explanation
+                    ?: "This project is on a storage path that Terminal cannot access. Move it to Android IDE storage or Android external storage for full access."
+                if (!openTerminalWithAccessNotice(project.name, message)) {
+                    reportTerminalLaunchFailure(OperationReport(
+                        OperationOutcome.BLOCKED,
+                        message,
+                        ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
+                    ))
+                }
                 return@launch
             }
             val directory = terminalRuntime.workingDirectory(terminalProject)
@@ -270,6 +291,29 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     private fun reportTerminalLaunchFailure(report: OperationReport) {
         _state.update { it.copy(terminalFeedback = report, operationReport = report, statusMessage = report.message) }
         if (_state.value.surface != Surface.TERMINAL) navigate(Surface.TERMINAL)
+    }
+
+    private suspend fun openTerminalWithAccessNotice(projectName: String, message: String): Boolean {
+        val session = terminalRuntime.createSession(null, "$projectName access information")
+        if (session.availability != SessionAvailability.AVAILABLE) return false
+        _state.update {
+            it.copy(
+                selectedTerminalSessionId = session.id,
+                terminalFeedback = null,
+                operationReport = null,
+                statusMessage = null,
+            )
+        }
+        navigate(Surface.TERMINAL)
+        val safeMessage = message.replace("'", "’").replace("\n", " ")
+        val command = "printf '\\n%s\\n\\n' '$safeMessage'\n"
+        val report = terminalRuntime.sendInput(session.id, command.toByteArray(Charsets.UTF_8))
+        if (report.outcome != OperationOutcome.COMPLETE) {
+            _state.update { it.copy(terminalFeedback = report) }
+        }
+        refreshTerminalSessions()
+        refreshTerminalOutput()
+        return true
     }
 
     fun resizeTerminal(columns: Int, rows: Int) {
@@ -337,6 +381,67 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun clearTerminalFeedback() {
         _state.update { it.copy(terminalFeedback = null) }
+    }
+
+    /** Starts the one pending storage setup operation requested by termux-setup-storage. */
+    fun requestTerminalStorageSetup(requestId: String) {
+        if (!requestId.matches(Regex("[0-9]+"))) return
+        val activeRequest = _state.value.terminalStorageSetupRequest
+        if (activeRequest?.id == requestId) return
+        if (activeRequest != null) {
+            viewModelScope.launch {
+                try {
+                    terminalRuntime.completeStorageSetupRequest(
+                        requestId,
+                        TerminalStorageSetupPermission.Denied(
+                            OperationReport(
+                                OperationOutcome.BLOCKED,
+                                "Another termux-setup-storage command is already waiting for Android permission. Run this command again after it finishes.",
+                                ErrorCategory.DESTINATION_CONFLICT,
+                            ),
+                        ),
+                    )
+                } catch (error: Exception) {
+                    Log.e("AppShellViewModel", "Could not reject duplicate storage setup request $requestId", error)
+                }
+            }
+            return
+        }
+        _state.update { state ->
+            if (state.terminalStorageSetupRequest != null) state
+            else state.copy(
+                terminalStorageSetupRequest = TerminalStorageSetupRequest(requestId),
+            )
+        }
+    }
+
+    /** Completes setup and returns its report through the shell command's result channel. */
+    fun completeTerminalStorageSetup(
+        requestId: String,
+        permission: TerminalStorageSetupPermission,
+    ) {
+        val currentRequest = _state.value.terminalStorageSetupRequest
+        if (currentRequest?.id != requestId || currentRequest.stage != TerminalStorageSetupStage.AWAITING_PERMISSION) return
+        _state.update { state ->
+            if (state.terminalStorageSetupRequest?.id == requestId) {
+                state.copy(terminalStorageSetupRequest = currentRequest.copy(stage = TerminalStorageSetupStage.RUNNING))
+            } else state
+        }
+        viewModelScope.launch {
+            try {
+                terminalRuntime.completeStorageSetupRequest(requestId, permission)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e("AppShellViewModel", "Could not publish storage setup result for terminal request $requestId", error)
+            } finally {
+                _state.update { state ->
+                    if (state.terminalStorageSetupRequest?.id == requestId) {
+                        state.copy(terminalStorageSetupRequest = null)
+                    } else state
+                }
+            }
+        }
     }
 
     fun closeAllTerminalSessions() {
@@ -487,6 +592,39 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             )
         }
         applicationState.recordSurface(surface)
+    }
+
+    /** Route an in-app terminal browser request; external schemes are never launched. */
+    fun requestTerminalBrowserNavigation(url: String) {
+        val uri = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return
+        val scheme = uri.scheme?.lowercase() ?: return
+        if (scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) return
+        queueBrowserNavigation(uri.toString())
+    }
+
+    /** Route a project media file only when it resolves inside the selected local project. */
+    fun requestLocalBrowserPreview(fileUri: String) {
+        val uri = runCatching { Uri.parse(fileUri) }.getOrNull() ?: return
+        if (uri.scheme?.equals("file", ignoreCase = true) != true) return
+        val filePath = uri.path ?: return
+        val candidate = runCatching { File(filePath).canonicalFile }.getOrNull() ?: return
+        if (!candidate.isFile || !candidate.canRead()) return
+        val project = _state.value.projects.firstOrNull { it.id == _state.value.selectedProjectId } ?: return
+        val rootPath = saf.localFilesystemPath(project.location.stableId) ?: return
+        val root = runCatching { File(rootPath).canonicalFile.toPath() }.getOrNull() ?: return
+        if (!candidate.toPath().startsWith(root)) return
+        queueBrowserNavigation(candidate.toURI().toString(), temporary = true)
+    }
+
+    fun consumeBrowserNavigationRequest(requestId: String) {
+        _state.update { current ->
+            if (current.pendingBrowserNavigation?.id == requestId) current.copy(pendingBrowserNavigation = null) else current
+        }
+    }
+
+    private fun queueBrowserNavigation(url: String, temporary: Boolean = false) {
+        _state.update { it.copy(pendingBrowserNavigation = BrowserNavigationRequest(UUID.randomUUID().toString(), url, temporary)) }
+        navigate(Surface.BROWSER)
     }
 
     fun back(): Boolean {
@@ -650,7 +788,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             _state.update {
                 it.copy(
                     operationInProgress = false,
-                    statusMessage = report.message,
+                    statusMessage = null,
                     operationReport = report,
                     acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
                 )
@@ -666,7 +804,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             _state.update {
                 it.copy(
                     operationInProgress = false,
-                    statusMessage = report.message,
+                    statusMessage = null,
                     operationReport = report,
                     acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
                 )
@@ -691,7 +829,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             _state.update {
                 it.copy(
                     operationInProgress = false,
-                    statusMessage = report.message,
+                    statusMessage = null,
                     operationReport = report,
                     acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
                 )
@@ -841,8 +979,49 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun loadProjectSummary(projectId: String) {
+        if (_state.value.projectSummaries.containsKey(projectId) || projectSummaryJobs.containsKey(projectId)) return
+        if (_state.value.projects.none { it.id == projectId }) return
+        val generation = projectRefreshGeneration
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val summary = when (val result = projectManagement.loadDetails(projectId)) {
+                    is ProjectDetailsResult.Loaded -> ProjectSummary(
+                        fileCount = result.details.fileCount,
+                        totalBytes = result.details.totalBytes,
+                        hasGit = result.details.git != null,
+                        localStorageConfirmed = result.details.storageCapabilities.localStorageConfirmed,
+                        localWorkspaceAvailable = result.details.storageCapabilities.localWorkspaceAvailable,
+                    )
+                    is ProjectDetailsResult.Unavailable -> ProjectSummary(status = result.reason)
+                }
+                if (generation == projectRefreshGeneration) {
+                    _state.update { current ->
+                        if (current.projects.any { it.id == projectId }) {
+                            current.copy(projectSummaries = current.projectSummaries + (projectId to summary))
+                        } else current
+                    }
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (generation == projectRefreshGeneration) {
+                    _state.update { current ->
+                        current.copy(projectSummaries = current.projectSummaries + (projectId to ProjectSummary(status = error.message ?: "Project metrics are unavailable")))
+                    }
+                }
+            } finally {
+                projectSummaryJobs.remove(projectId)
+            }
+        }
+        projectSummaryJobs[projectId] = job
+        job.start()
+    }
+
     private suspend fun refreshProjects() {
         val generation = ++projectRefreshGeneration
+        projectSummaryJobs.values.forEach(Job::cancel)
+        projectSummaryJobs.clear()
         val registered = projectManagement.registeredProjects()
         if (generation != projectRefreshGeneration) return
         val warning = projectManagement.registryWarning()

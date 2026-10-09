@@ -21,8 +21,10 @@ data class ProjectLocation(
     val capabilityExplanation: String? = null,
 )
 
-/** Capabilities owned by the project-storage provider; terminal/Git access is reported elsewhere.
- * SUPPORTED means project files are readable and writable. Other mutations are independent flags.
+/** Capabilities owned by project storage. SUPPORTED means files are readable and writable;
+ * localStorageConfirmed permits project/file management through the provider API. The narrower
+ * localWorkspaceAvailable flag means the root also resolves to a native path for Terminal, Git,
+ * language servers, and local development-server preview.
  */
 data class ProjectStorageCapabilities(
     val state: CapabilityState,
@@ -33,6 +35,11 @@ data class ProjectStorageCapabilities(
     val canDelete: Boolean,
     val canObserveChanges: Boolean,
     val explanation: String? = null,
+    /** True only when the storage provider confirms the project data is local to this device. */
+    val localStorageConfirmed: Boolean = false,
+    /** True when the local location is also reachable as a stable native filesystem path. */
+    val localWorkspaceAvailable: Boolean = false,
+    val localWorkspaceExplanation: String? = null,
 )
 
 data class ProjectIdentity(
@@ -191,19 +198,18 @@ typealias ProjectRelativePath = String
 /** Stable provider location identity used only for same-root/ancestry comparisons. */
 typealias ProjectLocationId = String
 
-/**
- * Stable application-facing view of a mounted filesystem node. The provider URI
- * remains an adapter detail; virtualPath is the identity exchanged between
- * domains and localPath is present only when the runtime can access the node.
- */
+/** A selected provider resource presented to the shared filesystem boundary. */
+data class FileSystemLocation(
+    val resourceUri: String,
+    val displayLabel: String,
+)
+
+/** Stable application-facing identity for any mounted file or directory. */
 data class FileSystemNode(
     val virtualPath: String,
-    val providerUri: String,
-    val localPath: String?,
     val displayLabel: String,
     val isDirectory: Boolean,
     val parentVirtualPath: String? = null,
-    val providerAuthority: String? = null,
 )
 
 data class FileSystemResolution(
@@ -211,13 +217,20 @@ data class FileSystemResolution(
     val readable: Boolean,
     val writable: Boolean,
     val terminalAccessible: Boolean,
+    /** A local path is returned only when the terminal runtime can use it. */
+    val terminalPath: String? = null,
     val explanation: String? = null,
 )
 
-/** One filesystem boundary for SAF, local files, removable storage, and providers. */
-interface ProjectFileSystemAdapter {
-    suspend fun resolve(location: ProjectLocation): FileSystemResolution
-    suspend fun resolveProject(project: ProjectIdentity): FileSystemResolution = resolve(project.location)
+/** One provider-backed filesystem boundary for app files and picker-selected resources. */
+interface FileSystemAdapter {
+    suspend fun resolve(location: FileSystemLocation): FileSystemResolution
+    suspend fun resolveProject(project: ProjectIdentity): FileSystemResolution = resolve(
+        FileSystemLocation(
+            resourceUri = project.location.userVisiblePath ?: project.location.stableId,
+            displayLabel = project.location.displayLabel,
+        ),
+    )
     suspend fun mountedRoots(): List<FileSystemNode> = emptyList()
     suspend fun children(parent: FileSystemNode): List<FileSystemNode> = emptyList()
 }
@@ -272,6 +285,11 @@ interface TerminalRuntimeAdapter {
     suspend fun inspectProjectAccess(project: ProjectIdentity): TerminalProjectAccess
     suspend fun workingDirectory(project: ProjectIdentity): String?
     suspend fun createSession(workingDirectory: String?, name: String = ""): SessionDescriptor
+    /** Completes a shell-originated setup request and publishes its result to that command's output. */
+    suspend fun completeStorageSetupRequest(
+        requestId: String,
+        permission: TerminalStorageSetupPermission,
+    ): OperationReport
     suspend fun listSessions(): List<SessionDescriptor>
     suspend fun renameSession(sessionId: String, name: String): OperationReport
     suspend fun capabilities(): RuntimeCapabilities
@@ -290,6 +308,22 @@ data class TerminalProjectAccess(
     val explanation: String? = null,
 )
 
+sealed interface TerminalStorageSetupPermission {
+    data object Granted : TerminalStorageSetupPermission
+    data class Denied(val report: OperationReport) : TerminalStorageSetupPermission
+}
+
+object TerminalStorageSetupProtocol {
+    const val REQUEST_ID_EXTRA = "dev.android.ide.extra.STORAGE_SETUP_REQUEST_ID"
+    const val RESULT_DIRECTORY = ".android-ide-storage-setup"
+}
+
+/** Internal broadcast contract used by bundled terminal open-url command shims. */
+object TerminalBrowserRequestProtocol {
+    const val ACTION = "dev.android.ide.terminal.OPEN_BROWSER"
+    const val URL_EXTRA = "dev.android.ide.extra.BROWSER_URL"
+}
+
 interface EditorDocumentAdapter {
     suspend fun load(project: ProjectIdentity, path: ProjectRelativePath): ByteArray
     suspend fun save(project: ProjectIdentity, path: ProjectRelativePath, content: ByteArray): OperationReport
@@ -303,6 +337,21 @@ data class LanguageServerDefinition(
     val requiredExecutable: String,
 )
 
+enum class LanguageServerFeature {
+    COMPLETION,
+    SIGNATURE_HELP,
+    HOVER,
+    DEFINITION,
+    DECLARATION,
+    TYPE_DEFINITION,
+    IMPLEMENTATION,
+    REFERENCES,
+    RENAME,
+    DOCUMENT_FORMATTING,
+    RANGE_FORMATTING,
+    CODE_ACTION,
+}
+
 data class LanguageServerStatus(
     val serverId: String,
     val projectId: String,
@@ -310,6 +359,7 @@ data class LanguageServerStatus(
     val available: Boolean,
     val initialized: Boolean = false,
     val explanation: String? = null,
+    val supportedFeatures: Set<LanguageServerFeature> = emptySet(),
 )
 
 /**

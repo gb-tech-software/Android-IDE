@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -74,7 +75,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import kotlin.math.roundToInt
@@ -83,6 +87,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.android.ide.app.BrowserNavigationRequest
 import dev.android.ide.browser.BrowserDownload
 import dev.android.ide.browser.BrowserContextKind
 import dev.android.ide.browser.BrowserContextMenu
@@ -110,14 +115,19 @@ fun BrowserSurface(
     onOpenNavigation: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onApplicationBack: () -> Unit = {},
+    initialNavigation: BrowserNavigationRequest? = null,
+    onInitialNavigationConsumed: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val browser: BrowserViewModel = viewModel()
     val context = LocalContext.current
     val themeResolver = remember { ThemeResolver(context) }
     val state by browser.uiState.collectAsState()
-    var addressText by remember { mutableStateOf(state.address) }
+    var addressValue by remember {
+        mutableStateOf(TextFieldValue(state.address, TextRange(state.address.length)))
+    }
     var addressFocused by remember { mutableStateOf(false) }
+    var addressSuggestionsOpen by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var tabsOpen by remember { mutableStateOf(false) }
     var downloadsOpen by remember { mutableStateOf(false) }
@@ -131,13 +141,22 @@ fun BrowserSurface(
     val visibleGeckoView = remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
     val focusManager = LocalFocusManager.current
 
-    LaunchedEffect(state.address, addressFocused) { if (!addressFocused) addressText = state.address }
+    LaunchedEffect(initialNavigation?.id) {
+        val request = initialNavigation ?: return@LaunchedEffect
+        if (request.temporary) browser.openTemporaryTab(request.url) else browser.navigate(request.url)
+        onInitialNavigationConsumed(request.id)
+    }
+
+    LaunchedEffect(state.address, addressFocused) {
+        if (!addressFocused) addressValue = TextFieldValue(state.address, TextRange(state.address.length))
+    }
     LaunchedEffect(state.error) { if (state.error != null) errorVisible = true }
     BackHandler(enabled = state.selectedTabId != null) {
         if (addressFocused) {
             focusManager.clearFocus()
-            addressText = state.address
+            addressValue = TextFieldValue(state.address, TextRange(state.address.length))
             addressFocused = false
+            addressSuggestionsOpen = false
         } else {
             val selectedTab = state.tabs.firstOrNull { it.id == state.selectedTabId }
             if (selectedTab?.canGoBack == true) browser.goBack() else onApplicationBack()
@@ -149,7 +168,7 @@ fun BrowserSurface(
         ResolvedTheme.LIGHT -> lightColorScheme()
     }
     MaterialTheme(colorScheme = browserColorScheme) {
-        BrowserSurfaceContent(modifier, state, browser, visibleGeckoView, addressText, { addressText = it }, addressFocused, { addressFocused = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabPreview(it, visibleGeckoView.value) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
+        BrowserSurfaceContent(modifier, state, browser, visibleGeckoView, addressValue, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabPreview(it, visibleGeckoView.value) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
     }
 }
 
@@ -160,10 +179,12 @@ private fun BrowserSurfaceContent(
     state: dev.android.ide.browser.BrowserUiState,
     browser: BrowserViewModel,
     visibleGeckoView: androidx.compose.runtime.MutableState<org.mozilla.geckoview.GeckoView?>,
-    addressText: String,
-    setAddressText: (String) -> Unit,
+    addressValue: TextFieldValue,
+    setAddressValue: (TextFieldValue) -> Unit,
     addressFocused: Boolean,
     setAddressFocused: (Boolean) -> Unit,
+    addressSuggestionsOpen: Boolean,
+    setAddressSuggestionsOpen: (Boolean) -> Unit,
     history: List<String>,
     clearHistoryEntry: (String) -> Unit,
     createTab: () -> Unit,
@@ -212,11 +233,13 @@ private fun BrowserSurfaceContent(
                 }
                 IconButton(onClick = { setMenuOpen(true) }) { Icon(Icons.Default.MoreVert, "Browser menu") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { setMenuOpen(false) }) {
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.DeveloperMode, null) },
-                        text = { Text(if (state.developerToolsOpen) "Hide developer tools" else "Show developer tools") },
-                        onClick = { setMenuOpen(false); browser.toggleDeveloperTools() },
-                    )
+                    if (state.settings.developerToolsEnabled) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.DeveloperMode, null) },
+                            text = { Text(if (state.developerToolsOpen) "Hide developer tools" else "Show developer tools") },
+                            onClick = { setMenuOpen(false); browser.toggleDeveloperTools() },
+                        )
+                    }
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.Download, null) },
                         text = { Text("Downloads") },
@@ -251,60 +274,88 @@ private fun BrowserSurfaceContent(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(onClick = browser::goHome) { Icon(Icons.Default.Home, "Home page") }
-                    OutlinedTextField(
-                        value = addressText,
-                        onValueChange = setAddressText,
-                        modifier = Modifier.weight(1f).onFocusChanged { focusState ->
-                            if (focusState.isFocused && !addressFocused) {
-                                setAddressFocused(true)
-                                setAddressText("")
-                            } else if (!focusState.isFocused && addressFocused) {
+                    Box(Modifier.weight(1f)) {
+                        OutlinedTextField(
+                            value = addressValue,
+                            onValueChange = {
+                                setAddressValue(it)
+                                setAddressSuggestionsOpen(true)
+                            },
+                            modifier = Modifier.fillMaxWidth().onFocusChanged { focusState ->
+                                if (focusState.isFocused && !addressFocused) {
+                                    setAddressFocused(true)
+                                    setAddressSuggestionsOpen(true)
+                                    setAddressValue(TextFieldValue("", TextRange.Zero))
+                                } else if (!focusState.isFocused && addressFocused) {
+                                    setAddressFocused(false)
+                                    setAddressSuggestionsOpen(false)
+                                    setAddressValue(TextFieldValue(state.address, TextRange(state.address.length)))
+                                }
+                            },
+                            singleLine = true,
+                            label = { Text("Search or enter address") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = {
+                                browser.navigate(addressValue.text)
+                                focusManager.clearFocus()
                                 setAddressFocused(false)
-                                setAddressText(state.address)
+                                setAddressSuggestionsOpen(false)
+                            }),
+                            trailingIcon = if (addressFocused && addressValue.text.isNotEmpty()) ({
+                                IconButton(onClick = { setAddressValue(TextFieldValue("", TextRange.Zero)) }) { Icon(Icons.Default.Close, "Clear address") }
+                            }) else null,
+                        )
+                        DropdownMenu(
+                            expanded = addressFocused && addressSuggestionsOpen,
+                            onDismissRequest = { setAddressSuggestionsOpen(false) },
+                            modifier = Modifier.widthIn(min = 180.dp, max = 320.dp),
+                        ) {
+                            val firstSuggestion = browser.addressEditSuggestion()
+                            val normalizedQuery = addressValue.text.trim()
+                            val matchingHistory = history
+                                .filter { it != firstSuggestion && (normalizedQuery.isBlank() || it.contains(normalizedQuery, ignoreCase = true)) }
+                                .take(8)
+                            fun selectSuggestion(value: String) {
+                                val selected = addressValue.selection
+                                val (start, end) = if (!selected.collapsed) {
+                                    selected.min to selected.max
+                                } else if (addressValue.text.any(Char::isWhitespace) || value.any(Char::isWhitespace)) {
+                                    0 to addressValue.text.length
+                                } else {
+                                    val cursor = selected.start.coerceIn(0, addressValue.text.length)
+                                    val start = (cursor - 1 downTo 0)
+                                        .firstOrNull { addressValue.text[it].isWhitespace() }
+                                        ?.plus(1) ?: 0
+                                    val end = (cursor until addressValue.text.length)
+                                        .firstOrNull { addressValue.text[it].isWhitespace() }
+                                        ?: addressValue.text.length
+                                    start to end
+                                }
+                                val nextText = addressValue.text.replaceRange(start, end, value)
+                                setAddressValue(TextFieldValue(nextText, TextRange(start + value.length)))
+                                setAddressSuggestionsOpen(false)
                             }
-                        },
-                        singleLine = true,
-                        label = { Text("Search or enter address") },
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = {
-                            browser.navigate(addressText)
-                            focusManager.clearFocus()
-                            setAddressFocused(false)
-                        }),
-                        trailingIcon = if (addressFocused && addressText.isNotEmpty()) ({
-                            IconButton(onClick = { setAddressText("") }) { Icon(Icons.Default.Close, "Clear address") }
-                        }) else null,
-                    )
-                    IconButton(onClick = browser::goBack, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoBack == true) { Icon(Icons.Default.ArrowBack, "Back") }
-                    IconButton(onClick = browser::goForward, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoForward == true) { Icon(Icons.Default.ArrowForward, "Forward") }
-                }
-                if (addressFocused) {
-                    val firstSuggestion = browser.addressEditSuggestion()
-                    val normalizedQuery = addressText.trim()
-                    val matchingHistory = history
-                        .filter { it != firstSuggestion && (normalizedQuery.isBlank() || it.contains(normalizedQuery, ignoreCase = true)) }
-                        .take(8)
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(vertical = 4.dp)) {
                             firstSuggestion?.let { value ->
                                 AddressSuggestionRow(
                                     value = value,
                                     subtitle = state.tabs.firstOrNull { it.id == state.selectedTabId }?.title,
-                                    onSelect = { setAddressText(value) },
+                                    onSelect = { selectSuggestion(value) },
                                 )
                             }
                             if (normalizedQuery.isNotBlank() && normalizedQuery != firstSuggestion) {
-                                AddressSuggestionRow(value = normalizedQuery, onSelect = { setAddressText(normalizedQuery) })
+                                AddressSuggestionRow(value = normalizedQuery, onSelect = { selectSuggestion(normalizedQuery) })
                             }
                             matchingHistory.forEach { entry ->
                                 AddressSuggestionRow(
                                     value = entry,
-                                    onSelect = { setAddressText(entry) },
+                                    onSelect = { selectSuggestion(entry) },
                                     onRemove = { clearHistoryEntry(entry) },
                                 )
                             }
                         }
                     }
+                    IconButton(onClick = browser::goBack, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoBack == true) { Icon(Icons.Default.ArrowBack, "Back") }
+                    IconButton(onClick = browser::goForward, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoForward == true) { Icon(Icons.Default.ArrowForward, "Forward") }
                 }
             }
         }
@@ -317,7 +368,8 @@ private fun BrowserSurfaceContent(
             if (addressFocused) {
                 focusManager.clearFocus()
                 setAddressFocused(false)
-                setAddressText(state.address)
+                setAddressSuggestionsOpen(false)
+                setAddressValue(TextFieldValue(state.address, TextRange(state.address.length)))
             }
             setUrlRowVisible(true)
         }) {
@@ -377,7 +429,17 @@ private fun BrowserSurfaceContent(
     if (tabsOpen) {
         ModalBottomSheet(onDismissRequest = { setTabsOpen(false) }) {
             Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Open tabs (${state.tabs.size})", style = MaterialTheme.typography.titleLarge)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Open tabs (${state.tabs.size})", style = MaterialTheme.typography.titleLarge)
+                    TextButton(onClick = { createTab(); setTabsOpen(false) }) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Text("New tab")
+                    }
+                }
                 TextField(
                     value = tabSearchQuery,
                     onValueChange = setTabSearchQuery,
@@ -396,7 +458,12 @@ private fun BrowserSurfaceContent(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(visibleTabs, key = { it.id }) { tab ->
-                    TabPreviewCard(tab, tab.id == state.selectedTabId, onSelect = { browser.selectTab(tab.id); setTabsOpen(false) }, onClose = { browser.closeTab(tab.id) })
+                    TabPreviewCard(
+                        tab,
+                        tab.id == state.selectedTabId,
+                        onSelect = { browser.selectTab(tab.id); setTabsOpen(false) },
+                        onClose = { if (browser.closeTab(tab.id)) setTabsOpen(false) },
+                    )
                 }
             }
             }
@@ -609,8 +676,8 @@ private fun TabPreviewCard(tab: BrowserTabUi, selected: Boolean, onSelect: () ->
                 }
                 IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Default.Close, "Close tab") }
             }
-            Text(tab.title.ifBlank { "New tab" }, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), maxLines = 2, style = MaterialTheme.typography.titleSmall)
-            Text(tab.host, modifier = Modifier.padding(horizontal = 10.dp), maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            Text(tab.title.ifBlank { "New tab" }, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), maxLines = 2, style = MaterialTheme.typography.titleSmall.copy(fontStyle = if (tab.isTemporary) FontStyle.Italic else FontStyle.Normal))
+            Text(if (tab.isTemporary) "Temporary preview" else tab.host, modifier = Modifier.padding(horizontal = 10.dp), maxLines = 1, style = MaterialTheme.typography.labelSmall)
         }
     }
 }

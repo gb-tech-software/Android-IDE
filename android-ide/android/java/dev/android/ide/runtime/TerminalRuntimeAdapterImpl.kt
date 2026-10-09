@@ -22,8 +22,9 @@ import dev.android.ide.contracts.SessionAvailability
 import dev.android.ide.contracts.SessionDescriptor
 import dev.android.ide.contracts.TerminalProjectAccess
 import dev.android.ide.contracts.TerminalRuntimeAdapter
+import dev.android.ide.contracts.TerminalStorageSetupPermission
 import dev.android.ide.saf.AndroidIdeDocumentsProvider
-import dev.android.ide.saf.SafBackedFileSystem
+import dev.android.ide.filesystem.AndroidIdeFileSystem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,7 +48,7 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
     private val appContext = context.applicationContext
     private val sessionStore = RuntimeSessionStore(appContext)
     private val bundledInstaller = BundledTermuxRuntimeInstaller(appContext)
-    private val fileSystem = SafBackedFileSystem(appContext)
+    private val fileSystem = AndroidIdeFileSystem.from(appContext).resources
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sessions = ConcurrentHashMap<String, LiveSession>()
     private val viewInvalidators = ConcurrentHashMap<String, () -> Unit>()
@@ -70,7 +71,6 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
             _initializationProgress.value = null
             return@withContext bootstrap
         }
-        val packages = bundledInstaller.ensureDefaultPackages(onProgress)
         val shellFailure = bundledInstaller.shellStartupFailure()
         if (shellFailure != null) {
             _initializationProgress.value = null
@@ -87,11 +87,10 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
         // the UI can explain what happened and the user can explicitly close it.
         sessionStore.markAvailableUnavailable("The Android process was recreated; start a new terminal session")
         _initializationProgress.value = null
-        if (packages.outcome == OperationOutcome.COMPLETE) {
-            OperationReport(OperationOutcome.COMPLETE, "Terminal and baseline packages are available")
-        } else {
-            OperationReport(OperationOutcome.PARTIAL, "Terminal is available, but baseline packages need attention", packages.errorCategory, recoveryHint = packages.message)
-        }
+        OperationReport(
+            OperationOutcome.COMPLETE,
+            "Terminal runtime is ready. Install or remove packages with pkg when you choose.",
+        )
     }
 
     fun setTerminalFeedbackListener(listener: ((OperationReport) -> Unit)?) {
@@ -132,10 +131,27 @@ class TerminalRuntimeAdapterImpl(context: Context) : TerminalRuntimeAdapter, Run
     }
 
     override suspend fun workingDirectory(project: ProjectIdentity): String? =
-        fileSystem.resolveProject(project).node?.localPath
+        fileSystem.resolveProject(project).terminalPath
             ?.let(::File)
             ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
             ?.absolutePath
+
+    override suspend fun completeStorageSetupRequest(
+        requestId: String,
+        permission: TerminalStorageSetupPermission,
+    ): OperationReport = withContext(Dispatchers.IO) {
+        val report = when {
+            permission is TerminalStorageSetupPermission.Denied -> permission.report
+            !runtimeReady -> OperationReport(
+                OperationOutcome.BLOCKED,
+                "Terminal must finish startup checks before shared-storage links can be created",
+                ErrorCategory.UNAVAILABLE_RUNTIME,
+            )
+            else -> bundledInstaller.rebuildStorageLinks()
+        }
+        bundledInstaller.publishStorageSetupResult(requestId, report)
+        report
+    }
 
     override suspend fun createSession(workingDirectory: String?, name: String): SessionDescriptor {
         val id = UUID.randomUUID().toString()

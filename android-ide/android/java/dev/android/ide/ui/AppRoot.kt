@@ -39,6 +39,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     val context = LocalContext.current
     val shellState by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
+    TerminalStorageSetupPermissionHost(viewModel, shellState.terminalStorageSetupRequest)
     val themeResolver = remember { ThemeResolver(context) { viewModel.state.value.applicationTheme } }
     val resolvedAppTheme = themeResolver.getAppTheme()
     androidx.compose.runtime.LaunchedEffect(shellState.applicationTheme) {
@@ -46,6 +47,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     }
     var createVisible by remember { mutableStateOf(false) }
     var createReviewVisible by remember { mutableStateOf(false) }
+    var createConfirmationVisible by remember { mutableStateOf(false) }
     var createName by remember { mutableStateOf("") }
     var createDescription by remember { mutableStateOf("") }
     var createDestination by remember { mutableStateOf<String?>(null) }
@@ -54,10 +56,10 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     var folderUri by remember { mutableStateOf<String?>(null) }
     var folderReviewVisible by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
-    var folderDescription by remember { mutableStateOf("") }
 
     var zipUri by remember { mutableStateOf<String?>(null) }
     var zipReviewVisible by remember { mutableStateOf(false) }
+    var zipConfirmationVisible by remember { mutableStateOf(false) }
     var zipName by remember { mutableStateOf("") }
     var zipDescription by remember { mutableStateOf("") }
     var zipDestination by remember { mutableStateOf<String?>(null) }
@@ -70,6 +72,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     var operationName by remember { mutableStateOf("") }
     var operationDescription by remember { mutableStateOf("") }
     var operationDestination by remember { mutableStateOf<String?>(null) }
+    var operationReviewVisible by remember { mutableStateOf(false) }
     var exportReviewVisible by remember { mutableStateOf(false) }
     var pendingExportProjectId by remember { mutableStateOf<String?>(null) }
     var pendingBatchExportIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -80,7 +83,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
             if (persistTreePermission(context, uri)) {
                 folderUri = uri.toString()
                 folderName = uri.lastPathSegment?.substringAfterLast(':')?.substringAfterLast('/') ?: ""
-                folderDescription = ""
                 viewModel.inspectExistingFolder(uri.toString())
                 folderReviewVisible = true
             } else pickerFeedback = "Android did not grant durable read and write access to this folder. Choose a location that supports persistent access, then try again."
@@ -96,6 +98,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 zipName = uri.lastPathSegment?.substringAfterLast('/')?.removeSuffix(".zip") ?: "Imported project"
                 zipDescription = ""
                 zipDestination = null
+                zipConfirmationVisible = false
                 zipReviewVisible = true
             } else pickerFeedback = "Android did not grant durable read access to this archive. Choose an archive from a document provider that supports persistent access."
         }
@@ -167,6 +170,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 createDestination = null
                 createTemplate = CreateProjectTemplate.FROM_SCRATCH
                 createReviewVisible = false
+                createConfirmationVisible = false
                 createVisible = true
             },
             onImportFolder = { openFolder.launch(null) },
@@ -182,6 +186,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 operationName = project?.name?.let { "Copy of $it" }.orEmpty()
                 operationDescription = project?.description.orEmpty()
                 operationDestination = null
+                operationReviewVisible = false
             },
             onRelocateProject = { projectId ->
                 viewModel.clearOperationFeedback()
@@ -191,6 +196,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 operationName = project?.name.orEmpty()
                 operationDescription = project?.description.orEmpty()
                 operationDestination = null
+                operationReviewVisible = false
             },
         )
 
@@ -203,6 +209,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 destination = createDestination,
                 template = createTemplate,
                 reviewVisible = createReviewVisible,
+                confirmationVisible = createConfirmationVisible,
                 onNameChange = { createName = it },
                 onDescriptionChange = { createDescription = it },
                 onDestination = { createDestinationPicker.launch(null) },
@@ -211,8 +218,9 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                     createReviewVisible = it
                     createVisible = !it
                 },
-                onDismiss = { createVisible = false; createReviewVisible = false },
-                onOpenProject = { createVisible = false; createReviewVisible = false; viewModel.openProject(it) },
+                onConfirmationVisibleChange = { createConfirmationVisible = it },
+                onDismiss = { createVisible = false; createReviewVisible = false; createConfirmationVisible = false },
+                onOpenProject = { createVisible = false; createReviewVisible = false; createConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
             )
@@ -222,9 +230,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 state = shellState,
                 viewModel = viewModel,
                 folderUri = folderUri,
-                description = folderDescription,
                 folderName = folderName,
-                onDescriptionChange = { folderDescription = it },
                 onCancel = { folderReviewVisible = false; viewModel.dismissAcquisitionPrompt() },
                 onOpenProject = { folderReviewVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
@@ -239,11 +245,13 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 name = zipName,
                 description = zipDescription,
                 destination = zipDestination,
+                confirmationVisible = zipConfirmationVisible,
                 onNameChange = { zipName = it },
                 onDescriptionChange = { zipDescription = it },
                 onDestination = { zipDestinationPicker.launch(null) },
-                onCancel = { zipReviewVisible = false; viewModel.dismissAcquisitionPrompt() },
-                onOpenProject = { zipReviewVisible = false; viewModel.openProject(it) },
+                onConfirmationVisibleChange = { zipConfirmationVisible = it },
+                onCancel = { zipReviewVisible = false; zipConfirmationVisible = false; viewModel.dismissAcquisitionPrompt() },
+                onOpenProject = { zipReviewVisible = false; zipConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
             )
@@ -288,11 +296,14 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 name = operationName,
                 description = operationDescription,
                 destination = operationDestination?.let(::humanReadableStorageLocation),
+                reviewVisible = operationReviewVisible,
                 operationReport = shellState.operationReport,
                 operationInProgress = shellState.operationInProgress,
                 onNameChange = { operationName = it },
                 onDescriptionChange = { operationDescription = it },
+                isValidName = ::projectNameIsValid,
                 onChooseDestination = { operationDestinationPicker.launch(null) },
+                onReviewVisibleChange = { operationReviewVisible = it },
                 onSubmit = {
                     val id = operationProjectId
                     val destination = operationDestination
@@ -304,7 +315,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                         }
                     }
                 },
-                onDismiss = { operationKind = null },
+                onDismiss = { operationKind = null; operationReviewVisible = false },
             )
         }
         }

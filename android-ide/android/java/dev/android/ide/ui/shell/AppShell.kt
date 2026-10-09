@@ -288,39 +288,41 @@ fun AppShell(
                         .width(drawerWidth)
                         .fillMaxHeight(),
                 ) {
-                    if (drawerState.isOpen) ContextualNavigation(
-                        modifier = Modifier.fillMaxSize(),
-                        state = state,
-                        section = sidebarSection,
-                        appViewModel = viewModel,
-                        ideViewModel = ideViewModel,
-                        moreOpen = moreOpen,
-                        onMore = { moreOpen = !moreOpen },
-                        onNavigate = { surface, closeSidebar -> navigate(surface, closeSidebar) },
-                        onSectionChange = { sidebarSection = it },
-                        onSectionNavigate = { targetSection, targetSurface ->
-                            sidebarSection = targetSection
-                            navigate(targetSurface, closeSidebar = false)
-                        },
-                        onOpenProject = { viewModel.openProject(it); coroutineScope.launch { drawerState.close() } },
-                        onCreateProject = { onCreateProject(null); moreOpen = false; coroutineScope.launch { drawerState.close() } },
-                        onImportFolder = { onImportFolder(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
-                        onImportZip = { onImportZip(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
-                        onCloneGit = { onCloneGit(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
-                        onFeedback = { phaseFeedback = it },
-                        onSettingsSection = { section -> settingsSection = section; navigate(Surface.SETTINGS, closeSidebar = true) },
-                        onDismissDrawer = { coroutineScope.launch { drawerState.close() } },
-                        onOpenEditorPanel = { editorPanelRequest += 1; coroutineScope.launch { drawerState.close() } },
-                        onImportFiles = { target -> importTargetUri = target; importFilesLauncher.launch(arrayOf("*/*")) },
-                        onExportDirectory = { node -> exportTargetUri = node.documentUri; exportDirectoryLauncher.launch("${node.displayName}.zip") },
-                        onExportProject = onExportProject,
-                        onDeleteProject = {
-                            viewModel.clearOperationFeedback()
-                            projectDeleteCode = (100..999).random().toString()
-                            enteredProjectDeleteCode = ""
-                            projectDeleteConfirmation = true
-                        },
-                    )
+                    if (drawerState.isOpen) surfaceStateHolder.SaveableStateProvider("contextual-navigation") {
+                        ContextualNavigation(
+                            modifier = Modifier.fillMaxSize(),
+                            state = state,
+                            section = sidebarSection,
+                            appViewModel = viewModel,
+                            ideViewModel = ideViewModel,
+                            moreOpen = moreOpen,
+                            onMore = { moreOpen = !moreOpen },
+                            onNavigate = { surface, closeSidebar -> navigate(surface, closeSidebar) },
+                            onSectionChange = { sidebarSection = it },
+                            onSectionNavigate = { targetSection, targetSurface ->
+                                sidebarSection = targetSection
+                                navigate(targetSurface, closeSidebar = false)
+                            },
+                            onOpenProject = { viewModel.openProject(it); coroutineScope.launch { drawerState.close() } },
+                            onCreateProject = { onCreateProject(null); moreOpen = false; coroutineScope.launch { drawerState.close() } },
+                            onImportFolder = { onImportFolder(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
+                            onImportZip = { onImportZip(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
+                            onCloneGit = { onCloneGit(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
+                            onFeedback = { phaseFeedback = it },
+                            onSettingsSection = { section -> settingsSection = section; navigate(Surface.SETTINGS, closeSidebar = true) },
+                            onDismissDrawer = { coroutineScope.launch { drawerState.close() } },
+                            onOpenEditorPanel = { editorPanelRequest += 1; coroutineScope.launch { drawerState.close() } },
+                            onImportFiles = { target -> importTargetUri = target; importFilesLauncher.launch(arrayOf("*/*")) },
+                            onExportDirectory = { node -> exportTargetUri = node.documentUri; exportDirectoryLauncher.launch("${node.displayName}.zip") },
+                            onExportProject = onExportProject,
+                            onDeleteProject = {
+                                viewModel.clearOperationFeedback()
+                                projectDeleteCode = (100..999).random().toString()
+                                enteredProjectDeleteCode = ""
+                                projectDeleteConfirmation = true
+                            },
+                        )
+                    }
                 }
             }
         },
@@ -463,6 +465,7 @@ private fun ContextualNavigation(
     onDeleteProject: () -> Unit,
 ) {
     val editorState by ideViewModel.uiState.collectAsState()
+    val sectionStateHolder = rememberSaveableStateHolder()
     Column(
         modifier = modifier
             .navigationBarsPadding()
@@ -489,6 +492,7 @@ private fun ContextualNavigation(
                 .weight(1f)
                 .padding(8.dp),
         ) {
+            sectionStateHolder.SaveableStateProvider(section.name) {
             when (section) {
                 SidebarSection.NAVIGATION -> {
                     Column(
@@ -559,8 +563,8 @@ private fun ContextualNavigation(
                                 else -> EditorPanel.FILES
                             },
                             onPanelSelected = {},
-                            onFileSelected = { uri -> ideViewModel.openFile(uri); onDismissDrawer() },
-                            onSearchResultSelected = { result -> ideViewModel.openFileAtSearchResult(result); onDismissDrawer() },
+                            onFileSelected = ideViewModel::openFile,
+                            onSearchResultSelected = ideViewModel::openFileAtSearchResult,
                             onToggleDirectory = ideViewModel::toggleDirectory,
                             onRefresh = ideViewModel::refreshProject,
                             onLocate = ideViewModel::revealActiveFile,
@@ -578,6 +582,10 @@ private fun ContextualNavigation(
                             onFeedback = onFeedback,
                             onOpenTerminal = { directoryUri ->
                                 appViewModel.openTerminalForDirectory(directoryUri)
+                                onDismissDrawer()
+                            },
+                            onOpenBrowserPreview = { fileUri ->
+                                appViewModel.requestLocalBrowserPreview(fileUri)
                                 onDismissDrawer()
                             },
                             rootNode = root,
@@ -624,6 +632,7 @@ private fun ContextualNavigation(
                         )
                     }
                 }
+            }
             }
         }
     }
@@ -875,6 +884,7 @@ private fun SurfaceHost(
             onOpenSettings = { onNavigate(Surface.SETTINGS) },
             onExportProject = onExportProject,
             onFeedback = onFeedback,
+            onOpenBrowserPreview = viewModel::requestLocalBrowserPreview,
             modifier = modifier,
         )
         Surface.TERMINAL -> TerminalSurface(
@@ -890,6 +900,8 @@ private fun SurfaceHost(
             onOpenNavigation = onOpenNavigation,
             onOpenSettings = { onSettingsSection("Browser"); onNavigate(Surface.SETTINGS) },
             onApplicationBack = { if (!viewModel.back()) viewModel.requestExitConfirmation() },
+            initialNavigation = state.pendingBrowserNavigation,
+            onInitialNavigationConsumed = viewModel::consumeBrowserNavigationRequest,
             modifier = modifier,
         )
         Surface.GIT -> GitSurface(state, viewModel, onOpenNavigation, modifier)

@@ -48,8 +48,8 @@ private const val THEME_KEY = "theme"
 private const val DEVTOOLS_KEY = "developer_tools_enabled"
 private const val DESKTOP_SITE_KEY = "desktop_site_default"
 private const val HISTORY_KEY = "navigation_history"
-private const val DEFAULT_HOME = "about:blank"
-private const val DEFAULT_SEARCH = "duckduckgo"
+private const val DEFAULT_HOME = "https://www.google.com"
+private const val DEFAULT_SEARCH = "google"
 
 private data class PendingDuplicateDownload(
     val name: String,
@@ -97,6 +97,7 @@ data class BrowserTabUi(
     val canGoForward: Boolean,
     val viewportWidth: Int?,
     val previewPath: String?,
+    val isTemporary: Boolean = false,
 )
 
 data class BrowserUiState(
@@ -144,6 +145,7 @@ internal data class BrowserTabRuntime(
     var previewPath: String? = null,
     var scrollY: Int = 0,
     var scrollListener: ((Int) -> Unit)? = null,
+    var isTemporary: Boolean = false,
 )
 
 /** Application-owned browser domain. It survives navigation away from the Browser surface. */
@@ -177,7 +179,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         port.setDelegate(object : WebExtension.PortDelegate {
                             override fun onDisconnect(port: WebExtension.Port) { devtoolsPorts -= port }
                         })
-                        runCatching { port.postMessage(JSONObject().put("type", "developer-tools").put("open", _uiState.value.developerToolsOpen)) }
+                        val shouldOpen = _uiState.value.settings.developerToolsEnabled && _uiState.value.developerToolsOpen
+                        runCatching { port.postMessage(JSONObject().put("type", "developer-tools").put("open", shouldOpen)) }
                     }
                 }, "android-ide")
             }
@@ -218,12 +221,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewportWidth: Int?,
         previewPath: String?,
         select: Boolean,
+        temporary: Boolean = false,
     ) {
         val sessionSettings = GeckoSessionSettings.Builder()
             .userAgentMode(if (_uiState.value.settings.desktopSiteDefault) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
             .build()
         val session = GeckoSession(sessionSettings)
-        val tab = BrowserTabRuntime(id, session, url, title, sessionState = savedState, viewportWidth = viewportWidth, previewPath = previewPath)
+        val tab = BrowserTabRuntime(id, session, url, title, sessionState = savedState, viewportWidth = viewportWidth, previewPath = previewPath, isTemporary = temporary)
         sessions[id] = tab
         attachDelegates(tab)
         savedState?.let { GeckoSession.SessionState.fromString(it)?.let(session::restoreState) }
@@ -256,7 +260,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 publish()
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) {
-                _uiState.value = _uiState.value.copy(loading = progress < 100, loadProgress = progress)
+                val current = _uiState.value
+                val milestone = progress >= 100 || progress == 0 || progress < current.loadProgress ||
+                    progress - current.loadProgress >= 5
+                if (milestone || current.loading != (progress < 100)) {
+                    _uiState.value = current.copy(loading = progress < 100, loadProgress = progress)
+                }
             }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 _uiState.value = _uiState.value.copy(loading = false, loadProgress = 100)
@@ -508,22 +517,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
-        preferences.edit().putString(SELECTED_TAB_KEY, tabId).apply()
+        if (sessions[tabId]?.isTemporary != true) {
+            preferences.edit().putString(SELECTED_TAB_KEY, tabId).apply()
+        }
         publish(selectedId = tabId)
     }
 
-    fun closeTab(tabId: String) {
+    /** Returns true when closing this tab created a replacement because it was the last tab. */
+    fun closeTab(tabId: String): Boolean {
+        if (tabId !in sessions) return false
         sessions.remove(tabId)?.session?.close()
-        if (sessions.isEmpty()) createTab()
+        val createdReplacement = sessions.isEmpty()
+        if (createdReplacement) createTab()
         else if (_uiState.value.selectedTabId == tabId) selectTab(sessions.keys.last())
         persistTabs()
         publish()
+        return createdReplacement
     }
 
     fun navigate(address: String) {
         val tab = sessions[_uiState.value.selectedTabId] ?: return
         val entered = address.trim()
         if (entered.isEmpty()) return
+        // Deliberate address-bar navigation turns a disposable preview into a normal tab.
+        if (tab.isTemporary) {
+            tab.isTemporary = false
+            preferences.edit().putString(SELECTED_TAB_KEY, tab.id).apply()
+        }
         val target = resolveAddress(entered)
         val history = (listOf(entered) + _uiState.value.history.filterNot { it == entered }).take(30)
         preferences.edit().putString(HISTORY_KEY, JSONArray(history).toString()).apply()
@@ -533,6 +553,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         tab.session.loadUri(target)
         _uiState.value = _uiState.value.copy(address = target, error = null)
         persistTabs()
+    }
+
+    /** Open a project-local file in a disposable tab, replacing the prior disposable preview. */
+    fun openTemporaryTab(url: String) {
+        val entered = url.trim()
+        if (entered.isEmpty()) return
+        val target = resolveAddress(entered)
+        val temporary = sessions.values.lastOrNull { it.isTemporary }
+        if (temporary == null) {
+            createTab(UUID.randomUUID().toString(), target, "Preview", null, null, null, true, temporary = true)
+            return
+        }
+        temporary.url = target
+        temporary.title = "Preview"
+        temporary.canGoBack = false
+        temporary.canGoForward = false
+        temporary.scrollY = 0
+        temporary.scrollListener?.invoke(0)
+        selectTab(temporary.id)
+        temporary.session.loadUri(target)
+        _uiState.value = _uiState.value.copy(address = target, error = null)
+        publish(selectedId = temporary.id)
     }
 
     fun goHome() { navigate(_uiState.value.settings.homePage) }
@@ -553,6 +595,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun resetViewport() = setViewportWidth(0)
 
     fun toggleDeveloperTools() {
+        if (!_uiState.value.settings.developerToolsEnabled) {
+            _uiState.value = _uiState.value.copy(developerToolsOpen = false)
+            return
+        }
         val open = !_uiState.value.developerToolsOpen
         _uiState.value = _uiState.value.copy(developerToolsOpen = open)
         devtoolsPorts.toList().forEach { port ->
@@ -625,7 +671,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             // position. Preserve that position per tab and hand it to the surface
             // immediately, before SwipeRefreshLayout decides whether to intercept.
             tab.scrollListener = onScroll
-            view.setSession(tab.session)
+            val attachedSession = view.session
+            if (attachedSession !== tab.session) {
+                if (attachedSession != null) view.releaseSession()
+                view.setSession(tab.session)
+            }
             onScroll(tab.scrollY)
         }
     }
@@ -665,7 +715,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun publish(selectedId: String? = _uiState.value.selectedTabId) {
         val selected = sessions[selectedId]
         _uiState.value = _uiState.value.copy(
-            tabs = sessions.values.map { BrowserTabUi(it.id, it.url, it.title, it.url.hostOrNewTab(), it.canGoBack, it.canGoForward, it.viewportWidth, it.previewPath) },
+            tabs = sessions.values.map { BrowserTabUi(it.id, it.url, it.title, it.url.hostOrNewTab(), it.canGoBack, it.canGoForward, it.viewportWidth, it.previewPath, it.isTemporary) },
             selectedTabId = selectedId,
             address = selected?.url?.takeUnless { it == DEFAULT_HOME }.orEmpty(),
             viewportWidth = selected?.viewportWidth,
@@ -675,7 +725,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun persistTabs() {
         val array = JSONArray()
-        sessions.values.forEach { tab -> array.put(JSONObject().apply {
+        sessions.values.filterNot { it.isTemporary }.forEach { tab -> array.put(JSONObject().apply {
             put("id", tab.id); put("url", tab.url); put("title", tab.title); put("viewportWidth", tab.viewportWidth ?: 0); tab.previewPath?.let { put("previewPath", it) }; tab.sessionState?.let { put("state", it) }
         }) }
         preferences.edit().putString(TABS_KEY, array.toString()).apply()

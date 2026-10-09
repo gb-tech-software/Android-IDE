@@ -7,7 +7,7 @@ package dev.android.ide.viewmodel.model
 
 sealed class FileOpDialog {
     /** Shown when a binary document is selected for opening in the text editor. */
-    data class BinaryOpenError(val fileName: String) : FileOpDialog()
+    data class BinaryOpenError(val fileName: String, val documentUri: String) : FileOpDialog()
 
     /** Rename dialog for [node]. [errorMessage] is shown inline when non-null. */
     data class Rename(val node: FileNode, val errorMessage: String? = null, val resultMessage: String? = null, val isSubmitting: Boolean = false) : FileOpDialog()
@@ -27,6 +27,7 @@ sealed class FileOpDialog {
         val errorMessage: String? = null,
         val resultMessage: String? = null,
         val isSubmitting: Boolean = false,
+        val createdDocumentUri: String? = null,
     ) : FileOpDialog()
 
     /** "Create folder" dialog; new folder will be created inside [parentNode]. [errorMessage] is shown inline when non-null. */
@@ -81,6 +82,15 @@ sealed class FileOpDialog {
      */
     data class SaveAs(
         val suggestedName: String,
+        val errorMessage: String? = null,
+        val resultMessage: String? = null,
+        val isSubmitting: Boolean = false,
+    ) : FileOpDialog()
+
+    /** Focused name-only save flow for a new, unsaved editor tab. */
+    data class SaveBlank(
+        val tabId: String,
+        val suggestedName: String = "untitled",
         val errorMessage: String? = null,
         val resultMessage: String? = null,
         val isSubmitting: Boolean = false,

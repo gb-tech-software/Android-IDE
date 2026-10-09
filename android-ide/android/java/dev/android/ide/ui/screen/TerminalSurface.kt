@@ -79,6 +79,7 @@ fun TerminalSurface(
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
+    var activeTerminalView by remember { mutableStateOf<TerminalView?>(null) }
     val runtimeAvailable = state.runtimeCapabilities?.availability == RuntimeAvailability.AVAILABLE
     val context = LocalContext.current
     val themeResolver = remember { ThemeResolver(context) }
@@ -129,7 +130,38 @@ fun TerminalSurface(
             Column(Modifier.weight(1f)) {
                 Text("Terminal", style = MaterialTheme.typography.headlineSmall)
             }
-            IconButton(onClick = onOpenSettings) { Icon(Icons.Default.MoreVert, "Terminal settings") }
+            Box {
+                IconButton(onClick = { appearanceMenuOpen = true }) {
+                    Icon(Icons.Default.MoreVert, "Terminal menu")
+                }
+                androidx.compose.material3.DropdownMenu(
+                    expanded = appearanceMenuOpen,
+                    onDismissRequest = { appearanceMenuOpen = false },
+                ) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Terminal settings") },
+                        onClick = { appearanceMenuOpen = false; onOpenSettings() },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Zoom out (${terminalTextSize}sp)") },
+                        leadingIcon = { Icon(Icons.Default.ZoomOut, null) },
+                        onClick = {
+                            terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8)
+                            onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize))
+                            appearanceMenuOpen = false
+                        },
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Zoom in (${terminalTextSize}sp)") },
+                        leadingIcon = { Icon(Icons.Default.ZoomIn, null) },
+                        onClick = {
+                            terminalTextSize = (terminalTextSize + 1).coerceAtMost(32)
+                            onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize))
+                            appearanceMenuOpen = false
+                        },
+                    )
+                }
+            }
         }
         state.terminalProgress?.let { progress ->
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -147,17 +179,21 @@ fun TerminalSurface(
             Card(Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("No active terminal session", style = MaterialTheme.typography.titleMedium)
-                    Text(if (runtimeAvailable) "Starting a fresh command-line session in the terminal home…" else "The terminal runtime is not available yet.")
+                    Text(if (runtimeAvailable) "Start a fresh command-line session from the sidebar." else "The terminal runtime is not available yet.")
                 }
             }
         } else {
             DisposableEffect(selected.id) {
-                onDispose { viewModel.unbindTerminalView(selected.id) }
+                onDispose {
+                    viewModel.unbindTerminalView(selected.id)
+                    activeTerminalView = null
+                }
             }
             AndroidView(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                     factory = { context ->
                     TerminalView(context, null).also { terminalView ->
+                        activeTerminalView = terminalView
                         terminalView.setBackgroundColor(terminalTheme.background)
                         terminalView.setTextSize(terminalTextSize)
                         terminalView.isFocusable = true
@@ -204,6 +240,7 @@ fun TerminalSurface(
                     }
                 },
                 update = { view ->
+                    activeTerminalView = view
                     view.setBackgroundColor(terminalTheme.background)
                     if (view.textSize != terminalTextSize) view.setTextSize(terminalTextSize)
                     view.setTerminalColors(terminalTheme.background, terminalTheme.foreground, terminalTheme.cursor)
@@ -219,30 +256,17 @@ fun TerminalSurface(
                 onAltToggle = { altLatched = !altLatched },
                 onEscapeToggle = { escapeLatched = !escapeLatched },
                 onSend = { key ->
-                    viewModel.sendTerminalInput(encodeTerminalShortcut(key, ctrlLatched, altLatched, escapeLatched))
+                    if (key.keyCode != null) {
+                        activeTerminalView?.let { terminalView ->
+                            terminalView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key.keyCode))
+                            terminalView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key.keyCode))
+                        }
+                    } else {
+                        viewModel.sendTerminalInput(encodeTerminalShortcut(key, ctrlLatched, altLatched, escapeLatched))
+                    }
                     clearLatchedKeys()
                 },
             )
-            Box(Modifier.fillMaxWidth()) {
-                IconButton(onClick = { appearanceMenuOpen = true }, modifier = Modifier.align(Alignment.CenterEnd)) {
-                    Icon(Icons.Default.MoreVert, "Terminal appearance")
-                }
-                androidx.compose.material3.DropdownMenu(
-                    expanded = appearanceMenuOpen,
-                    onDismissRequest = { appearanceMenuOpen = false },
-                ) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Zoom out (${terminalTextSize}sp)") },
-                        leadingIcon = { Icon(Icons.Default.ZoomOut, null) },
-                        onClick = { terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8); onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize)); appearanceMenuOpen = false },
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Zoom in (${terminalTextSize}sp)") },
-                        leadingIcon = { Icon(Icons.Default.ZoomIn, null) },
-                        onClick = { terminalTextSize = (terminalTextSize + 1).coerceAtMost(32); onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize)); appearanceMenuOpen = false },
-                    )
-                }
-            }
         }
     }
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.TopCenter).padding(16.dp))
@@ -274,21 +298,26 @@ private enum class TerminalTheme(val background: Int, val foreground: Int, val c
     LIGHT(0xFFF4F5F7.toInt(), 0xFF202124.toInt(), 0xFF202124.toInt()),
 }
 
-private data class TerminalShortcut(val label: String, val sequence: String, val forceCtrl: Boolean = false)
+private data class TerminalShortcut(
+    val label: String,
+    val sequence: String,
+    val forceCtrl: Boolean = false,
+    val keyCode: Int? = null,
+)
 
 private val TERMINAL_NAVIGATION_SHORTCUTS = listOf(
     TerminalShortcut("Esc key", "\u001B"),
     TerminalShortcut("Tab", "\t"),
     TerminalShortcut("Enter", "\r"),
     TerminalShortcut("Backspace", "\u007F"),
-    TerminalShortcut("↑", "\u001B[A"),
-    TerminalShortcut("↓", "\u001B[B"),
-    TerminalShortcut("←", "\u001B[D"),
-    TerminalShortcut("→", "\u001B[C"),
-    TerminalShortcut("Home", "\u001B[H"),
-    TerminalShortcut("End", "\u001B[F"),
-    TerminalShortcut("PgUp", "\u001B[5~"),
-    TerminalShortcut("PgDn", "\u001B[6~"),
+    TerminalShortcut("↑", "\u0010"),
+    TerminalShortcut("↓", "\u000E"),
+    TerminalShortcut("←", "\u0002"),
+    TerminalShortcut("→", "\u0006"),
+    TerminalShortcut("Home", "\u0001"),
+    TerminalShortcut("End", "\u0005"),
+    TerminalShortcut("PgUp", "", keyCode = KeyEvent.KEYCODE_PAGE_UP),
+    TerminalShortcut("PgDn", "", keyCode = KeyEvent.KEYCODE_PAGE_DOWN),
 )
 
 private val TERMINAL_CONTROL_SHORTCUTS = listOf(

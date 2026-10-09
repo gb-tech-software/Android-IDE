@@ -3,12 +3,13 @@ package dev.android.ide.runtime
 import android.content.Context
 import dev.android.ide.contracts.ErrorCategory
 import dev.android.ide.contracts.LanguageServerAdapter
+import dev.android.ide.contracts.LanguageServerFeature
 import dev.android.ide.contracts.LanguageServerStatus
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.editor.LanguageServerRegistry
-import dev.android.ide.saf.SafBackedFileSystem
+import dev.android.ide.filesystem.AndroidIdeFileSystem
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +37,7 @@ class LanguageServerRuntimeAdapterImpl(
 ) : LanguageServerAdapter {
     private val appContext = context.applicationContext
     private val installer = BundledTermuxRuntimeInstaller(appContext)
-    private val fileSystem = SafBackedFileSystem(appContext)
+    private val fileSystem = AndroidIdeFileSystem.from(appContext).resources
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val nextRequestId = AtomicInteger(1)
     private val processes = ConcurrentHashMap<Key, LiveServer>()
@@ -44,8 +45,15 @@ class LanguageServerRuntimeAdapterImpl(
     override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus {
         val definition = LanguageServerRegistry.forLanguage(languageId)
             ?: return unavailable(project, languageId, "No language server is registered for $languageId")
-        val cwd = projectDirectory(project)
-            ?: return unavailable(project, languageId, "The selected project has no native terminal directory")
+        val resolution = fileSystem.resolveProject(project)
+        val cwd = resolution.terminalPath
+            ?.let(::File)
+            ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
+            ?: return unavailable(
+                project,
+                languageId,
+                resolution.explanation ?: "This project is on a storage path that language servers cannot access. Move it to Android IDE storage or Android external storage for full access.",
+            )
         val key = Key(project.id, definition.id)
         processes[key]?.let { live ->
             return if (live.initialized.isCompleted) live.status.copy(initialized = true)
@@ -53,7 +61,7 @@ class LanguageServerRuntimeAdapterImpl(
         }
 
         return runCatching {
-            val executable = File(installer.prefix(), "bin/${definition.requiredExecutable}")
+            val executable = File(installer.prefix(), "lib/android-ide/bin/${definition.requiredExecutable}")
             val command = if (executable.canExecute()) {
                 listOf(executable.absolutePath) + definition.command.drop(1)
             } else {
@@ -64,7 +72,7 @@ class LanguageServerRuntimeAdapterImpl(
                 .apply {
                     environment()["HOME"] = installer.home().absolutePath
                     environment()["PREFIX"] = installer.prefix().absolutePath
-                    environment()["PATH"] = "${File(installer.prefix(), "bin").absolutePath}:/system/bin:/system/xbin"
+                    environment()["PATH"] = "${File(installer.prefix(), "lib/android-ide/bin").absolutePath}:${File(installer.prefix(), "bin").absolutePath}:/system/bin:/system/xbin"
                     environment()["TERM"] = "xterm-256color"
                     environment()["LANG"] = "C.UTF-8"
                 }
@@ -77,14 +85,14 @@ class LanguageServerRuntimeAdapterImpl(
             scope.launch { process.errorStream.bufferedReader().useLines { lines -> lines.forEach { /* server diagnostics stay out of stdout */ } } }
             writeFrame(process.outputStream, initializeRequest(initializeId, project, cwd))
 
-            val initialized = withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { live.initialized.await() } == true
-            if (!initialized) {
+            val initialization = withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { live.initialized.await() }
+            if (initialization == null || !initialization.successful) {
                 processes.remove(key)
                 runCatching { process.destroy() }
                 return@runCatching unavailable(project, languageId, "${definition.id} did not complete LSP initialization")
             }
             writeFrame(process.outputStream, initializedNotification())
-            status.copy(initialized = true)
+            status.copy(initialized = true, supportedFeatures = initialization.features)
         }.getOrElse { error ->
             processes.remove(key)
             unavailable(project, languageId, "Could not start ${definition.id}: ${error.message ?: "unknown error"}")
@@ -150,7 +158,11 @@ class LanguageServerRuntimeAdapterImpl(
                     val json = runCatching { JSONObject(text) }.getOrNull()
                     if (json?.opt("id")?.toString() == live.initializeId.toString() &&
                         (json.has("result") || json.has("error"))) {
-                        live.initialized.complete(!json.has("error"))
+                        val successful = !json.has("error")
+                        val features = if (successful) serverFeatures(json.optJSONObject("result")?.optJSONObject("capabilities"))
+                        else emptySet()
+                        live.status = live.status.copy(initialized = successful, supportedFeatures = features)
+                        live.initialized.complete(InitializationResult(successful, features))
                     }
                 }
                 onMessage(key.projectId, key.serverId, body)
@@ -192,6 +204,29 @@ class LanguageServerRuntimeAdapterImpl(
 
     private fun initializedNotification(): ByteArray = notification("initialized", JSONObject())
 
+    private fun serverFeatures(capabilities: JSONObject?): Set<LanguageServerFeature> {
+        if (capabilities == null) return emptySet()
+        fun supports(key: String): Boolean = when (val value = capabilities.opt(key)) {
+            is JSONObject -> true
+            is Boolean -> value
+            else -> false
+        }
+        return buildSet {
+            if (supports("completionProvider")) add(LanguageServerFeature.COMPLETION)
+            if (supports("signatureHelpProvider")) add(LanguageServerFeature.SIGNATURE_HELP)
+            if (supports("hoverProvider")) add(LanguageServerFeature.HOVER)
+            if (supports("definitionProvider")) add(LanguageServerFeature.DEFINITION)
+            if (supports("declarationProvider")) add(LanguageServerFeature.DECLARATION)
+            if (supports("typeDefinitionProvider")) add(LanguageServerFeature.TYPE_DEFINITION)
+            if (supports("implementationProvider")) add(LanguageServerFeature.IMPLEMENTATION)
+            if (supports("referencesProvider")) add(LanguageServerFeature.REFERENCES)
+            if (supports("renameProvider")) add(LanguageServerFeature.RENAME)
+            if (supports("documentFormattingProvider")) add(LanguageServerFeature.DOCUMENT_FORMATTING)
+            if (supports("documentRangeFormattingProvider")) add(LanguageServerFeature.RANGE_FORMATTING)
+            if (supports("codeActionProvider")) add(LanguageServerFeature.CODE_ACTION)
+        }
+    }
+
     private fun request(id: Int, method: String, params: JSONObject): ByteArray =
         JSONObject().apply {
             put("jsonrpc", "2.0")
@@ -227,11 +262,6 @@ class LanguageServerRuntimeAdapterImpl(
         }
     }
 
-    private suspend fun projectDirectory(project: ProjectIdentity): File? =
-        fileSystem.resolveProject(project).node?.localPath
-            ?.let(::File)
-            ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
-
     private fun unavailable(project: ProjectIdentity, languageId: String, explanation: String) =
         LanguageServerStatus(
             serverId = LanguageServerRegistry.forLanguage(languageId)?.id ?: languageId,
@@ -245,11 +275,15 @@ class LanguageServerRuntimeAdapterImpl(
         OperationReport(OperationOutcome.BLOCKED, message, ErrorCategory.UNAVAILABLE_RUNTIME)
 
     private data class Key(val projectId: String, val serverId: String)
+    private data class InitializationResult(
+        val successful: Boolean,
+        val features: Set<LanguageServerFeature>,
+    )
     private data class LiveServer(
         val process: Process,
-        val status: LanguageServerStatus,
+        @Volatile var status: LanguageServerStatus,
         val initializeId: Int,
-        val initialized: CompletableDeferred<Boolean> = CompletableDeferred(),
+        val initialized: CompletableDeferred<InitializationResult> = CompletableDeferred(),
     )
 
     private companion object {

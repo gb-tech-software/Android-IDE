@@ -1,0 +1,13 @@
+{
+  "name": "android-ide-bundled-runtime-tools",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Offline runtime tools shipped with the Android IDE Termux bundle",
+  "dependencies": {
+    "live-server": "1.2.2",
+    "pyright": "1.1.414",
+    "typescript": "6.0.3",
+    "typescript-language-server": "6.0.1",
+    "vscode-langservers-extracted": "4.10.0"
+  }
+}

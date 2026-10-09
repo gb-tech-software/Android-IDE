@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -56,6 +57,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -87,6 +89,7 @@ import dev.android.ide.viewmodel.model.IdeUiState
 import dev.android.ide.viewmodel.model.findNode
 import dev.android.ide.viewmodel.model.pathTo
 import dev.android.ide.editor.EditorOutbound
+import kotlinx.coroutines.launch
 
 private const val DIRECTORY_MIME = "vnd.android.document/directory"
 
@@ -100,6 +103,7 @@ fun EditorSurface(
     onOpenSettings: () -> Unit,
     onExportProject: (String) -> Unit,
     onFeedback: (String) -> Unit,
+    onOpenBrowserPreview: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by ideViewModel.uiState.collectAsState()
@@ -120,7 +124,7 @@ fun EditorSurface(
             onOpenNavigation = onOpenGlobalNavigation,
             modifier = modifier,
         )
-        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") })
+        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserPreview = onOpenBrowserPreview)
         return
     }
 
@@ -131,6 +135,7 @@ fun EditorSurface(
         onOpenGlobalNavigation = onOpenGlobalNavigation,
         onOpenSettings = onOpenSettings,
         onFeedback = onFeedback,
+        onOpenBrowserPreview = onOpenBrowserPreview,
         modifier = modifier.fillMaxSize().background(LocalIdeColors.current.background),
     )
     if (state.fileMutationLoading) {
@@ -150,7 +155,7 @@ fun EditorSurface(
             }
         }
     }
-    EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") })
+    EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserPreview = onOpenBrowserPreview)
 }
 
 @Composable
@@ -203,11 +208,13 @@ fun EditorSidebar(
     onOpenSettings: () -> Unit,
     onFeedback: (String) -> Unit,
     onOpenTerminal: (String) -> Unit,
+    onOpenBrowserPreview: (String) -> Unit,
     rootNode: FileNode?,
     ideViewModel: IdeViewModel,
     modifier: Modifier,
 ) {
     val colors = LocalIdeColors.current
+    val panelStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
     val root = rootNode ?: return
     Column(modifier.background(colors.surface)) {
         Row(
@@ -242,8 +249,10 @@ fun EditorSidebar(
                 },
             )
             EditorSidebarActionTile(Icons.Default.MyLocation, "Locate", onClick = onLocate)
-            EditorSidebarActionTile(Icons.Default.Description, "New file", onClick = { ideViewModel.showCreateFileDialog(root) })
-            EditorSidebarActionTile(Icons.Default.CreateNewFolder, "New folder", onClick = { ideViewModel.showCreateFolderDialog(root) })
+            if (state.localStorageConfirmed) {
+                EditorSidebarActionTile(Icons.Default.Description, "New file", onClick = { ideViewModel.showCreateFileDialog(root) })
+                EditorSidebarActionTile(Icons.Default.CreateNewFolder, "New folder", onClick = { ideViewModel.showCreateFolderDialog(root) })
+            }
             var moreOpen by remember { mutableStateOf(false) }
             Box {
                 EditorSidebarActionTile(Icons.Default.MoreVert, "More", onClick = { moreOpen = true })
@@ -260,10 +269,23 @@ fun EditorSidebar(
                     onRemoveProject = onRemoveProject,
                     onOpenTerminal = { onOpenTerminal(root.documentUri) },
                     includeCreationActions = false,
+                    fullWorkspaceAvailable = state.localWorkspaceAvailable,
+                    localStorageConfirmed = state.localStorageConfirmed,
                 )
             }
         }
         HorizontalDivider(color = colors.separator)
+        state.statusMessage?.takeIf { it.isNotBlank() }?.let { message ->
+            Text(
+                text = message,
+                color = colors.textSecondary,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        panelStateHolder.SaveableStateProvider(contentPanel.name) {
         when (contentPanel) {
             EditorPanel.FILES -> FileTreePanel(
                 nodes = state.fileTree,
@@ -275,6 +297,8 @@ fun EditorSidebar(
                 locateRequestToken = state.locateRequestToken,
                 onLocateConsumed = ideViewModel::clearLocateRequest,
                 hideGitFolder = state.editorSettings.hideGitFolder,
+                fullWorkspaceAvailable = state.localWorkspaceAvailable,
+                localStorageConfirmed = state.localStorageConfirmed,
                 isMultiSelectMode = state.isMultiSelectMode,
                 selectedUris = state.selectedUris,
                 isSearchVisible = false,
@@ -325,13 +349,19 @@ fun EditorSidebar(
                 onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) },
                 onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) },
                 onOpenTerminalAt = { onOpenTerminal(it.documentUri) },
+                onOpenBrowserPreview = { node ->
+                    ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview)
+                },
+                defaultPreviewPath = state.defaultPreviewPath,
+                onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) },
                 modifier = Modifier.weight(1f),
             )
             EditorPanel.FILENAME_SEARCH -> FileTreePanel(
                 nodes = state.fileTree, clipboardItems = state.clipboardItems, clipboardIsCut = state.clipboardIsCut,
                 projectName = state.projectName, activeTabDocumentUri = state.openTabs.firstOrNull { it.isActive }?.documentUri,
                 locateTargetUri = state.locateTargetUri, locateRequestToken = state.locateRequestToken, onLocateConsumed = ideViewModel::clearLocateRequest,
-                hideGitFolder = state.editorSettings.hideGitFolder, isMultiSelectMode = false, selectedUris = emptySet(),
+                hideGitFolder = state.editorSettings.hideGitFolder, fullWorkspaceAvailable = state.localWorkspaceAvailable,
+                localStorageConfirmed = state.localStorageConfirmed, isMultiSelectMode = false, selectedUris = emptySet(),
                 isSearchVisible = true, isContentSearchVisible = false, fileSearchQuery = state.fileSearchQuery, fileSearchResults = state.fileSearchResults,
                 fileSearchIncludeFolders = state.fileSearchIncludeFolders, fileSearchRunning = state.fileSearchRunning,
                 contentSearchQuery = state.contentSearchQuery, contentSearchResults = state.contentSearchResults,
@@ -349,13 +379,14 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, modifier = Modifier.weight(1f),
+                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserPreview = { node -> ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
             )
             EditorPanel.CONTENT_SEARCH -> FileTreePanel(
                 nodes = state.fileTree, clipboardItems = state.clipboardItems, clipboardIsCut = state.clipboardIsCut,
                 projectName = state.projectName, activeTabDocumentUri = state.openTabs.firstOrNull { it.isActive }?.documentUri,
                 locateTargetUri = state.locateTargetUri, locateRequestToken = state.locateRequestToken, onLocateConsumed = ideViewModel::clearLocateRequest,
-                hideGitFolder = state.editorSettings.hideGitFolder, isMultiSelectMode = false, selectedUris = emptySet(),
+                hideGitFolder = state.editorSettings.hideGitFolder, fullWorkspaceAvailable = state.localWorkspaceAvailable,
+                localStorageConfirmed = state.localStorageConfirmed, isMultiSelectMode = false, selectedUris = emptySet(),
                 isSearchVisible = false, isContentSearchVisible = true, fileSearchQuery = state.fileSearchQuery, fileSearchResults = state.fileSearchResults,
                 contentSearchQuery = state.contentSearchQuery, contentSearchResults = state.contentSearchResults,
                 contentSearchCompletedQuery = state.contentSearchCompletedQuery,
@@ -375,8 +406,9 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, modifier = Modifier.weight(1f),
+                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserPreview = { node -> ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
             )
+        }
         }
     }
 }
@@ -397,12 +429,15 @@ private fun EditorWorkspace(
     onOpenGlobalNavigation: () -> Unit,
     onOpenSettings: () -> Unit,
     onFeedback: (String) -> Unit,
+    onOpenBrowserPreview: (String) -> Unit,
     modifier: Modifier,
 ) {
     val colors = LocalIdeColors.current
     val activeTab = state.openTabs.firstOrNull { it.isActive }
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    var moreOpen by remember { mutableStateOf(false) }
+    val previewScope = rememberCoroutineScope()
+    var previewNotice by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(activeTab?.id) { previewNotice = null }
     Column(modifier.background(colors.background)) {
         EditorTopBar(
             state = state, activeTab = activeTab, fileTree = fileTree,
@@ -418,21 +453,62 @@ private fun EditorWorkspace(
                 }
             },
             onSave = {
-                if (activeTab?.isBlank == true) ideViewModel.showSaveAsDialog() else ideViewModel.saveActiveFile()
+                activeTab?.let { tab ->
+                    if (tab.isBlank) ideViewModel.showBlankTabSaveDialog(tab.id) else ideViewModel.saveActiveFile()
+                }
             },
-            onMore = { moreOpen = true },
+            onSaveAs = ideViewModel::showSaveAsDialog,
+            onPreview = {
+                previewScope.launch {
+                    val previewUri = ideViewModel.resolveActivePreviewUri()
+                    if (previewUri == null) previewNotice = ideViewModel.uiState.value.statusMessage
+                    else {
+                        previewNotice = null
+                        onOpenBrowserPreview(previewUri)
+                    }
+                }
+            },
+            onRefreshProject = ideViewModel::refreshProject,
+            onCloseOtherTabs = ideViewModel::closeOtherTabs,
+            onCopyFilePath = ideViewModel::copyPathToClipboard,
+            onLocateFile = ideViewModel::revealActiveFile,
             onOpenFile = ideViewModel::openFile,
             loadNavChildren = ideViewModel::loadNavChildren,
             onFeedback = onFeedback,
             onOpenSettings = onOpenSettings,
         )
+        previewNotice?.takeIf(String::isNotBlank)?.let { message ->
+            Text(
+                text = message,
+                color = colors.textSecondary,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+        if (!state.localWorkspaceAvailable && state.projectRootUri != null) {
+            Text(
+                text = state.localWorkspaceExplanation
+                    ?: "Edit existing files only. Move this project to Android IDE storage or Android external storage for full access.",
+                color = colors.textSecondary,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
         if (state.openTabs.isNotEmpty()) {
             EditorTabBar(
                 tabs = state.openTabs, onTabSelected = ideViewModel::selectTab, onTabCloseSafe = ideViewModel::closeTabSafe,
-                onTabSave = ideViewModel::saveTabById, onTabPin = ideViewModel::pinTab,
+                onTabSave = { tabId ->
+                    val target = state.openTabs.firstOrNull { it.id == tabId }
+                    if (target?.isBlank == true) ideViewModel.showBlankTabSaveDialog(tabId) else ideViewModel.saveTabById(tabId)
+                }, onTabPin = ideViewModel::pinTab,
                 onTabLocate = { tabId -> ideViewModel.selectTab(tabId); ideViewModel.revealActiveFile() },
                 onCloseOthers = ideViewModel::closeOtherTabs,
                 onCloseAll = ideViewModel::closeAllTabs, onNewBlankTab = ideViewModel::newBlankTab,
+                allowManualSave = !state.editorSettings.autoSave,
             )
             HorizontalDivider(color = colors.separator)
         }
@@ -444,19 +520,12 @@ private fun EditorWorkspace(
             onInsertPair = { opening, closing -> ideViewModel.sendEditorCommand(EditorOutbound.InsertPair(opening, closing)) },
             onInsertSnippet = { trigger, snippet -> ideViewModel.sendEditorCommand(EditorOutbound.InsertSnippet(trigger, snippet)) },
             onPasteFromClipboard = ideViewModel::pasteFromKotlinClipboard, hasEditorSelection = state.hasEditorSelection,
+            languageServerFeatures = state.languageServerFeatures,
             showKeyboardToolbar = state.editorSettings.showKeyboardToolbar, showSymbolBar = state.editorSettings.showSymbolBar,
             keyboardToolbarOrder = state.editorSettings.keyboardToolbarOrder,
             tabCursorPositions = state.tabCursorPositions, tabScrollPositions = state.tabScrollPositions, modifier = Modifier.weight(1f).fillMaxWidth(),
         )
         if (state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
-    }
-    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
-        DropdownMenuItem(text = { Text("Save As") }, onClick = { moreOpen = false; ideViewModel.showSaveAsDialog() })
-        DropdownMenuItem(text = { Text("Refresh project files") }, onClick = { moreOpen = false; ideViewModel.refreshProject() })
-        DropdownMenuItem(text = { Text("Close other tabs") }, onClick = { moreOpen = false; activeTab?.let { ideViewModel.closeOtherTabs(it.id) } })
-        DropdownMenuItem(text = { Text("Copy file path") }, onClick = { moreOpen = false; activeTab?.let { ideViewModel.copyPathToClipboard(it.documentUri) } })
-        DropdownMenuItem(text = { Text("Locate current file") }, onClick = { moreOpen = false; ideViewModel.revealActiveFile() })
-        DropdownMenuItem(text = { Text("Editor settings") }, onClick = { moreOpen = false; onOpenSettings() })
     }
 }
 
@@ -469,13 +538,19 @@ private fun EditorTopBar(
     onOpenGlobalNavigation: () -> Unit,
     onFind: () -> Unit,
     onSave: () -> Unit,
-    onMore: () -> Unit,
+    onSaveAs: () -> Unit,
+    onPreview: () -> Unit,
+    onRefreshProject: () -> Unit,
+    onCloseOtherTabs: (String) -> Unit,
+    onCopyFilePath: (String) -> Unit,
+    onLocateFile: () -> Unit,
     onOpenFile: (String) -> Unit,
     loadNavChildren: suspend (String) -> List<FileNode>,
     onFeedback: (String) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val colors = LocalIdeColors.current
+    var moreOpen by remember { mutableStateOf(false) }
     var pathOpen by remember { mutableStateOf(false) }
     val path = activeTab?.let { fileTree.pathTo(it.documentUri) } ?: state.projectName
     val node = activeTab?.let { fileTree.findNode(it.documentUri) }
@@ -539,8 +614,24 @@ private fun EditorTopBar(
             }
         }
         IconButton(onClick = onFind, enabled = activeTab != null) { Icon(Icons.Default.Search, "Find in document", tint = colors.textSecondary) }
-        IconButton(onClick = onSave, enabled = activeTab != null) { Icon(Icons.Default.Save, "Save active document", tint = colors.textSecondary) }
-        IconButton(onClick = onMore) { Icon(Icons.Default.MoreVert, "More editor actions", tint = colors.textSecondary) }
+        IconButton(onClick = onPreview, enabled = activeTab != null && state.localStorageConfirmed && state.localWorkspaceAvailable) { Icon(Icons.Default.PlayArrow, "Preview or run project", tint = colors.textSecondary) }
+        if (!state.editorSettings.autoSave && activeTab != null && !activeTab.isImagePreview) {
+            IconButton(onClick = onSave) {
+                Icon(Icons.Default.Save, "Save active document", tint = colors.textSecondary)
+            }
+        }
+        Box {
+            IconButton(onClick = { moreOpen = true }) { Icon(Icons.Default.MoreVert, "More editor actions", tint = colors.textSecondary) }
+            DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                if (!state.editorSettings.autoSave) DropdownMenuItem(text = { Text("Save") }, enabled = activeTab != null && !activeTab.isImagePreview, onClick = { moreOpen = false; onSave() })
+                DropdownMenuItem(text = { Text("Save As") }, enabled = activeTab != null && activeTab.isImagePreview.not(), onClick = { moreOpen = false; onSaveAs() })
+                DropdownMenuItem(text = { Text("Refresh project files") }, onClick = { moreOpen = false; onRefreshProject() })
+                DropdownMenuItem(text = { Text("Close other tabs") }, enabled = activeTab != null, onClick = { moreOpen = false; activeTab?.let { onCloseOtherTabs(it.id) } })
+                DropdownMenuItem(text = { Text("Copy file path") }, enabled = activeTab != null && !activeTab.isBlank, onClick = { moreOpen = false; activeTab?.let { onCopyFilePath(it.documentUri) } })
+                DropdownMenuItem(text = { Text("Locate current file") }, enabled = activeTab != null && !activeTab.isBlank, onClick = { moreOpen = false; onLocateFile() })
+                DropdownMenuItem(text = { Text("Editor settings") }, onClick = { moreOpen = false; onOpenSettings() })
+            }
+        }
     }
 }
 
@@ -580,11 +671,40 @@ private fun EditorEmptyState(projectName: String?, onOpenProjects: () -> Unit, o
 }
 
 @Composable
-private fun EditorDialogHost(state: IdeUiState, ideViewModel: IdeViewModel, onChooseExportDestination: (FileOpDialog.Export) -> Unit) {
+private fun EditorDialogHost(
+    state: IdeUiState,
+    ideViewModel: IdeViewModel,
+    onChooseExportDestination: (FileOpDialog.Export) -> Unit,
+    onOpenBrowserPreview: (String) -> Unit,
+) {
     when (val dialog = state.fileOpDialog) {
-        is FileOpDialog.BinaryOpenError -> AlertDialog(onDismissRequest = ideViewModel::dismissFileOpDialog, title = { Text("File cannot be edited") }, text = { Text("${dialog.fileName} is not a supported text document. Use the Browser or another provider when available.") }, confirmButton = { TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("OK") } })
+        is FileOpDialog.BinaryOpenError -> {
+            val extension = dialog.fileName.substringAfterLast('.', "").lowercase()
+            val browserRenderable = extension in setOf(
+                "html", "htm", "md", "markdown", "svg", "pdf", "txt", "csv", "xml", "json",
+                "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tif", "tiff",
+                "mp4", "webm", "ogv", "mkv", "mov", "m4v", "avi", "mp3", "wav", "ogg", "flac", "m4a", "aac",
+            )
+            AlertDialog(
+                onDismissRequest = ideViewModel::dismissFileOpDialog,
+                title = { Text("File cannot be edited") },
+                text = { Text("${dialog.fileName} is not a supported text document.") },
+                confirmButton = {
+                    if (state.localStorageConfirmed && state.localWorkspaceAvailable && browserRenderable) {
+                        Button(onClick = {
+                            ideViewModel.browserPreviewUri(dialog.documentUri)?.let(onOpenBrowserPreview)
+                            ideViewModel.dismissFileOpDialog()
+                        }) { Text("Open in browser") }
+                    } else TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("OK") }
+                },
+                dismissButton = { if (state.localStorageConfirmed && state.localWorkspaceAvailable && browserRenderable) TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("Cancel") } },
+            )
+        }
         is FileOpDialog.Delete -> {
-            val path = state.fileTree.pathTo(dialog.node.documentUri) ?: "/${dialog.node.displayName}"
+            val selectedNodes = dialog.selectedNodes.ifEmpty { listOf(dialog.node) }
+            val paths = selectedNodes.map { node ->
+                state.fileTree.pathTo(node.documentUri) ?: "/${node.displayName}"
+            }
             val completed = dialog.resultMessage != null && !dialog.isSubmitting
             AlertDialog(
                 onDismissRequest = { if (!dialog.isSubmitting) ideViewModel.dismissFileOpDialog() },
@@ -594,7 +714,7 @@ private fun EditorDialogHost(state: IdeUiState, ideViewModel: IdeViewModel, onCh
                         if (completed) {
                             Text(dialog.resultMessage!!, color = LocalIdeColors.current.success)
                         } else {
-                            Text("Project path: $path")
+                            Text(if (paths.size == 1) "Project path: ${paths.single()}" else "Project paths:\n${paths.joinToString("\n")}")
                             Text("This permanently removes the selected item and its contents. This action cannot be undone.")
                             dialog.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                             if (dialog.isSubmitting) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp); Text("Deleting…") }
@@ -606,7 +726,24 @@ private fun EditorDialogHost(state: IdeUiState, ideViewModel: IdeViewModel, onCh
             )
         }
         is FileOpDialog.UnsavedClose -> AlertDialog(onDismissRequest = ideViewModel::dismissFileOpDialog, title = { Text("Unsaved changes") }, text = { Text("${dialog.displayName} has unsaved changes. Choose how to close it.") }, confirmButton = { TextButton(onClick = { ideViewModel.saveAndCloseTab(dialog.tabId) }) { Text("Save and close") } }, dismissButton = { Row { TextButton(onClick = { ideViewModel.confirmCloseTab(dialog.tabId) }) { Text("Discard", color = MaterialTheme.colorScheme.error) }; TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("Cancel") } } })
-        is FileOpDialog.Rename -> EditorTextDialog("Rename ${dialog.node.displayName}", "New name or path", dialog.node.displayName, dialog.errorMessage, dialog.resultMessage, ideViewModel::dismissFileOpDialog, dialog.isSubmitting) { ideViewModel.renameNode(dialog.node, it) }
+        is FileOpDialog.Rename -> {
+            val parentUri = dialog.node.parentDocumentUri ?: state.projectRootUri.orEmpty()
+            val itemType = if (dialog.node.isDirectory) "folder" else "file"
+            EditorPathDialog(
+                stateKey = "rename:${dialog.node.documentUri}",
+                title = "Rename $itemType",
+                subtitle = "Rename $itemType in ${ideViewModel.projectPathForDocument(parentUri)}",
+                initial = dialog.node.displayName,
+                label = "Enter new $itemType path/name",
+                error = dialog.errorMessage,
+                result = dialog.resultMessage,
+                submitting = dialog.isSubmitting,
+                successTitle = "Rename successful",
+                confirmLabel = "Rename",
+                onDismiss = ideViewModel::dismissFileOpDialog,
+                onConfirm = { ideViewModel.renameNode(dialog.node, it) },
+            )
+        }
         is FileOpDialog.Duplicate -> EditorTextDialog("Duplicate ${dialog.node.displayName}", "New name or path", "Copy of ${dialog.node.displayName}", dialog.errorMessage, dialog.resultMessage, ideViewModel::dismissFileOpDialog, dialog.isSubmitting) { ideViewModel.duplicateFile(dialog.node, it) }
         is FileOpDialog.Export -> {
             val completed = dialog.resultMessage != null && !dialog.failed && !dialog.isSubmitting
@@ -625,9 +762,51 @@ private fun EditorDialogHost(state: IdeUiState, ideViewModel: IdeViewModel, onCh
                 dismissButton = { if (!completed) TextButton(onClick = ideViewModel::dismissFileOpDialog, enabled = !dialog.isSubmitting) { Text(if (dialog.isSubmitting) "Please wait" else "Cancel") } },
             )
         }
-        is FileOpDialog.CreateFile -> EditorTextDialog("Create file", "Path from current folder or /root", "", dialog.errorMessage, dialog.resultMessage, ideViewModel::dismissFileOpDialog, dialog.isSubmitting) { ideViewModel.createFileInDirectory(dialog.parentNode, it) }
-        is FileOpDialog.CreateFolder -> EditorTextDialog("Create folder", "Path from current folder or /root", "", dialog.errorMessage, dialog.resultMessage, ideViewModel::dismissFileOpDialog, dialog.isSubmitting) { ideViewModel.createFolderInDirectory(dialog.parentNode, it) }
+        is FileOpDialog.CreateFile -> {
+            val parentUri = dialog.parentNode.documentUri
+            val createdUri = dialog.createdDocumentUri
+            EditorPathDialog(
+                stateKey = "create-file:$parentUri",
+                title = "Create new file",
+                subtitle = "Add new file in: ${ideViewModel.projectPathPreview(parentUri, "")}",
+                initial = "",
+                label = "Enter file name or path",
+                pathPreview = { value -> "Add new file in: ${ideViewModel.projectPathPreview(parentUri, value)}" },
+                error = dialog.errorMessage,
+                result = dialog.resultMessage,
+                submitting = dialog.isSubmitting,
+                successTitle = "File created",
+                confirmLabel = "Create file",
+                successOpen = createdUri?.let { uri -> ({ ideViewModel.openCreatedFile(uri) }) },
+                onDismiss = ideViewModel::dismissFileOpDialog,
+                onConfirm = { ideViewModel.createFileInDirectory(dialog.parentNode, it) },
+            )
+        }
+        is FileOpDialog.CreateFolder -> {
+            val parentUri = dialog.parentNode.documentUri
+            EditorPathDialog(
+                stateKey = "create-folder:$parentUri",
+                title = "Create new folder",
+                subtitle = "Add new folder in: ${ideViewModel.projectPathPreview(parentUri, "")}",
+                initial = "",
+                label = "Enter folder name or path",
+                pathPreview = { value -> "Add new folder in: ${ideViewModel.projectPathPreview(parentUri, value)}" },
+                error = dialog.errorMessage,
+                result = dialog.resultMessage,
+                submitting = dialog.isSubmitting,
+                successTitle = "Folder created",
+                confirmLabel = "Create folder",
+                onDismiss = ideViewModel::dismissFileOpDialog,
+                onConfirm = { ideViewModel.createFolderInDirectory(dialog.parentNode, it) },
+            )
+        }
         is FileOpDialog.SaveAs -> EditorTextDialog("Save As", "Path from project root", dialog.suggestedName, dialog.errorMessage, dialog.resultMessage, ideViewModel::dismissFileOpDialog, dialog.isSubmitting) { ideViewModel.saveAsAtPath(it) }
+        is FileOpDialog.SaveBlank -> SaveBlankFileDialog(
+            dialog = dialog,
+            projectName = state.projectName,
+            onDismiss = ideViewModel::dismissFileOpDialog,
+            onSave = { ideViewModel.saveBlankTab(dialog.tabId, it) },
+        )
         is FileOpDialog.ReplaceAll -> AlertDialog(
             onDismissRequest = { if (!dialog.isSubmitting) ideViewModel.dismissFileOpDialog() },
             title = { Text("Replace project content?") },
@@ -684,6 +863,49 @@ private fun EditorDialogHost(state: IdeUiState, ideViewModel: IdeViewModel, onCh
 }
 
 @Composable
+private fun SaveBlankFileDialog(
+    dialog: FileOpDialog.SaveBlank,
+    projectName: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var name by rememberSaveable(dialog.tabId) { mutableStateOf(dialog.suggestedName) }
+    val completed = dialog.resultMessage != null && !dialog.isSubmitting
+    AlertDialog(
+        onDismissRequest = { if (!dialog.isSubmitting) onDismiss() },
+        title = { Text(if (completed) "File saved" else "Save new file") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (completed) {
+                    Text(dialog.resultMessage!!, color = LocalIdeColors.current.success)
+                } else {
+                    Text("Create this file in the project root: $projectName/", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("File name") },
+                        singleLine = true,
+                        enabled = !dialog.isSubmitting,
+                    )
+                    dialog.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    if (dialog.isSubmitting) Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
+                        Text("Saving…")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = if (completed) onDismiss else ({ if (name.isNotBlank()) onSave(name.trim()) }),
+                enabled = !dialog.isSubmitting && (completed || name.isNotBlank()),
+            ) { Text(if (completed) "Done" else if (dialog.isSubmitting) "Saving…" else "Save") }
+        },
+        dismissButton = { if (!completed) TextButton(onClick = onDismiss, enabled = !dialog.isSubmitting) { Text("Cancel") } },
+    )
+}
+
+@Composable
 private fun EditorTextDialog(title: String, label: String, initial: String, error: String?, result: String?, onDismiss: () -> Unit, submitting: Boolean = false, onConfirm: (String) -> Unit) {
     var value by remember(title, initial) { mutableStateOf(initial) }
     val completed = result != null && !submitting
@@ -693,5 +915,64 @@ private fun EditorTextDialog(title: String, label: String, initial: String, erro
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { if (completed) Text(result!!, color = LocalIdeColors.current.success) else { OutlinedTextField(value, { value = it }, label = { Text(label) }, supportingText = { Text("Relative to the selected project folder, or an absolute path inside it.") }, enabled = !submitting, singleLine = true); if (error != null) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall); if (submitting) Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp); Text("Working…") } } } },
         confirmButton = { Button(onClick = if (completed) onDismiss else ({ if (value.isNotBlank()) onConfirm(value.trim()) }), enabled = !submitting && (completed || value.isNotBlank())) { Text(if (completed) "Done" else if (submitting) "Working…" else "Confirm") } },
         dismissButton = { if (!completed) TextButton(onClick = onDismiss, enabled = !submitting) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun EditorPathDialog(
+    stateKey: String,
+    title: String,
+    subtitle: String,
+    initial: String,
+    label: String,
+    error: String?,
+    result: String?,
+    submitting: Boolean,
+    successTitle: String,
+    confirmLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+    pathPreview: ((String) -> String)? = null,
+    successOpen: (() -> Unit)? = null,
+) {
+    var value by rememberSaveable(stateKey) { mutableStateOf(initial) }
+    val completed = result != null && !submitting
+    AlertDialog(
+        onDismissRequest = { if (!submitting) onDismiss() },
+        title = { Text(if (completed) successTitle else title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (completed) {
+                    Text(result!!, color = LocalIdeColors.current.success)
+                } else {
+                    Text(pathPreview?.invoke(value) ?: subtitle, style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = { value = it },
+                        label = { Text(label) },
+                        singleLine = true,
+                        enabled = !submitting,
+                    )
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    if (submitting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                }
+            }
+        },
+        confirmButton = {
+            if (completed && successOpen != null) {
+                Button(onClick = successOpen) { Text("Open file") }
+            } else if (completed) {
+                TextButton(onClick = onDismiss) { Text("OK") }
+            } else {
+                Button(onClick = { if (value.isNotBlank()) onConfirm(value.trim()) }, enabled = !submitting && value.isNotBlank()) {
+                    Text(confirmLabel)
+                }
+            }
+        },
+        dismissButton = {
+            if (!completed || successOpen != null) {
+                TextButton(onClick = onDismiss, enabled = !submitting) { Text(if (completed) "OK" else "Cancel") }
+            }
+        },
     )
 }

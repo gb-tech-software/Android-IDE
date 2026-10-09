@@ -22,10 +22,16 @@ object LanguageServerRegistry {
             requiredExecutable = "pyright-langserver",
         ),
         LanguageServerDefinition(
-            id = "web",
-            languageIds = setOf("html", "css"),
+            id = "html",
+            languageIds = setOf("html"),
             command = listOf("vscode-html-language-server", "--stdio"),
             requiredExecutable = "vscode-html-language-server",
+        ),
+        LanguageServerDefinition(
+            id = "css",
+            languageIds = setOf("css"),
+            command = listOf("vscode-css-language-server", "--stdio"),
+            requiredExecutable = "vscode-css-language-server",
         ),
         LanguageServerDefinition(
             id = "json",

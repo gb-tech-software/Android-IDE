@@ -5,7 +5,7 @@
     window.eruda.init({
       tool: ['console', 'elements', 'network', 'resources', 'sources', 'info', 'snippets'],
       useShadowDom: true,
-      defaults: { displaySize: 50, transparency: 0.9 }
+      defaults: { displaySize: 50, transparency: 1 }
     });
     window.eruda.hide();
     const nativePort = browser.runtime.connectNative('android-ide');

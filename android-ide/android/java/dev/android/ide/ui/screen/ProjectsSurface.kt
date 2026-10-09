@@ -207,7 +207,9 @@ fun ProjectsSurface(
             )
         }
         state.registryWarning?.let { Text(it, color = LocalIdeColors.current.warning) }
-        if (state.statusMessage != null && !state.operationInProgress) {
+        if (state.statusMessage != null && !state.operationInProgress &&
+            state.operationReport == null && state.acquiredProjectId == null
+        ) {
             val statusColor = state.operationReport?.let { operationStatusColor(it.outcome) }
                 ?: MaterialTheme.colorScheme.onSurfaceVariant
             Text(state.statusMessage!!, color = statusColor, style = MaterialTheme.typography.bodySmall)
@@ -303,6 +305,7 @@ fun ProjectsSurface(
                         project = project,
                         summary = state.projectSummaries[project.id],
                         summaryLoading = !state.projectSummaries.containsKey(project.id),
+                        onLoadSummary = viewModel::loadProjectSummary,
                         onOpen = viewModel::openProject,
                         onDetails = viewModel::showProjectDetails,
                         onSelect = viewModel::selectProject,
@@ -323,6 +326,7 @@ fun ProjectsSurface(
                             viewModel.selectProject(id)
                             viewModel.navigate(dev.android.ide.contracts.Surface.GIT)
                         },
+                        onOpenBrowser = { viewModel.navigate(dev.android.ide.contracts.Surface.BROWSER) },
                         onOpenTerminal = onOpenTerminal,
                         operationInProgress = listBusy,
                         operationReport = state.operationReport,
@@ -397,6 +401,7 @@ private fun ProjectCard(
     project: ProjectIdentity,
     summary: dev.android.ide.app.ProjectSummary?,
     summaryLoading: Boolean,
+    onLoadSummary: (String) -> Unit,
     onOpen: (String) -> Unit,
     onDetails: (String) -> Unit,
     onSelect: (String) -> Unit,
@@ -414,11 +419,15 @@ private fun ProjectCard(
     onRelocate: (String) -> Unit,
     onCopyRemoteUrls: (String) -> Unit,
     onOpenGit: (String) -> Unit,
+    onOpenBrowser: (String) -> Unit,
     onOpenTerminal: (String) -> Unit,
     operationInProgress: Boolean,
     operationReport: OperationReport?,
     onPrepareOperation: () -> Unit,
 ) {
+    androidx.compose.runtime.LaunchedEffect(project.id, summaryLoading) {
+        if (summaryLoading) onLoadSummary(project.id)
+    }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -483,6 +492,8 @@ private fun ProjectCard(
                     ProjectActionsMenu(
                         expanded = menuOpen,
                         onDismiss = { menuOpen = false },
+                        fullWorkspaceAvailable = summary?.localWorkspaceAvailable == true,
+                        localStorageConfirmed = summary?.localStorageConfirmed == true,
                         onDetails = { onDetails(project.id) },
                         onRefresh = { onSelect(project.id); onRefresh() },
                         onChangeDisplayName = { onPrepareOperation(); renameValue = project.name; renameVisible = true },
@@ -494,7 +505,7 @@ private fun ProjectCard(
                         onOpenEditor = { onOpen(project.id) },
                         onOpenGit = { onOpenGit(project.id) },
                         onOpenTerminal = { onOpenTerminal(project.id) },
-                        onOpenBrowser = { onFeedback("Browser preview is coming soon") },
+                        onOpenBrowser = { onOpenBrowser(project.id) },
                         onRemoveFromRegistry = { onPrepareOperation(); onSelect(project.id); confirmRemove = true },
                         onDeletePermanently = {
                             onPrepareOperation()

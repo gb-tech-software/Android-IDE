@@ -13,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
@@ -54,6 +56,9 @@ fun ProjectDetailsSurface(
 ) {
     val project = state.projects.firstOrNull { it.id == state.selectedProjectId }
     val projectSummary = project?.id?.let { state.projectSummaries[it] }
+    val details = state.projectDetails?.takeIf { it.project.stableLocationId == project?.id }
+    val fullWorkspaceAvailable = details?.storageCapabilities?.localWorkspaceAvailable == true
+    val localStorageConfirmed = details?.storageCapabilities?.localStorageConfirmed == true
     var menuOpen by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -76,6 +81,8 @@ fun ProjectDetailsSurface(
                 expanded = menuOpen,
                 onDismiss = { menuOpen = false },
                 enabled = !state.operationInProgress,
+                fullWorkspaceAvailable = fullWorkspaceAvailable,
+                localStorageConfirmed = localStorageConfirmed,
                 showRefreshItem = false,
                 onRefresh = { viewModel.refreshSelectedProjectDetails() },
                 onChangeDisplayName = { viewModel.clearOperationFeedback(); renameValue = project?.name.orEmpty(); renameVisible = true },
@@ -194,36 +201,94 @@ fun ProjectDetailsSurface(
                 dismissButton = { if (!completed) TextButton(onClick = { confirmDelete = false }, enabled = !state.operationInProgress) { Text(if (state.operationInProgress) "Please wait" else "Cancel") } },
             )
         }
-        Text(project?.name ?: "No project selected", style = MaterialTheme.typography.headlineSmall)
-        Text(
-            project?.description?.ifBlank { "No description" } ?: "No description",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        val location = humanReadableStorageLocation(
+            details?.storagePath ?: project?.location?.userVisiblePath ?: project?.location?.displayLabel,
         )
-        val details = state.projectDetails?.takeIf { it.project.stableLocationId == project?.id }
-        DetailLine(
-            "Storage location",
-            humanReadableStorageLocation(details?.storagePath ?: project?.location?.userVisiblePath ?: project?.location?.displayLabel),
-        )
-        DetailLine("Project size", details?.totalBytes?.let(::formatBytes) ?: projectSummary?.totalBytes?.let(::formatBytes) ?: "Calculating…")
-        if (details != null) {
-            DetailSection("Statistics") {
-                DetailLine("Files", details.fileCount.toString())
-                DetailLine("Folders", details.folderCount.toString())
-                details.languageBytes.entries.sortedByDescending { it.value }.forEach { (language, bytes) ->
-                    DetailLine(language, formatBytes(bytes))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(project?.name ?: "No project selected", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    details?.description?.takeIf { it.isNotBlank() }
+                        ?: project?.description?.takeIf { it.isNotBlank() }
+                        ?: "No description",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                androidx.compose.material3.HorizontalDivider()
+                DetailLine("Project location", location)
+            }
+        }
+        if (details != null && !details.storageCapabilities.localWorkspaceAvailable) {
+            val storageCapabilities = details.storageCapabilities
+            val localStorageConfirmed = storageCapabilities.localStorageConfirmed
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        if (localStorageConfirmed) "Native tools unavailable" else "Storage access needs attention",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        if (localStorageConfirmed) {
+                            "This project is confirmed as device-local. Android IDE uses the storage provider for editing and file/project operations it supports. Terminal, Git, language servers, and development-server preview need a native path. Move the project to Android IDE storage or Android external storage for those tools."
+                        } else {
+                            storageCapabilities.explanation
+                                ?: storageCapabilities.localWorkspaceExplanation
+                                ?: "This location has not been confirmed as device-local. Cloud or remote projects are not supported; reselect a local location with valid access."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
                 }
             }
-            DetailSection("Metadata") {
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DetailMetric(
+                "Size",
+                details?.totalBytes?.let(::formatBytes) ?: projectSummary?.totalBytes?.let(::formatBytes)
+                    ?: if (state.detailsLoading) "Loading" else "Unavailable",
+                Modifier.weight(1f),
+            )
+            DetailMetric(
+                "Files",
+                details?.fileCount?.toString() ?: projectSummary?.fileCount?.toString()
+                    ?: if (state.detailsLoading) "Loading" else "Unavailable",
+                Modifier.weight(1f),
+            )
+            DetailMetric(
+                "Folders",
+                details?.folderCount?.toString() ?: if (state.detailsLoading) "Loading" else "—",
+                Modifier.weight(1f),
+            )
+        }
+        if (details != null) {
+            DetailSection("Storage") {
+                DetailLine("Provider", details.storageProvider)
+                DetailLine("Availability", availabilityLabel(details.storageCapabilities.state))
+            }
+            if (details.languageBytes.isNotEmpty()) DetailSection("Languages") {
+                details.languageBytes.entries.sortedByDescending { it.value }.forEach { (language, bytes) ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(language, style = MaterialTheme.typography.bodyMedium)
+                        Text(formatBytes(bytes), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            DetailSection("Activity") {
                 details.creationTimeMs?.let { DetailLine("Created", formatTimestamp(it)) }
                 details.lastModifiedTimeMs?.let { DetailLine("Last updated", formatTimestamp(it)) }
-                DetailLine("Storage provider", details.storageProvider)
-                DetailLine("Storage availability", availabilityLabel(details.storageCapabilities.state))
             }
         } else if (project != null) {
             val detailsStatus = projectSummary?.status?.takeIf { it.isNotBlank() }
                 ?: if (state.detailsLoading) "Loading project statistics and metadata…" else "Project statistics and metadata are unavailable."
-            Text(detailsStatus, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Card(Modifier.fillMaxWidth()) {
+                Text(detailsStatus, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         if (project != null) {
             ProjectGitStatusCard(hasGit = projectSummary?.hasGit, git = details?.git)
@@ -234,12 +299,24 @@ fun ProjectDetailsSurface(
 
 @Composable
 private fun DetailSection(title: String, content: @Composable () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().padding(top = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-        content()
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun DetailMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.titleSmall)
+        }
     }
 }
 

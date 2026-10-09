@@ -12,6 +12,7 @@ import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.ProjectMetadataAdapter
 import dev.android.ide.contracts.ProjectRegistryAdapter
 import dev.android.ide.saf.ExactCreateResult
+import dev.android.ide.saf.DocumentPresence
 import dev.android.ide.saf.FileManagementService
 import dev.android.ide.saf.StagedDocumentResult
 import java.io.BufferedInputStream
@@ -50,7 +51,7 @@ class ProjectAcquisitionWorkflow(
             ?: return blocked("Project name must be a single non-empty folder name")
         val parent = projectLocation(destinationParentUri)
         val capabilities = storage.inspectProjectStorage(parent)
-        if (!capabilities.canCreate || capabilities.state != CapabilityState.SUPPORTED) {
+        if (!capabilities.localStorageConfirmed || !capabilities.canCreate || capabilities.state != CapabilityState.SUPPORTED) {
             return blocked(
                 capabilities.explanation ?: "The selected destination cannot create projects",
                 ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
@@ -410,7 +411,7 @@ body { margin: 0; padding: 2rem; }
     ): OperationReport {
         val location = projectLocation(projectRootUri)
         val capabilities = storage.inspectProjectStorage(location)
-        if (capabilities.state != CapabilityState.SUPPORTED) {
+        if (capabilities.state != CapabilityState.SUPPORTED || !capabilities.localStorageConfirmed) {
             return blocked(
                 capabilities.explanation ?: "The selected folder is unavailable",
                 ErrorCategory.PERMISSION_LOST,
@@ -431,6 +432,9 @@ body { margin: 0; padding: 2rem; }
         val containment = registry.preflightRegistration(identity)
         if (!containment.allowed) {
             return blocked(containment.message, containment.errorCategory ?: ErrorCategory.DESTINATION_CONFLICT)
+        }
+        if (!capabilities.localWorkspaceAvailable) {
+            return registry.register(identity)
         }
         val prepared = metadata.ensurePortableState(identity)
         if (prepared.outcome != OperationOutcome.COMPLETE) return prepared
@@ -462,7 +466,7 @@ body { margin: 0; padding: 2rem; }
             ?: return blocked("Project name must be a single non-empty folder name")
         val parent = projectLocation(destinationParentUri)
         val capabilities = storage.inspectProjectStorage(parent)
-        if (!capabilities.canCreate || capabilities.state != CapabilityState.SUPPORTED) {
+        if (!capabilities.localStorageConfirmed || !capabilities.canCreate || capabilities.state != CapabilityState.SUPPORTED) {
             return blocked(
                 capabilities.explanation ?: "The selected destination cannot create projects",
                 ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
@@ -636,12 +640,11 @@ body { margin: 0; padding: 2rem; }
         createdUris: List<String>,
         reason: String?,
     ): OperationReport {
-        var cleaned = true
         createdUris.asReversed().forEach {
-            if (!files.delete(it)) cleaned = false
+            files.delete(it)
         }
-        if (!files.delete(rootUri)) cleaned = false
-        return if (cleaned) {
+        files.delete(rootUri)
+        return if (storage.documentPresence(rootUri) == DocumentPresence.ABSENT) {
             blocked("ZIP import was rejected and created data was removed: ${reason ?: "extraction failed"}", ErrorCategory.INVALID_ARCHIVE)
         } else {
             OperationReport(
@@ -654,8 +657,8 @@ body { margin: 0; padding: 2rem; }
     }
 
     private suspend fun cleanupCreatedRoot(rootUri: String, report: OperationReport): OperationReport {
-        val cleaned = files.delete(rootUri)
-        return if (cleaned) report else report.copy(
+        files.delete(rootUri)
+        return if (storage.documentPresence(rootUri) == DocumentPresence.ABSENT) report else report.copy(
             outcome = OperationOutcome.PARTIAL,
             message = "${report.message}; cleanup of the unregistered project was incomplete",
             recoveryHint = "Inspect and remove the created project directory before retrying",
@@ -674,8 +677,8 @@ body { margin: 0; padding: 2rem; }
         }
         val registered = registry.register(identity)
         if (registered.outcome == OperationOutcome.COMPLETE) return registered
-        val cleaned = files.delete(rootUri)
-        return if (cleaned) {
+        files.delete(rootUri)
+        return if (storage.documentPresence(rootUri) == DocumentPresence.ABSENT) {
             registered.copy(message = "The project was not registered; created data was removed: ${registered.message}")
         } else {
             OperationReport(

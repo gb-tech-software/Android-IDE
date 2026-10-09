@@ -1,6 +1,9 @@
 package dev.android.ide.saf
 
 import dev.android.ide.viewmodel.model.FileNode
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Verification strength for a completed file write. */
 enum class WriteVerification {
@@ -36,6 +39,7 @@ class FileManagementService(private val saf: SafRepository) {
         if (segments.isEmpty() || segments.any { !isValidLeafName(it) }) {
             return PathResolutionResult.EmptyPath
         }
+        if (!isWritableLocalDirectory(scope.startUri)) return PathResolutionResult.BlockedByFile(emptyList())
         val boundaryUri = scope.boundaryUri ?: scope.startUri
         if (saf.isSameOrDescendant(boundaryUri, scope.startUri) != true) {
             return PathResolutionResult.BlockedByFile(emptyList())
@@ -117,38 +121,44 @@ class FileManagementService(private val saf: SafRepository) {
             name.none { it == '/' || it == '\\' || it == '\u0000' || it.isISOControl() }
 
     suspend fun createFolder(parentUri: String, name: String): ExactCreateResult =
-        saf.createFileWithExactName(parentUri, name, DIRECTORY_MIME)
+        if (isWritableLocalDirectory(parentUri)) saf.createFileWithExactName(parentUri, name, DIRECTORY_MIME)
+        else ExactCreateResult.Failed
 
     suspend fun createFile(parentUri: String, name: String, mimeType: String): ExactCreateResult =
-        saf.createFileWithExactName(parentUri, name, mimeType)
+        if (isWritableLocalDirectory(parentUri)) saf.createFileWithExactName(parentUri, name, mimeType)
+        else ExactCreateResult.Failed
 
     suspend fun copy(sourceUri: String, targetParentUri: String, newName: String? = null): SafeMutationResult =
-        saf.copyDocumentWithExactName(sourceUri, targetParentUri, newName)
+        if (isReadableResource(sourceUri) && isWritableLocalDirectory(targetParentUri)) {
+            saf.copyDocumentWithExactName(sourceUri, targetParentUri, newName)
+        } else SafeMutationResult.Failed
 
     suspend fun move(sourceUri: String, sourceParentUri: String, targetParentUri: String): SafeMutationResult =
-        saf.moveDocumentWithExactName(sourceUri, sourceParentUri, targetParentUri)
+        if (isWritableLocalResource(sourceUri) && isWritableLocalDirectory(sourceParentUri) && isWritableLocalDirectory(targetParentUri)) {
+            saf.moveDocumentWithExactName(sourceUri, sourceParentUri, targetParentUri)
+        } else SafeMutationResult.Failed
 
     suspend fun moveAndRename(
         sourceUri: String,
         sourceParentUri: String,
         targetParentUri: String,
         newName: String,
-    ): SafeMutationResult = saf.moveAndRenameDocumentWithExactName(
-        sourceUri,
-        sourceParentUri,
-        targetParentUri,
-        newName,
-    )
+    ): SafeMutationResult = if (
+        isWritableLocalResource(sourceUri) && isWritableLocalDirectory(sourceParentUri) && isWritableLocalDirectory(targetParentUri)
+    ) {
+        saf.moveAndRenameDocumentWithExactName(sourceUri, sourceParentUri, targetParentUri, newName)
+    } else SafeMutationResult.Failed
 
     suspend fun rename(sourceUri: String, newName: String): String? =
-        saf.renameDocument(sourceUri, newName)?.takeIf { renamed ->
-            saf.getDisplayName(renamed) == newName
-        }
+        if (isWritableLocalResource(sourceUri)) {
+            saf.renameDocument(sourceUri, newName)?.takeIf { renamed -> saf.getDisplayName(renamed) == newName }
+        } else null
 
-    suspend fun delete(sourceUri: String): Boolean = saf.deleteDocument(sourceUri)
+    suspend fun delete(sourceUri: String): Boolean =
+        isWritableLocalResource(sourceUri) && saf.deleteDocument(sourceUri)
 
     suspend fun deleteChildIfPresent(parentUri: String, childName: String): Boolean =
-        saf.deleteChildIfPresent(parentUri, childName)
+        isWritableLocalDirectory(parentUri) && saf.deleteChildIfPresent(parentUri, childName)
 
     suspend fun exists(sourceUri: String): Boolean = saf.documentExists(sourceUri)
 
@@ -162,8 +172,10 @@ class FileManagementService(private val saf: SafRepository) {
 
     fun localFilesystemPath(uri: String): String? = saf.localFilesystemPath(uri)
 
+    fun isLocalWorkspaceUri(uri: String): Boolean = localFile(uri) != null
+
     suspend fun forEachTextLine(uri: String, action: (String) -> Unit): Boolean =
-        saf.forEachTextLine(uri, action)
+        isConfirmedLocalStorageUri(uri) && saf.forEachTextLine(uri, action)
 
     suspend fun stageDocument(uri: String, maxBytes: Long): StagedDocumentResult =
         saf.stageDocumentBounded(uri, maxBytes)
@@ -173,7 +185,7 @@ class FileManagementService(private val saf: SafRepository) {
         input: java.io.InputStream,
         maxBytes: Long,
         expectedBytes: Long,
-    ): Boolean = saf.writeDocumentFromStreamVerified(uri, input, maxBytes, expectedBytes)
+    ): Boolean = isWritableLocalResource(uri) && saf.writeDocumentFromStreamVerified(uri, input, maxBytes, expectedBytes)
 
     suspend fun observeChanges(
         project: dev.android.ide.contracts.ProjectIdentity,
@@ -186,18 +198,22 @@ class FileManagementService(private val saf: SafRepository) {
     suspend fun inspectTree(rootUri: String): StorageTreeInspection? = saf.inspectTree(rootUri)
 
     suspend fun writeDirectoryArchive(sourceUri: String, destinationUri: String): ArchiveWriteResult? =
-        saf.writeDirectoryArchive(sourceUri, destinationUri)
+        if (isConfirmedLocalStorageUri(sourceUri) && isReadableResource(sourceUri)) {
+            saf.writeDirectoryArchive(sourceUri, destinationUri)
+        } else null
 
     suspend fun inspectChildren(parentUri: String): ChildrenInspectionResult =
         saf.inspectChildren(parentUri)
 
-    suspend fun read(sourceUri: String): ByteArray? = saf.readFile(sourceUri)
+    suspend fun read(sourceUri: String): ByteArray? =
+        if (isConfirmedLocalStorageUri(sourceUri)) saf.readFile(sourceUri) else null
 
     suspend fun write(
         sourceUri: String,
         content: ByteArray,
         verification: WriteVerification = WriteVerification.NONE,
     ): Boolean {
+        if (!isConfirmedLocalStorageUri(sourceUri)) return false
         if (!saf.writeFile(sourceUri, content)) return false
         return when (verification) {
             WriteVerification.NONE -> true
@@ -210,6 +226,22 @@ class FileManagementService(private val saf: SafRepository) {
                 saf.readFile(sourceUri)?.contentEquals(content) == true
         }
     }
+
+    /** A native path is optional; provider-backed SAF operations remain available on confirmed-local roots. */
+    private fun localFile(uri: String): File? = saf.localFilesystemPath(uri)?.let(::File)
+
+    private suspend fun isConfirmedLocalStorageUri(uri: String): Boolean = withContext(Dispatchers.IO) {
+        saf.isConfirmedLocalStorageUri(uri)
+    }
+
+    private suspend fun isWritableLocalDirectory(uri: String): Boolean =
+        isConfirmedLocalStorageUri(uri) && saf.inspectChildren(uri) is ChildrenInspectionResult.Success
+
+    private suspend fun isReadableResource(uri: String): Boolean =
+        saf.documentPresence(uri) == DocumentPresence.EXISTS
+
+    private suspend fun isWritableLocalResource(uri: String): Boolean =
+        isConfirmedLocalStorageUri(uri) && saf.documentPresence(uri) == DocumentPresence.EXISTS
 
     suspend fun writeText(
         sourceUri: String,

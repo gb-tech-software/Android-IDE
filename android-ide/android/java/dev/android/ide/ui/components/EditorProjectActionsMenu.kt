@@ -35,10 +35,12 @@ fun EditorProjectActionsMenu(
     onPasteAtRoot: (() -> Unit)? = null,
     onOpenTerminal: (() -> Unit)? = null,
     includeCreationActions: Boolean = true,
+    fullWorkspaceAvailable: Boolean = false,
+    localStorageConfirmed: Boolean = false,
 ) {
     val colors = LocalIdeColors.current
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        if (includeCreationActions) {
+        if (localStorageConfirmed && includeCreationActions) {
             DropdownMenuItem(
                 leadingIcon = { Icon(Icons.Default.Article, null) },
                 text = { Text("New file") },
@@ -50,17 +52,19 @@ fun EditorProjectActionsMenu(
                 onClick = { onDismiss(); onNewFolder() },
             )
         }
-        DropdownMenuItem(
-            leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
-            text = { Text("Import files") },
-            onClick = { onDismiss(); onImportFiles() },
-        )
-        onPasteAtRoot?.let { paste ->
+        if (localStorageConfirmed) {
             DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.ContentPaste, null) },
-                text = { Text("Paste") },
-                onClick = { onDismiss(); paste() },
+                leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
+                text = { Text("Import files") },
+                onClick = { onDismiss(); onImportFiles() },
             )
+            onPasteAtRoot?.let { paste ->
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Default.ContentPaste, null) },
+                    text = { Text("Paste") },
+                    onClick = { onDismiss(); paste() },
+                )
+            }
         }
         HorizontalDivider()
         DropdownMenuItem(
@@ -68,29 +72,35 @@ fun EditorProjectActionsMenu(
             text = { Text("Refresh files") },
             onClick = { onDismiss(); onRefresh() },
         )
-        onOpenTerminal?.let { openTerminal ->
+        if (localStorageConfirmed) {
+            onOpenTerminal?.let { openTerminal ->
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Default.Terminal, null) },
+                    text = { Text("Open terminal") },
+                    onClick = { onDismiss(); openTerminal() },
+                )
+            }
+        }
+        if (localStorageConfirmed) {
             DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.Terminal, null) },
-                text = { Text("Open terminal") },
-                onClick = { onDismiss(); openTerminal() },
+                leadingIcon = { Icon(Icons.Default.Share, null) },
+                text = { Text("Export project") },
+                onClick = { onDismiss(); onExportProject() },
             )
         }
-        DropdownMenuItem(
-            leadingIcon = { Icon(Icons.Default.Share, null) },
-            text = { Text("Export project") },
-            onClick = { onDismiss(); onExportProject() },
-        )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Info, null) },
             text = { Text("Project details") },
             onClick = { onDismiss(); onShowDetails() },
         )
-        HorizontalDivider()
-        DropdownMenuItem(
-            leadingIcon = { Icon(Icons.Default.Delete, null, tint = colors.error) },
-            text = { Text("Delete permanently", color = colors.error) },
-            onClick = { onDismiss(); onDeleteProject() },
-        )
+        if (localStorageConfirmed) {
+            HorizontalDivider()
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Default.Delete, null, tint = colors.error) },
+                text = { Text("Delete permanently", color = colors.error) },
+                onClick = { onDismiss(); onDeleteProject() },
+            )
+        }
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, null, tint = colors.textSecondary) },
             text = { Text("Remove from registry", color = colors.textSecondary) },

@@ -24,3 +24,4 @@ local.properties
 # ── npm temp installs (used only by fetch-monaco.sh) ─────────────────────────
 node_modules/
 package-lock.json
+!runtime-tools/package-lock.json

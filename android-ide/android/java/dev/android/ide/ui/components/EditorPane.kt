@@ -22,6 +22,9 @@ package dev.android.ide.ui.components
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -31,6 +34,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -49,10 +53,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.viewinterop.AndroidView
+import dev.android.ide.contracts.LanguageServerFeature
 import dev.android.ide.data.model.EditorSettings
 import dev.android.ide.editor.EditorBridge
 import dev.android.ide.editor.EditorInbound
@@ -61,7 +68,9 @@ import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.viewmodel.model.EditorTab
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 // SetJavaScriptEnabled: Monaco requires JS.
 // JavascriptInterface: EditorBridge.onMessage IS annotated @JavascriptInterface; lint produces a
@@ -83,6 +92,7 @@ fun EditorPane(
     onExecuteCommand: (String) -> Unit,
     onPasteFromClipboard: () -> Unit,
     hasEditorSelection: Boolean = false,
+    languageServerFeatures: Set<LanguageServerFeature> = emptySet(),
     showKeyboardToolbar: Boolean = true,
     showSymbolBar: Boolean = true,
     keyboardToolbarOrder: List<String> = EditorSettings.DEFAULT_KEYBOARD_TOOLBAR_ORDER,
@@ -233,8 +243,12 @@ fun EditorPane(
     val configuration = LocalConfiguration.current
     val layoutKey = "${configuration.screenWidthDp}x${configuration.screenHeightDp}"
 
-    LaunchedEffect(activeTab?.id, isEditorReady, editorBindRevision) {
-        val content = activeTabContent ?: activeTab?.content
+    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeTab?.content == null, isEditorReady, editorBindRevision) {
+        val content = if (activeTab?.content == null && activeTabContent.isNullOrEmpty()) {
+            null
+        } else {
+            activeTabContent ?: activeTab?.content
+        }
         if (isEditorReady && activeTab != null && content != null) {
             editorBridge.send(
                 editorWebView,
@@ -264,10 +278,27 @@ fun EditorPane(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        editorView(Modifier.weight(1f).fillMaxWidth())
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            if (activeTab?.isImagePreview == true) {
+                ImageDocumentPreview(activeTab.documentUri, activeTab.displayName, Modifier.fillMaxSize())
+            } else {
+                editorView(Modifier.fillMaxSize())
+            }
+            if (activeTab != null && !activeTab.isImagePreview && activeTab.content == null) {
+                Column(
+                    Modifier.fillMaxSize().background(colors.background),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(10.dp))
+                    Text("Opening ${activeTab.displayName}…", color = colors.textSecondary)
+                }
+            }
+        }
 
         // Symbol shortcut bar — shown above keyboard toolbar when a tab is active
-        if (activeTab != null && showSymbolBar) {
+        if (activeTab != null && activeTab.content != null && showSymbolBar) {
             HorizontalDivider(thickness = 1.dp, color = colors.separator)
             val cursor = tabCursorPositions[activeTab.documentUri] ?: (1 to 1)
             val content = activeTabContent ?: activeTab.content.orEmpty()
@@ -288,16 +319,18 @@ fun EditorPane(
                 onInsertPair = onInsertPair,
                 onInsertSnippet = onInsertSnippet,
                 onShowCompletions = { onExecuteCommand("editor.action.triggerSuggest") },
+                languageIntelligenceAvailable = LanguageServerFeature.COMPLETION in languageServerFeatures,
             )
         }
 
         // Keyboard toolbar — fixed five-item pages, no horizontal scrolling
-        if (activeTab != null && showKeyboardToolbar) {
+        if (activeTab != null && activeTab.content != null && showKeyboardToolbar) {
             HorizontalDivider(thickness = 1.dp, color = colors.separator)
             KeyboardToolbar(
                 onExecuteCommand     = onExecuteCommand,
                 onPasteFromClipboard = onPasteFromClipboard,
                 hasEditorSelection   = hasEditorSelection,
+                languageServerFeatures = languageServerFeatures,
                 actionOrder          = keyboardToolbarOrder,
                 onToggleKeyboard     = { shouldShow ->
                     editorWebView.requestFocus()
@@ -309,6 +342,43 @@ fun EditorPane(
                     }
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun ImageDocumentPreview(documentUri: String, displayName: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val bitmap by produceState<Bitmap?>(initialValue = null, documentUri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val uri = Uri.parse(documentUri)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+                var sample = 1
+                while (bounds.outWidth / sample > 2048 || bounds.outHeight / sample > 2048) sample *= 2
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+            }.getOrNull()
+        }
+    }
+    Box(modifier.background(LocalIdeColors.current.background), contentAlignment = Alignment.Center) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap!!.asImageBitmap(),
+                contentDescription = displayName,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize().padding(8.dp),
+            )
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Image preview unavailable", color = LocalIdeColors.current.textSecondary)
+                Text(displayName, color = LocalIdeColors.current.textDisabled, style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -355,6 +425,7 @@ private fun SymbolBar(
     onInsertPair: (String, String) -> Unit,
     onInsertSnippet: (String, String) -> Unit,
     onShowCompletions: () -> Unit,
+    languageIntelligenceAvailable: Boolean,
 ) {
     val colors = LocalIdeColors.current
     Row(
@@ -415,14 +486,16 @@ private fun SymbolBar(
                 }
             }
         }
-        TextButton(
-            onClick = onShowCompletions,
-            modifier = Modifier.height(32.dp).widthIn(min = 48.dp).semantics {
-                contentDescription = "Show language-server completions and local snippets for ${shortcuts.languageLabel} at the cursor"
-            },
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-        ) {
-            Text("Suggest", style = MaterialTheme.typography.labelMedium, color = colors.secondary)
+        if (languageIntelligenceAvailable) {
+            TextButton(
+                onClick = onShowCompletions,
+                modifier = Modifier.height(32.dp).widthIn(min = 48.dp).semantics {
+                    contentDescription = "Show language-server suggestions for ${shortcuts.languageLabel} at the cursor"
+                },
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+            ) {
+                Text("Suggest", style = MaterialTheme.typography.labelMedium, color = colors.secondary)
+            }
         }
         Spacer(Modifier.width(4.dp))
     }
@@ -435,6 +508,7 @@ private fun KeyboardToolbar(
     onExecuteCommand: (String) -> Unit,
     onPasteFromClipboard: () -> Unit,
     hasEditorSelection: Boolean,
+    languageServerFeatures: Set<LanguageServerFeature>,
     actionOrder: List<String>,
     onToggleKeyboard: (Boolean) -> Unit,
 ) {
@@ -442,6 +516,7 @@ private fun KeyboardToolbar(
     val actionCatalog = EDITOR_TOOLBAR_ACTIONS.associateBy { it.id }
     val orderedActions = normalizeEditorToolbarOrder(actionOrder)
         .mapNotNull(actionCatalog::get)
+        .filter { it.requiredServerFeature == null || it.requiredServerFeature in languageServerFeatures }
     val pages = orderedActions.chunked(KEYBOARD_TOOLBAR_PAGE_SIZE)
     var selectedPage by rememberSaveable { mutableIntStateOf(0) }
     val pageIndex = selectedPage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
@@ -462,7 +537,13 @@ private fun KeyboardToolbar(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("No toolbar actions enabled", style = MaterialTheme.typography.labelSmall, color = colors.textSecondary)
+                Text(
+                    if (normalizeEditorToolbarOrder(actionOrder).any { actionCatalog[it]?.requiredServerFeature != null })
+                        "Language tools are unavailable for this project"
+                    else "No toolbar actions enabled",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.textSecondary,
+                )
             }
         } else {
             Row(
@@ -540,10 +621,10 @@ private fun ToolbarIconButton(
     val currentExecuteAction by rememberUpdatedState(onExecuteAction)
     val currentPaste by rememberUpdatedState(onPaste)
     val currentCustomClick by rememberUpdatedState(onCustomClick)
+    var suppressNextClick by remember(action.id) { mutableStateOf(false) }
     val description = buildList {
         add(action.label)
         add(action.description)
-        if (action.languageServerDependent) add("Requires a running language server; may be unavailable if it is stopped or fails")
         disabledReason?.let(::add)
     }.joinToString(". ")
 
@@ -565,7 +646,9 @@ private fun ToolbarIconButton(
         state = tooltipState,
     ) {
         IconButton(
-            onClick = { performAction() },
+            onClick = {
+                if (suppressNextClick) suppressNextClick = false else performAction()
+            },
             enabled = enabled,
             modifier = Modifier
                 .size(44.dp)
@@ -576,16 +659,20 @@ private fun ToolbarIconButton(
                         val gestureScope = this
                         awaitPointerEventScope {
                             while (true) {
-                                awaitFirstDown(requireUnconsumed = false)
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                var repeated = false
                                 val repeatJob = gestureScope.launch {
                                     delay(ViewConfiguration.getLongPressTimeout().toLong())
+                                    repeated = true
+                                    suppressNextClick = true
                                     while (true) {
                                         performAction()
                                         delay(70L)
                                     }
                                 }
-                                waitForUpOrCancellation()
+                                val released = waitForUpOrCancellation() != null
                                 repeatJob.cancel()
+                                if (repeated) suppressNextClick = released
                             }
                         }
                     }

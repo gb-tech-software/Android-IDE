@@ -65,8 +65,8 @@ fun HomeSurface(
         add(HomeDestinationData(Icons.Default.Code, "Editor", "Edit code and manage project files", true) { onNavigate(Surface.EDITOR) })
         add(HomeDestinationData(Icons.Default.Terminal, "Terminal", "Access your project and workspace from a command line interface", true) { onNavigate(Surface.TERMINAL) })
         add(HomeDestinationData(Icons.Default.MergeType, "Git", "Version Control and Remote Backups", true) { onNavigate(Surface.GIT) })
-        add(HomeDestinationData(Icons.Default.Language, "Browser", "Browser surface is not currently available", true) { onNavigate(Surface.BROWSER) })
-        add(HomeDestinationData(Icons.Default.Extension, "Extensions", "Extensions surface is not currently available", true) { onNavigate(Surface.EXTENSIONS) })
+        add(HomeDestinationData(Icons.Default.Language, "Browser", "Browse the web and preview your code.", true) { onNavigate(Surface.BROWSER) })
+        add(HomeDestinationData(Icons.Default.Extension, "Extensions", "Install and manage Add-ons.", true) { onNavigate(Surface.EXTENSIONS) })
         add(HomeDestinationData(Icons.Default.Settings, "Settings", "Customize your workspace and app preferences", true) { onNavigate(Surface.SETTINGS) })
         val recoveryText = when (crashRecoveryCount) {
             1 -> "1 unsaved file is available to restore"
@@ -82,7 +82,7 @@ fun HomeSurface(
         add(HomeDestinationData(
             if (crashRecoveryCount > 0 || crashReportCount > 0) Icons.Default.WarningAmber else Icons.Default.BugReport,
             "Diagnostics",
-            if (diagnosticContext.isBlank()) "Open the project diagnostics console to inspect crash and recovery state"
+            if (diagnosticContext.isBlank()) "Inspect application logs and crash reports."
             else "Your last session needs attention — $diagnosticContext",
             true,
             isWarning = crashRecoveryCount > 0 || crashReportCount > 0,
@@ -94,7 +94,7 @@ fun HomeSurface(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         TopAppBar(
-            title = { Text("Home") },
+            title = { Text("Android IDE") },
             navigationIcon = {
                 IconButton(onClick = onOpenNavigation) {
                     Icon(Icons.Default.Menu, contentDescription = "Open sidebar")

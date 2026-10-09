@@ -1,5 +1,7 @@
 package dev.android.ide.ui.components
 
+import dev.android.ide.contracts.LanguageServerFeature
+
 /** One mobile toolbar shortcut. Commands are resolved by this stable action ID. */
 data class EditorToolbarAction(
     val id: String,
@@ -9,7 +11,7 @@ data class EditorToolbarAction(
     val isPaste: Boolean = false,
     val isKeyboardToggle: Boolean = false,
     val repeatable: Boolean = false,
-    val languageServerDependent: Boolean = false,
+    val requiredServerFeature: LanguageServerFeature? = null,
     val shortcut: String? = null,
     val description: String,
 )
@@ -22,7 +24,7 @@ private fun toolbarAction(
     isPaste: Boolean = false,
     isKeyboardToggle: Boolean = false,
     repeatable: Boolean = false,
-    languageServerDependent: Boolean = false,
+    requiredServerFeature: LanguageServerFeature? = null,
     shortcut: String? = null,
     description: String = toolbarActionDescription(id),
 ) = EditorToolbarAction(
@@ -33,7 +35,7 @@ private fun toolbarAction(
     isPaste = isPaste,
     isKeyboardToggle = isKeyboardToggle,
     repeatable = repeatable,
-    languageServerDependent = languageServerDependent,
+    requiredServerFeature = requiredServerFeature,
     shortcut = shortcut,
     description = description,
 )
@@ -180,8 +182,8 @@ val EDITOR_TOOLBAR_ACTIONS: List<EditorToolbarAction> = listOf(
     toolbarAction("selectAllOccurrences", "Select all occurrences", commandId = "editor.action.selectHighlights"),
 
     // Formatting, comments, and line structure.
-    toolbarAction("formatDocument", "Format document", commandId = "editor.action.formatDocument", languageServerDependent = true, shortcut = "Alt+Shift+F"),
-    toolbarAction("formatSelection", "Format selection", commandId = "editor.action.formatSelection", requiresSelection = true, languageServerDependent = true),
+    toolbarAction("formatDocument", "Format document", commandId = "editor.action.formatDocument", requiredServerFeature = LanguageServerFeature.DOCUMENT_FORMATTING, shortcut = "Alt+Shift+F"),
+    toolbarAction("formatSelection", "Format selection", commandId = "editor.action.formatSelection", requiresSelection = true, requiredServerFeature = LanguageServerFeature.RANGE_FORMATTING),
     toolbarAction("commentLine", "Comment or uncomment line", commandId = "editor.action.commentLine", shortcut = "Ctrl+/"),
     toolbarAction("commentSelection", "Comment or uncomment selection", commandId = "editor.action.commentLine", requiresSelection = true),
     toolbarAction("moveLineUp", "Move line up", commandId = "editor.action.moveLinesUpAction"),
@@ -197,21 +199,21 @@ val EDITOR_TOOLBAR_ACTIONS: List<EditorToolbarAction> = listOf(
     toolbarAction("unfoldAll", "Unfold all", commandId = "editor.action.unfoldAll"),
     toolbarAction("foldLevel1", "Fold to level 1", commandId = "editor.action.foldLevel1"),
     toolbarAction("foldLevel2", "Fold to level 2", commandId = "editor.action.foldLevel2"),
-    toolbarAction("goToDefinition", "Go to definition", commandId = "editor.action.revealDefinition", languageServerDependent = true, shortcut = "F12"),
-    toolbarAction("goToDeclaration", "Go to declaration", commandId = "editor.action.revealDeclaration", languageServerDependent = true),
-    toolbarAction("goToTypeDefinition", "Go to type definition", commandId = "editor.action.revealTypeDefinition", languageServerDependent = true),
-    toolbarAction("goToImplementation", "Go to implementation", commandId = "editor.action.goToImplementation", languageServerDependent = true),
+    toolbarAction("goToDefinition", "Go to definition", commandId = "editor.action.revealDefinition", requiredServerFeature = LanguageServerFeature.DEFINITION, shortcut = "F12"),
+    toolbarAction("goToDeclaration", "Go to declaration", commandId = "editor.action.revealDeclaration", requiredServerFeature = LanguageServerFeature.DECLARATION),
+    toolbarAction("goToTypeDefinition", "Go to type definition", commandId = "editor.action.revealTypeDefinition", requiredServerFeature = LanguageServerFeature.TYPE_DEFINITION),
+    toolbarAction("goToImplementation", "Go to implementation", commandId = "editor.action.goToImplementation", requiredServerFeature = LanguageServerFeature.IMPLEMENTATION),
     toolbarAction("goBack", "Navigate back", commandId = "editor.action.navigateBack"),
     toolbarAction("goForward", "Navigate forward", commandId = "editor.action.navigateForward"),
 
     // Language-server-backed intelligence. Monaco invokes these actions when available.
-    toolbarAction("triggerSuggest", "Show suggestions", commandId = "editor.action.triggerSuggest", languageServerDependent = true, shortcut = "Ctrl+Space"),
-    toolbarAction("triggerParameterHints", "Show parameter hints", commandId = "editor.action.triggerParameterHints", languageServerDependent = true),
-    toolbarAction("quickFix", "Quick fix", commandId = "editor.action.quickFix", languageServerDependent = true),
-    toolbarAction("renameSymbol", "Rename symbol", commandId = "editor.action.rename", languageServerDependent = true, shortcut = "F2"),
-    toolbarAction("findReferences", "Find references", commandId = "editor.action.referenceSearch.trigger", languageServerDependent = true),
-    toolbarAction("codeAction", "Code actions", commandId = "editor.action.quickFix", languageServerDependent = true),
-    toolbarAction("organizeImports", "Organize imports", commandId = "editor.action.organizeImports", languageServerDependent = true),
+    toolbarAction("triggerSuggest", "Show suggestions", commandId = "editor.action.triggerSuggest", requiredServerFeature = LanguageServerFeature.COMPLETION, shortcut = "Ctrl+Space"),
+    toolbarAction("triggerParameterHints", "Show parameter hints", commandId = "editor.action.triggerParameterHints", requiredServerFeature = LanguageServerFeature.SIGNATURE_HELP),
+    toolbarAction("quickFix", "Quick fix", commandId = "editor.action.quickFix", requiredServerFeature = LanguageServerFeature.CODE_ACTION),
+    toolbarAction("renameSymbol", "Rename symbol", commandId = "editor.action.rename", requiredServerFeature = LanguageServerFeature.RENAME, shortcut = "F2"),
+    toolbarAction("findReferences", "Find references", commandId = "editor.action.referenceSearch.trigger", requiredServerFeature = LanguageServerFeature.REFERENCES),
+    toolbarAction("codeAction", "Code actions", commandId = "editor.action.quickFix", requiredServerFeature = LanguageServerFeature.CODE_ACTION),
+    toolbarAction("organizeImports", "Organize imports", commandId = "editor.action.organizeImports", requiredServerFeature = LanguageServerFeature.CODE_ACTION),
 
     // View, save, and input controls.
     toolbarAction("toggleKeyboard", "Show or hide keyboard", commandId = null, isKeyboardToggle = true),

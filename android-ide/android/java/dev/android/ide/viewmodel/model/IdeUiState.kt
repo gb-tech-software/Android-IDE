@@ -9,6 +9,7 @@ import dev.android.ide.data.model.Project
 import dev.android.ide.data.model.ProjectDetails
 import dev.android.ide.data.model.RecoveryEntry
 import dev.android.ide.data.model.VolumeKeyMode
+import dev.android.ide.contracts.LanguageServerFeature
 
 data class IdeUiState(
     // ── Navigation ─────────────────────────────────────────────────────────
@@ -23,6 +24,18 @@ data class IdeUiState(
 
     /** SAF tree URI of the open project root; null if no project is open. */
     val projectRootUri: String? = null,
+
+    /** True only when the provider has confirmed this project is local to the device. */
+    val localStorageConfirmed: Boolean = false,
+
+    /** True only when terminal, Git, language tools, and local-server preview have a native path. */
+    val localWorkspaceAvailable: Boolean = false,
+
+    /** Short explanation shown when the open project is editable but not a full workspace. */
+    val localWorkspaceExplanation: String? = null,
+
+    /** Project-relative path to the HTML file used by Preview/Run for supporting source files. */
+    val defaultPreviewPath: String? = null,
 
     /** Recently-opened project registry, most-recent first. */
     val recentProjects: List<Project> = emptyList(),
@@ -128,6 +141,9 @@ data class IdeUiState(
 
     /** True only when the active file's project language server has initialized. */
     val languageIntelligenceAvailable: Boolean = false,
+
+    /** Protocol features actually advertised by the active file's language server. */
+    val languageServerFeatures: Set<LanguageServerFeature> = emptySet(),
 
     /** True once Monaco sends the "ready" message. */
     val isEditorReady: Boolean = false,

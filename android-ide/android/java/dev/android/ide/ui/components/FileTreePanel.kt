@@ -24,9 +24,9 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.AddBox
@@ -50,11 +50,13 @@ import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.IndeterminateCheckBox
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -81,6 +83,7 @@ import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.viewmodel.model.FileNode
 import dev.android.ide.viewmodel.model.FileSearchResult
 import dev.android.ide.viewmodel.model.ancestorsOf
+import dev.android.ide.viewmodel.model.pathTo
 import compose.icons.SimpleIcons
 import compose.icons.simpleicons.*
 
@@ -98,6 +101,8 @@ fun FileTreePanel(
     locateRequestToken: Long,
     onLocateConsumed: () -> Unit,
     hideGitFolder: Boolean,
+    fullWorkspaceAvailable: Boolean = false,
+    localStorageConfirmed: Boolean = false,
     isMultiSelectMode: Boolean,
     selectedUris: Set<String>,
     isSearchVisible: Boolean,
@@ -157,10 +162,13 @@ fun FileTreePanel(
     contentSearchWarning: String? = null,
     onOpenTerminalAtRoot: () -> Unit = {},
     onOpenTerminalAt: (FileNode) -> Unit = {},
+    onOpenBrowserPreview: (FileNode) -> Unit = {},
+    defaultPreviewPath: String? = null,
+    onSetDefaultPreview: (FileNode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalIdeColors.current
-    val treeListState = remember { LazyListState() }
+    val treeListState = rememberLazyListState()
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val imeTrailingPadding = with(density) { (imeBottomPx * 1.2f).toDp() }
@@ -272,6 +280,8 @@ fun FileTreePanel(
                     item {
                         RootProjectNode(
                             projectName    = projectName,
+                            fullWorkspaceAvailable = fullWorkspaceAvailable,
+                            localStorageConfirmed = localStorageConfirmed,
                             isActivePath   = activeTabDocumentUri != null,
                             clipboardItems = clipboardItems,
                             onNewFile      = onNewFileAtRoot,
@@ -297,6 +307,8 @@ fun FileTreePanel(
                     FileTreeRow(
                         node                     = node,
                         depth                    = depth,
+                        fullWorkspaceAvailable   = fullWorkspaceAvailable,
+                        localStorageConfirmed    = localStorageConfirmed,
                         clipboardItems           = clipboardItems,
                         clipboardIsCut            = clipboardIsCut,
                         isActive                 = node.documentUri == activeTabDocumentUri,
@@ -319,12 +331,27 @@ fun FileTreePanel(
                         onSelect                 = onToggleNodeSelection,
                         onShowDuplicateDialog    = onShowDuplicateDialog,
                         onOpenTerminalAt         = onOpenTerminalAt,
+                        onOpenBrowserPreview     = onOpenBrowserPreview,
+                        isDefaultPreview         = defaultPreviewPath != null && nodes.pathTo(node.documentUri)?.removePrefix("/") == defaultPreviewPath,
+                        onSetDefaultPreview      = onSetDefaultPreview,
                     )
                 }
             }
         }
     }
 }
+
+private val browserPreviewExtensions = setOf(
+    "html", "htm", "md", "markdown", "svg", "pdf", "txt", "csv", "xml", "json",
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tif", "tiff",
+    "mp4", "webm", "ogv", "mkv", "mov", "m4v", "avi", "mp3", "wav", "ogg", "flac", "m4a", "aac",
+)
+
+private fun isBrowserPreviewCandidate(node: FileNode): Boolean =
+    !node.isDirectory && node.displayName.substringAfterLast('.', "").lowercase() in browserPreviewExtensions
+
+private fun isHtmlPreviewCandidate(node: FileNode): Boolean =
+    !node.isDirectory && node.displayName.substringAfterLast('.', "").lowercase() in setOf("html", "htm")
 
 // ── Search result row ──────────────────────────────────────────────────────────
 
@@ -412,6 +439,8 @@ private fun SearchResultRow(
 @Composable
 private fun RootProjectNode(
     projectName: String,
+    fullWorkspaceAvailable: Boolean,
+    localStorageConfirmed: Boolean,
     isActivePath: Boolean,
     clipboardItems: List<FileNode>,
     onNewFile: () -> Unit,
@@ -472,6 +501,8 @@ private fun RootProjectNode(
                 onRemoveProject = onRemove,
                 onPasteAtRoot = onPasteAtRoot.takeIf { clipboardItems.isNotEmpty() },
                 onOpenTerminal = onOpenTerminal,
+                fullWorkspaceAvailable = fullWorkspaceAvailable,
+                localStorageConfirmed = localStorageConfirmed,
             )
         }
     }
@@ -484,6 +515,8 @@ private fun RootProjectNode(
 private fun FileTreeRow(
     node: FileNode,
     depth: Int,
+    fullWorkspaceAvailable: Boolean,
+    localStorageConfirmed: Boolean,
     clipboardItems: List<FileNode>,
     clipboardIsCut: Boolean,
     isActive: Boolean,
@@ -506,6 +539,9 @@ private fun FileTreeRow(
     onSelect: (String) -> Unit,
     onShowDuplicateDialog: (FileNode) -> Unit,
     onOpenTerminalAt: (FileNode) -> Unit,
+    onOpenBrowserPreview: (FileNode) -> Unit,
+    isDefaultPreview: Boolean,
+    onSetDefaultPreview: (FileNode) -> Unit,
 ) {
     val colors   = LocalIdeColors.current
     var menuOpen by remember { mutableStateOf(false) }
@@ -618,117 +654,144 @@ private fun FileTreeRow(
 
                 if (node.isDirectory) {
                     // ── Folder menu ──────────────────────────────────────
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Article, null) },
-                        text    = { Text("New file") },
-                        onClick = { menuOpen = false; onShowCreateFileDialog(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
-                        text    = { Text("New folder") },
-                        onClick = { menuOpen = false; onShowCreateFolderDialog(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
-                        text    = { Text("Import files") },
-                        onClick = { menuOpen = false; onImportFilesAt(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                        text    = { Text("Duplicate") },
-                        onClick = { menuOpen = false; onShowDuplicateDialog(node) },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        text    = { Text("Rename") },
-                        onClick = { menuOpen = false; onShowRenameDialog(node) },
-                    )
+                    if (localStorageConfirmed) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Article, null) },
+                            text    = { Text("New file") },
+                            onClick = { menuOpen = false; onShowCreateFileDialog(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
+                            text    = { Text("New folder") },
+                            onClick = { menuOpen = false; onShowCreateFolderDialog(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.FolderOpen, null) },
+                            text    = { Text("Import files") },
+                            onClick = { menuOpen = false; onImportFilesAt(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            text    = { Text("Duplicate") },
+                            onClick = { menuOpen = false; onShowDuplicateDialog(node) },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            text    = { Text("Rename") },
+                            onClick = { menuOpen = false; onShowRenameDialog(node) },
+                        )
+                    }
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
                         text    = { Text("Copy path") },
                         onClick = { menuOpen = false; onCopyPath(node.documentUri) },
                     )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Terminal, null) },
-                        text = { Text("Open terminal") },
-                        onClick = { menuOpen = false; onOpenTerminalAt(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Share, null) },
-                        text    = { Text("Export\u2026") },
-                        onClick = { menuOpen = false; onExportDirectory(node) },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                        text    = { Text("Copy") },
-                        onClick = { menuOpen = false; onCopyNode(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCut, null) },
-                        text    = { Text("Cut") },
-                        onClick = { menuOpen = false; onCutNode(node) },
-                    )
-                    if (hasClipboard) {
+                    if (localStorageConfirmed) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Terminal, null) },
+                            text = { Text("Open terminal") },
+                            onClick = { menuOpen = false; onOpenTerminalAt(node) },
+                        )
+                    }
+                    if (localStorageConfirmed) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Share, null) },
+                            text    = { Text("Export\u2026") },
+                            onClick = { menuOpen = false; onExportDirectory(node) },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            text    = { Text("Copy") },
+                            onClick = { menuOpen = false; onCopyNode(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCut, null) },
+                            text    = { Text("Cut") },
+                            onClick = { menuOpen = false; onCutNode(node) },
+                        )
+                    }
+                    if (localStorageConfirmed && hasClipboard) {
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.ContentPaste, null) },
                             text = { Text("Paste") },
                             onClick = { menuOpen = false; onPasteInto(node) },
                         )
                     }
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = LocalIdeColors.current.error) },
-                        text    = { Text("Delete", color = LocalIdeColors.current.error) },
-                        onClick = { menuOpen = false; onShowDeleteDialog(node) },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.CheckBox, null) },
-                        text    = { Text("Select") },
-                        onClick = { menuOpen = false; onSelect(node.documentUri) },
-                    )
+                    if (localStorageConfirmed) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = LocalIdeColors.current.error) },
+                            text    = { Text("Delete", color = LocalIdeColors.current.error) },
+                            onClick = { menuOpen = false; onShowDeleteDialog(node) },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.CheckBox, null) },
+                            text    = { Text("Select") },
+                            onClick = { menuOpen = false; onSelect(node.documentUri) },
+                        )
+                    }
                 } else {
                     // ── File menu ────────────────────────────────────────
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        text    = { Text("Rename") },
-                        onClick = { menuOpen = false; onShowRenameDialog(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                        text    = { Text("Duplicate") },
-                        onClick = { menuOpen = false; onShowDuplicateDialog(node) },
-                    )
+                    if (localStorageConfirmed) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            text    = { Text("Rename") },
+                            onClick = { menuOpen = false; onShowRenameDialog(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            text    = { Text("Duplicate") },
+                            onClick = { menuOpen = false; onShowDuplicateDialog(node) },
+                        )
+                        if (fullWorkspaceAvailable && isBrowserPreviewCandidate(node)) {
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Default.Visibility, null) },
+                                text = { Text("Preview in browser") },
+                                onClick = { menuOpen = false; onOpenBrowserPreview(node) },
+                            )
+                        }
+                        if (fullWorkspaceAvailable && isHtmlPreviewCandidate(node)) {
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                                text = { Text(if (isDefaultPreview) "Default HTML preview" else "Set as default HTML preview") },
+                                enabled = !isDefaultPreview,
+                                onClick = { menuOpen = false; onSetDefaultPreview(node) },
+                            )
+                        }
+                    }
                     DropdownMenuItem(
                         leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
                         text    = { Text("Copy path") },
                         onClick = { menuOpen = false; onCopyPath(node.documentUri) },
                     )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                        text    = { Text("Copy") },
-                        onClick = { menuOpen = false; onCopyNode(node) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.ContentCut, null) },
-                        text    = { Text("Cut") },
-                        onClick = { menuOpen = false; onCutNode(node) },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Delete, null, tint = LocalIdeColors.current.error) },
-                        text    = { Text("Delete", color = LocalIdeColors.current.error) },
-                        onClick = { menuOpen = false; onShowDeleteDialog(node) },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.CheckBox, null) },
-                        text    = { Text("Select") },
-                        onClick = { menuOpen = false; onSelect(node.documentUri) },
-                    )
+                    if (localStorageConfirmed) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                            text    = { Text("Copy") },
+                            onClick = { menuOpen = false; onCopyNode(node) },
+                        )
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.ContentCut, null) },
+                            text    = { Text("Cut") },
+                            onClick = { menuOpen = false; onCutNode(node) },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = LocalIdeColors.current.error) },
+                            text    = { Text("Delete", color = LocalIdeColors.current.error) },
+                            onClick = { menuOpen = false; onShowDeleteDialog(node) },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.CheckBox, null) },
+                            text    = { Text("Select") },
+                            onClick = { menuOpen = false; onSelect(node.documentUri) },
+                        )
+                    }
                 }
             }
         }

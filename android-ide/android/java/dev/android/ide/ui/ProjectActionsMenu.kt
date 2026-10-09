@@ -25,6 +25,8 @@ fun ProjectActionsMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
     enabled: Boolean = true,
+    fullWorkspaceAvailable: Boolean = false,
+    localStorageConfirmed: Boolean = false,
     showRefreshItem: Boolean = true,
     onRefresh: () -> Unit,
     onChangeDisplayName: () -> Unit,
@@ -62,26 +64,26 @@ fun ProjectActionsMenu(
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
             text = { Text("Change display name") },
-            enabled = enabled,
-            onClick = { onDismiss(); onChangeDisplayName() },
+                enabled = enabled && localStorageConfirmed,
+                onClick = { onDismiss(); onChangeDisplayName() },
         )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) },
             text = { Text("Change location") },
-            enabled = enabled,
-            onClick = { onDismiss(); onChangeLocation() },
+                enabled = enabled && localStorageConfirmed,
+                onClick = { onDismiss(); onChangeLocation() },
         )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
             text = { Text("Duplicate project") },
-            enabled = enabled,
-            onClick = { onDismiss(); onDuplicate() },
+                enabled = enabled && localStorageConfirmed,
+                onClick = { onDismiss(); onDuplicate() },
         )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
             text = { Text("Export or share") },
-            enabled = enabled,
-            onClick = { onDismiss(); onExport() },
+                enabled = enabled && localStorageConfirmed,
+                onClick = { onDismiss(); onExport() },
         )
         HorizontalDivider()
         DropdownMenuItem(
@@ -94,18 +96,18 @@ fun ProjectActionsMenu(
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
             text = { Text("Open in editor") },
-            enabled = enabled,
+            enabled = enabled && localStorageConfirmed,
             onClick = { onDismiss(); onOpenEditor() },
         )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Terminal, contentDescription = null) },
             text = { Text("Open terminal") },
-            enabled = enabled,
+            enabled = enabled && localStorageConfirmed,
             onClick = { onDismiss(); onOpenTerminal() },
         )
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Language, contentDescription = null) },
-            text = { Text("Open browser or preview") },
+            text = { Text("Open browser") },
             enabled = enabled,
             onClick = { onDismiss(); onOpenBrowser() },
         )
@@ -119,7 +121,7 @@ fun ProjectActionsMenu(
         DropdownMenuItem(
             leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
             text = { Text("Delete permanently", color = MaterialTheme.colorScheme.error) },
-            enabled = enabled,
+            enabled = enabled && localStorageConfirmed,
             onClick = { onDismiss(); onDeletePermanently() },
         )
     }

@@ -39,6 +39,7 @@ fun EditorTabBar(
     onCloseOthers: (String) -> Unit,
     onCloseAll: () -> Unit,
     onNewBlankTab: () -> Unit,
+    allowManualSave: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalIdeColors.current
@@ -67,6 +68,7 @@ fun EditorTabBar(
                     onLocate     = { onTabLocate(tab.id) },
                     onCloseOthers = { onCloseOthers(tab.id) },
                     onCloseAll   = onCloseAll,
+                    allowManualSave = allowManualSave,
                 )
             }
         }
@@ -104,6 +106,7 @@ private fun EditorTabItem(
     onLocate: () -> Unit,
     onCloseOthers: () -> Unit,
     onCloseAll: () -> Unit,
+    allowManualSave: Boolean,
 ) {
     val colors  = LocalIdeColors.current
     val bgColor = when {
@@ -187,13 +190,19 @@ private fun EditorTabItem(
                             onClick = { menuOpen = false; onPin() },
                         )
                     }
-                    if (!tab.isBlank) {
+                    if (tab.isBlank && allowManualSave) {
+                        DropdownMenuItem(
+                            leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
+                            text = { Text("Save") },
+                            onClick = { menuOpen = false; onSave() },
+                        )
+                    } else if (!tab.isBlank && !tab.isImagePreview) {
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.MyLocation, contentDescription = null) },
                             text    = { Text("Locate") },
                             onClick = { menuOpen = false; onLocate() },
                         )
-                        DropdownMenuItem(
+                        if (allowManualSave) DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
                             text    = { Text("Save") },
                             onClick = { menuOpen = false; onSave() },

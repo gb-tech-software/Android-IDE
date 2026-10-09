@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -32,11 +34,13 @@ internal fun CreateNewProjectDialog(
     destination: String?,
     template: CreateProjectTemplate,
     reviewVisible: Boolean,
+    confirmationVisible: Boolean,
     onNameChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
     onDestination: () -> Unit,
     onTemplateChange: (CreateProjectTemplate) -> Unit,
     onReviewVisibleChange: (Boolean) -> Unit,
+    onConfirmationVisibleChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
@@ -58,19 +62,45 @@ internal fun CreateNewProjectDialog(
         )
     } else {
         AlertDialog(
-            onDismissRequest = { if (!state.operationInProgress) onReviewVisibleChange(false) },
-            title = { Text(if (acquiredId != null) "Project ready" else "Project details") },
+            onDismissRequest = {
+                if (!state.operationInProgress) {
+                    when {
+                        acquiredId != null -> { viewModel.dismissAcquisitionPrompt(); onDismiss() }
+                        confirmationVisible -> onConfirmationVisibleChange(false)
+                        else -> onDismiss()
+                    }
+                }
+            },
+            title = { Text(when {
+                acquiredId != null -> "Project ready"
+                confirmationVisible -> "Review new project"
+                else -> "Project details"
+            }) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (acquiredId != null) {
                         Text(state.operationReport?.message ?: "Project created successfully.", color = LocalIdeColors.current.success)
+                    } else if (confirmationVisible) {
+                        Text("Check the project details before creating it.", style = MaterialTheme.typography.bodyMedium)
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                AcquisitionReviewLine("Template", template.title)
+                                AcquisitionReviewLine("Project name", name)
+                                AcquisitionReviewLine("Description", description.ifBlank { "No description" })
+                                AcquisitionReviewLine("Project folder", destination?.let { appendProjectName(onLocation(it), name) } ?: "Choose a storage location")
+                            }
+                        }
+                        state.operationReport?.takeIf { it.outcome != OperationOutcome.COMPLETE }?.let {
+                            Text(it.message, color = operationStatusColor(it.outcome))
+                        }
+                        if (state.operationInProgress) AcquisitionStatus("Creating project…", true)
                     } else {
                         Text(template.title, style = MaterialTheme.typography.bodyMedium)
                         OutlinedTextField(name, onNameChange, label = { Text("Project name") }, enabled = !state.operationInProgress, singleLine = true)
                         OutlinedTextField(description, onDescriptionChange, label = { Text("Description") }, enabled = !state.operationInProgress, minLines = 2)
                         AcquisitionPicker(destination, onLocation, "Choose storage location", "Choose another location", onDestination, state.operationInProgress)
                         AcquisitionStatus(
-                            message = when {
+                            message = state.operationReport?.takeIf { it.outcome != OperationOutcome.COMPLETE }?.message ?: when {
                                 state.operationInProgress -> "Creating project…"
                                 name.isBlank() -> "Enter a project name"
                                 !validName(name) -> "Use a valid project name"
@@ -78,6 +108,7 @@ internal fun CreateNewProjectDialog(
                                 else -> "Ready"
                             },
                             busy = state.operationInProgress,
+                            outcome = state.operationReport?.outcome,
                         )
                     }
                 }
@@ -87,14 +118,20 @@ internal fun CreateNewProjectDialog(
                     if (acquiredId != null) {
                         viewModel.dismissAcquisitionPrompt()
                         onOpenProject(acquiredId)
-                    } else {
+                    } else if (confirmationVisible) {
                         destination?.let { viewModel.createBlankProject(it, name, description, template) }
+                    } else {
+                        onConfirmationVisibleChange(true)
                     }
                 }, enabled = !state.operationInProgress && (acquiredId != null || (validName(name) && destination != null))) {
-                    Text(if (acquiredId != null) "Open project" else "Create project")
+                    Text(when { acquiredId != null -> "Open project"; confirmationVisible -> if (state.operationInProgress) "Creating…" else "Create project"; else -> "Review" })
                 }
             },
-            dismissButton = { TextButton(onClick = { if (acquiredId == null) onReviewVisibleChange(false) else { viewModel.dismissAcquisitionPrompt(); onDismiss() } }, enabled = !state.operationInProgress) { Text(if (acquiredId == null) "Back" else "Close") } },
+            dismissButton = { TextButton(onClick = {
+                if (acquiredId != null) { viewModel.dismissAcquisitionPrompt(); onDismiss() }
+                else if (confirmationVisible) onConfirmationVisibleChange(false)
+                else onReviewVisibleChange(false)
+            }, enabled = !state.operationInProgress) { Text(if (acquiredId != null) "Close" else if (confirmationVisible) "Back to edit" else "Back") } },
         )
     }
 }
@@ -116,9 +153,7 @@ internal fun LoadExistingProjectDialog(
     state: AppShellState,
     viewModel: AppShellViewModel,
     folderUri: String?,
-    description: String,
     folderName: String,
-    onDescriptionChange: (String) -> Unit,
     onCancel: () -> Unit,
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
@@ -136,17 +171,16 @@ internal fun LoadExistingProjectDialog(
                     Text(state.operationReport?.message ?: "Project loaded successfully.", color = LocalIdeColors.current.success)
                 } else {
                     folderUri?.let { Text(onLocation(it), style = MaterialTheme.typography.bodySmall) }
-                    OutlinedTextField(description, onDescriptionChange, label = { Text("Description") }, enabled = !state.operationInProgress, minLines = 2)
-                        AcquisitionStatus(
-                            message = state.operationReport?.message ?: when {
+                    AcquisitionStatus(
+                        message = state.operationReport?.message ?: when {
                             state.operationInProgress -> "Loading project…"
                             inspection == null -> "Inspecting project location…"
                             !ready -> "Choose another folder"
                             else -> "Ready"
-                            },
-                            busy = state.operationInProgress || inspection == null,
-                            outcome = state.operationReport?.outcome,
-                        )
+                        },
+                        busy = state.operationInProgress || inspection == null,
+                        outcome = state.operationReport?.outcome,
+                    )
                 }
             }
         },
@@ -156,7 +190,7 @@ internal fun LoadExistingProjectDialog(
                     viewModel.dismissAcquisitionPrompt()
                     onOpenProject(acquiredId)
                 } else if (folderUri != null) {
-                    viewModel.importExistingFolder(folderUri, folderName, description)
+                    viewModel.importExistingFolder(folderUri, folderName)
                 }
             }, enabled = !state.operationInProgress && (acquiredId != null || (folderUri != null && validName(folderName) && ready))) {
                 Text(if (acquiredId != null) "Open project" else "Load project")
@@ -174,9 +208,11 @@ internal fun ImportZipProjectDialog(
     name: String,
     description: String,
     destination: String?,
+    confirmationVisible: Boolean,
     onNameChange: (String) -> Unit,
     onDescriptionChange: (String) -> Unit,
     onDestination: () -> Unit,
+    onConfirmationVisibleChange: (Boolean) -> Unit,
     onCancel: () -> Unit,
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
@@ -185,13 +221,39 @@ internal fun ImportZipProjectDialog(
     val ready = archiveUri != null && validName(name) && destination != null
     val acquiredId = state.acquiredProjectId
     AlertDialog(
-        onDismissRequest = { if (!state.operationInProgress) onCancel() },
-        title = { Text(if (acquiredId != null) "Project ready" else "Import ZIP project") },
+        onDismissRequest = {
+            if (!state.operationInProgress) {
+                if (acquiredId != null) {
+                    viewModel.dismissAcquisitionPrompt()
+                    onCancel()
+                } else if (confirmationVisible) onConfirmationVisibleChange(false)
+                else onCancel()
+            }
+        },
+        title = { Text(when {
+            acquiredId != null -> "Project ready"
+            confirmationVisible -> "Review ZIP import"
+            else -> "Import ZIP project"
+        }) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (acquiredId != null) {
-                    Text(state.operationReport?.message ?: "Project imported successfully.", color = LocalIdeColors.current.success)
-                } else {
+                    if (acquiredId != null) {
+                        Text(state.operationReport?.message ?: "Project imported successfully.", color = LocalIdeColors.current.success)
+                    } else if (confirmationVisible) {
+                        Text("Review the archive and where its project will be created.", style = MaterialTheme.typography.bodyMedium)
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                AcquisitionReviewLine("Archive", archiveUri?.let(onLocation) ?: "Unavailable")
+                                AcquisitionReviewLine("Project name", name)
+                                AcquisitionReviewLine("Description", description.ifBlank { "No description" })
+                                AcquisitionReviewLine("Project folder", destination?.let { appendProjectName(onLocation(it), name) } ?: "Choose a storage location")
+                            }
+                        }
+                        state.operationReport?.takeIf { it.outcome != OperationOutcome.COMPLETE }?.let {
+                            Text(it.message, color = operationStatusColor(it.outcome))
+                        }
+                        if (state.operationInProgress) AcquisitionStatus("Importing project…", true)
+                    } else {
                     archiveUri?.let { Text(onLocation(it), style = MaterialTheme.typography.bodySmall) }
                     OutlinedTextField(name, onNameChange, label = { Text("Project name") }, enabled = !state.operationInProgress, singleLine = true)
                     OutlinedTextField(description, onDescriptionChange, label = { Text("Description") }, enabled = !state.operationInProgress, minLines = 2)
@@ -215,14 +277,19 @@ internal fun ImportZipProjectDialog(
                 if (acquiredId != null) {
                     viewModel.dismissAcquisitionPrompt()
                     onOpenProject(acquiredId)
+                } else if (confirmationVisible) {
+                    if (archiveUri != null && destination != null) viewModel.importZip(archiveUri, destination, name, description)
                 } else if (archiveUri != null && destination != null) {
-                    viewModel.importZip(archiveUri, destination, name, description)
+                    onConfirmationVisibleChange(true)
                 }
             }, enabled = !state.operationInProgress && (acquiredId != null || ready)) {
-                Text(if (acquiredId != null) "Open project" else "Import project")
+                Text(when { acquiredId != null -> "Open project"; confirmationVisible -> if (state.operationInProgress) "Importing…" else "Import project"; else -> "Review" })
             }
         },
-        dismissButton = { TextButton(onClick = onCancel, enabled = !state.operationInProgress) { Text(if (acquiredId != null) "Close" else "Cancel") } },
+        dismissButton = { TextButton(onClick = {
+            if (confirmationVisible && acquiredId == null) onConfirmationVisibleChange(false)
+            else onCancel()
+        }, enabled = !state.operationInProgress) { Text(if (acquiredId != null) "Close" else if (confirmationVisible) "Back to edit" else "Cancel") } },
     )
 }
 
@@ -272,3 +339,14 @@ private fun AcquisitionStatus(message: String, busy: Boolean, outcome: Operation
         Text(message, style = MaterialTheme.typography.bodySmall, color = statusColor)
     }
 }
+
+@Composable
+private fun AcquisitionReviewLine(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private fun appendProjectName(parent: String, name: String): String =
+    parent.trimEnd('/').let { base -> if (base.isEmpty()) "/$name" else "$base/$name" }

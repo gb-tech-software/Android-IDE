@@ -39,4 +39,5 @@ data class EditorTab(
     val isBlank: Boolean = false,
     val isTemporary: Boolean = false,
     val isPinned: Boolean = false,
+    val isImagePreview: Boolean = false,
 )

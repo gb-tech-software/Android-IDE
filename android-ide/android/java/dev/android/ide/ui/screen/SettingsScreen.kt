@@ -421,9 +421,9 @@ private fun KeyboardSettingsContent(uiState: IdeUiState, s: EditorSettings, ideV
         HorizontalDivider()
         Text("Volume keys in editor", style = MaterialTheme.typography.bodyMedium)
         Column(Modifier.selectableGroup()) {
-            VolumeKeyOption("Cursor horizontal (← / →)", VolumeKeyMode.HORIZONTAL, uiState.volumeKeyMode, ideViewModel)
-            VolumeKeyOption("Cursor vertical (↑ / ↓)", VolumeKeyMode.VERTICAL, uiState.volumeKeyMode, ideViewModel)
-            VolumeKeyOption("Disabled (system volume)", VolumeKeyMode.DISABLED, uiState.volumeKeyMode, ideViewModel)
+            VolumeKeyOption("Cursor horizontal (move cursor left/right)", VolumeKeyMode.HORIZONTAL, uiState.volumeKeyMode, ideViewModel)
+            VolumeKeyOption("Cursor vertical (move cursor up/down)", VolumeKeyMode.VERTICAL, uiState.volumeKeyMode, ideViewModel)
+            VolumeKeyOption("Disabled (controls system volume)", VolumeKeyMode.DISABLED, uiState.volumeKeyMode, ideViewModel)
         }
         HorizontalDivider()
         OutlinedButton(onClick = {
@@ -446,7 +446,7 @@ private fun KeyboardSettingsContent(uiState: IdeUiState, s: EditorSettings, ideV
             ) {
                 Text("Customize keyboard toolbar", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Drag enabled actions to reorder; five fit per page. LSP actions need a language server running in Terminal and may be unavailable if it stops or fails.",
+                    "Language-server shortcuts appear only when the active server advertises that feature and can access this file's language and project storage.",
                     style = MaterialTheme.typography.bodySmall,
                     color = LocalIdeColors.current.textSecondary,
                 )
@@ -489,7 +489,7 @@ private fun KeyboardSettingsContent(uiState: IdeUiState, s: EditorSettings, ideV
                                 Text(action.label)
                                 Text("Enabled · position ${index + 1}", style = MaterialTheme.typography.labelSmall, color = LocalIdeColors.current.textSecondary)
                                 Text(action.description, style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-                                listOfNotNull(action.shortcut, if (action.languageServerDependent) "LSP" else null)
+                                listOfNotNull(action.shortcut, action.requiredServerFeature?.let { "LSP: ${it.name.lowercase().replace('_', ' ')}" })
                                     .takeIf { it.isNotEmpty() }
                                     ?.joinToString(" · ")
                                     ?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LocalIdeColors.current.textSecondary) }
@@ -518,7 +518,7 @@ private fun KeyboardSettingsContent(uiState: IdeUiState, s: EditorSettings, ideV
                                 Text(action.label)
                                 Text("Disabled · position not assigned", style = MaterialTheme.typography.labelSmall, color = LocalIdeColors.current.textSecondary)
                                 Text(action.description, style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-                                listOfNotNull(action.shortcut, if (action.languageServerDependent) "LSP" else null)
+                                listOfNotNull(action.shortcut, action.requiredServerFeature?.let { "LSP: ${it.name.lowercase().replace('_', ' ')}" })
                                     .takeIf { it.isNotEmpty() }
                                     ?.joinToString(" · ")
                                     ?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = LocalIdeColors.current.textSecondary) }
@@ -702,11 +702,21 @@ private fun BrowserSettingsContent() {
 
 @Composable
 private fun DomainPlaceholder(category: SettingsCategory) {
-    Text(
-        text = "${category.title} settings are not available yet. This domain will be added in its own workflow.",
-        color = LocalIdeColors.current.textSecondary,
-        style = MaterialTheme.typography.bodyMedium,
-    )
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Icon(category.icon, contentDescription = null, tint = LocalIdeColors.current.primary, modifier = Modifier.size(24.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(category.title, color = LocalIdeColors.current.textPrimary, style = MaterialTheme.typography.titleSmall)
+                Text(category.description, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        HorizontalDivider()
+        Text(
+            text = "Settings for this area are not configured yet.",
+            color = LocalIdeColors.current.textSecondary,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
 }
 
 @Composable

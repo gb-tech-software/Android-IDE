@@ -5,7 +5,7 @@ enum class CreateProjectTemplate(
     val title: String,
     val summary: String,
 ) {
-    FROM_SCRATCH("Start from scratch", "Begin with Android IDE guidance and add the project shape yourself."),
+    FROM_SCRATCH("Start from scratch", "Start with only a README.md and add your own files."),
     NODE_APP("Node.js application", "Start a runnable Node.js application."),
     NPM_PACKAGE("npm package", "Build a reusable package with npm."),
     PNPM_PACKAGE("pnpm package", "Build a reusable package with pnpm."),

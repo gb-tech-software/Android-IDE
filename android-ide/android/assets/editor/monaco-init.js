@@ -112,6 +112,13 @@ function postLspMessage(message) {
   postToNative({ type: 'languageServerMessage', message: JSON.stringify(message) });
 }
 
+function flushPendingContentChange() {
+  if (!editor || !currentPath || contentChangeTimer === null) return;
+  clearTimeout(contentChangeTimer);
+  contentChangeTimer = null;
+  postToNative({ type: 'contentChanged', path: currentPath, content: editor.getValue() });
+}
+
 function requestLsp(method, params, timeoutMs) {
   var id = lspRequestId++;
   return new Promise(function (resolve, reject) {
@@ -217,6 +224,16 @@ function localSnippetItems(language) {
       ['element', '<${1:element}>\n\t$0\n</$1>', 'Element'],
       ['attribute', '${1:name}="${2:value}"', 'Attribute'],
     ],
+    shell: [
+      ['if', 'if [ ${1:condition} ]; then\n\t$0\nfi', 'If statement'],
+      ['for', 'for ${1:item} in ${2:items}; do\n\t$0\ndone', 'For loop'],
+      ['case', 'case ${1:value} in\n\t${2:pattern})\n\t\t$0\n\t\t;;\nesac', 'Case statement'],
+      ['fn', '${1:name}() {\n\t$0\n}', 'Shell function'],
+    ],
+    groovy: [
+      ['plugins', 'plugins {\n\tid ${1:"plugin.id"} version ${2:"1.0"}\n}', 'Gradle plugins block'],
+      ['dependency', '${1:implementation}(${2:"group:artifact:version"})', 'Gradle dependency'],
+    ],
   };
   snippets.javascriptreact = snippets.javascript;
   snippets.typescriptreact = snippets.typescript;
@@ -266,27 +283,36 @@ function handleLanguageServerMessage(raw) {
 }
 
 function registerLanguageProviders() {
-  var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'markdown'];
+  var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'markdown', 'shell', 'groovy'];
   var lspCompletionLanguages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc'];
+  var localCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
   languages.forEach(function (language) {
     lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
-      triggerCharacters: ['.', ':', '/', '<', '"', "'"],
+      triggerCharacters: localCompletionTriggers,
       provideCompletionItems: function (model, position) {
-        var local = localSnippetItems(language);
-        if (lspCompletionLanguages.indexOf(language) === -1) {
-          return Promise.resolve({ suggestions: local });
-        }
+        var prefix = model.getWordUntilPosition(position).word || '';
+        var local = localSnippetItems(language).filter(function (item) {
+          return !prefix || item.label.toLowerCase().indexOf(prefix.toLowerCase()) === 0;
+        });
+        return Promise.resolve({ suggestions: local });
+      },
+    }));
+    if (lspCompletionLanguages.indexOf(language) !== -1) {
+      lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
+        triggerCharacters: ['.', ':', '/', '<', '"', "'"],
+        provideCompletionItems: function (model, position) {
         return requestLsp('textDocument/completion', {
           textDocument: { uri: model.uri.toString() },
           position: lspPosition(position),
           context: { triggerKind: 1 },
-        }, 1400).then(function (result) {
-          return { suggestions: normalizeCompletionItems(result).concat(local) };
+        }, 600).then(function (result) {
+          return { suggestions: normalizeCompletionItems(result) };
         }).catch(function () {
-          return { suggestions: local };
+          return { suggestions: [] };
         });
-      },
-    }));
+        },
+      }));
+    }
     lspProviderDisposables.push(monaco.languages.registerHoverProvider(language, {
       provideHover: function (model, position) {
         return requestLsp('textDocument/hover', {
@@ -629,6 +655,16 @@ window.androidIDE = {
         loadFile(msg.path, msg.content, msg.language);
         break;
 
+      case 'reloadFile':
+        reloadFile(msg.path, msg.expectedCurrentContent, msg.content, msg.language);
+        break;
+
+      case 'clearActiveModel':
+        flushPendingContentChange();
+        if (editor) editor.setModel(null);
+        currentPath = null;
+        break;
+
       case 'setTheme':
         if (editor) {
           var theme = 'androidide-dark';
@@ -675,6 +711,7 @@ window.androidIDE = {
 
       case 'closeTab':
         if (msg.path) {
+          if (msg.path === currentPath) flushPendingContentChange();
           var safeSegment = encodeURIComponent(msg.path);
           var modelUri    = monaco.Uri.parse('androidide:///files/' + safeSegment);
           var model       = monaco.editor.getModel(modelUri);
@@ -693,6 +730,7 @@ window.androidIDE = {
 
       // from the previous project cannot leak into the new one.
       case 'closeAllModels':
+        flushPendingContentChange();
         lspPending = Object.create(null);
         monaco.editor.getModels().forEach(function (m) { m.dispose(); });
         if (editor) editor.setModel(null);
@@ -916,6 +954,7 @@ window.androidIDE = {
  */
 function loadFile(path, content, language) {
   if (!editor) return;
+  if (currentPath !== path) flushPendingContentChange();
   currentPath = path;
   if (editor.getModel()) monaco.editor.setModelMarkers(editor.getModel(), 'androidide-lsp', []);
 
@@ -945,4 +984,28 @@ function loadFile(path, content, language) {
 
   // Do not focus during file initialization. Native touch handling controls
   // focus and IME visibility; focusing here opens the keyboard while files load.
+}
+
+/** Reload only a model whose current text still matches the native clean snapshot. */
+function reloadFile(path, expectedCurrentContent, content, language) {
+  if (!editor || !path) return;
+  var wasActive = currentPath === path;
+  if (wasActive) flushPendingContentChange();
+  var uri = monaco.Uri.parse('androidide:///files/' + encodeURIComponent(path));
+  var oldModel = monaco.editor.getModel(uri);
+  if (oldModel && expectedCurrentContent != null && oldModel.getValue() !== expectedCurrentContent) {
+    if (wasActive) {
+      postToNative({ type: 'contentChanged', path: path, content: oldModel.getValue() });
+    }
+    return;
+  }
+  if (oldModel) oldModel.dispose();
+  var model = monaco.editor.createModel(content, language, uri);
+  if (wasActive) {
+    currentPath = path;
+    editor.setModel(model);
+    editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });
+    applyLayout();
+    requestAnimationFrame(applyLayout);
+  }
 }

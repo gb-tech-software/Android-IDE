@@ -274,6 +274,11 @@ class ProjectStorageAdapterImpl(
             capabilities.explanation ?: "The project location is unavailable for mutation",
             ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
         )
+        if (request.intent != ProjectMutationIntent.WRITE && !capabilities.localStorageConfirmed) return MutationPreflight(
+            false,
+            capabilities.explanation ?: "Cloud or remote project locations are not supported.",
+            ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
+        )
         if (request.intent == ProjectMutationIntent.CREATE && !capabilities.canCreate ||
             request.intent == ProjectMutationIntent.WRITE && !capabilities.writable ||
             request.intent == ProjectMutationIntent.DELETE && !capabilities.canDelete

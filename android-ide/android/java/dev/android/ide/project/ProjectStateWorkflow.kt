@@ -31,7 +31,9 @@ class ProjectStateWorkflow(
         val existing = registry.listRegistered().firstOrNull { it.id == projectId }
             ?: return ProjectRestoreResult.Unavailable("Project is not registered")
         val capabilities = storage.inspectProjectStorage(existing.location)
-        if (capabilities.state != CapabilityState.SUPPORTED || !capabilities.readable || !capabilities.writable) {
+        if (capabilities.state != CapabilityState.SUPPORTED || !capabilities.localStorageConfirmed ||
+            !capabilities.readable || !capabilities.writable
+        ) {
             registry.markUnavailable(
                 projectId,
                 capabilities.explanation ?: "Project location is unavailable",
@@ -41,11 +43,15 @@ class ProjectStateWorkflow(
                 capabilities.explanation ?: "Project location is unavailable",
             )
         }
-        val identity = metadata.readIdentity(existing.location) ?: existing
-        val initialized = metadata.ensurePortableState(identity)
-        if (initialized.outcome != OperationOutcome.COMPLETE) {
-            registry.markUnavailable(projectId, initialized.message)
-            return ProjectRestoreResult.Unavailable(initialized.message)
+        val identity = if (capabilities.localWorkspaceAvailable) {
+            metadata.readIdentity(existing.location) ?: existing
+        } else existing
+        if (capabilities.localWorkspaceAvailable) {
+            val initialized = metadata.ensurePortableState(identity)
+            if (initialized.outcome != OperationOutcome.COMPLETE) {
+                registry.markUnavailable(projectId, initialized.message)
+                return ProjectRestoreResult.Unavailable(initialized.message)
+            }
         }
         val restoredIdentity = identity.copy(
             location = identity.location.copy(
@@ -64,7 +70,9 @@ class ProjectStateWorkflow(
         description: String,
     ): OperationReport {
         val capabilities = storage.inspectProjectStorage(location)
-        if (capabilities.state != CapabilityState.SUPPORTED || !capabilities.readable || !capabilities.writable) {
+        if (capabilities.state != CapabilityState.SUPPORTED || !capabilities.localStorageConfirmed ||
+            !capabilities.readable || !capabilities.writable
+        ) {
             return OperationReport(
                 outcome = OperationOutcome.BLOCKED,
                 message = capabilities.explanation ?: "Project files must be readable and writable to register this location",
@@ -89,21 +97,23 @@ class ProjectStateWorkflow(
                 errorCategory = containment.errorCategory ?: dev.android.ide.contracts.ErrorCategory.DESTINATION_CONFLICT,
             )
         }
-        val metadataResult = metadata.ensurePortableState(identity)
-        if (metadataResult.outcome != OperationOutcome.COMPLETE) return metadataResult
-        val written = metadata.writeIdentity(identity)
-        if (written.outcome != OperationOutcome.COMPLETE) return written
-        val persisted = metadata.readIdentity(identity.location)
-        if (persisted == null || persisted.id != identity.id || persisted.name != identity.name ||
-            persisted.description != identity.description ||
-            persisted.location.stableId != identity.location.stableId
-        ) {
-            return OperationReport(
-                outcome = OperationOutcome.FAILED,
-                message = "The project identity could not be verified after writing portable metadata",
-                errorCategory = dev.android.ide.contracts.ErrorCategory.MALFORMED_METADATA,
-                recoveryHint = "Keep the project files unchanged, restore storage access, and retry registration",
-            )
+        if (capabilities.localWorkspaceAvailable) {
+            val metadataResult = metadata.ensurePortableState(identity)
+            if (metadataResult.outcome != OperationOutcome.COMPLETE) return metadataResult
+            val written = metadata.writeIdentity(identity)
+            if (written.outcome != OperationOutcome.COMPLETE) return written
+            val persisted = metadata.readIdentity(identity.location)
+            if (persisted == null || persisted.id != identity.id || persisted.name != identity.name ||
+                persisted.description != identity.description ||
+                persisted.location.stableId != identity.location.stableId
+            ) {
+                return OperationReport(
+                    outcome = OperationOutcome.FAILED,
+                    message = "The project identity could not be verified after writing portable metadata",
+                    errorCategory = dev.android.ide.contracts.ErrorCategory.MALFORMED_METADATA,
+                    recoveryHint = "Keep the project files unchanged, restore storage access, and retry registration",
+                )
+            }
         }
         return registry.register(identity)
     }
