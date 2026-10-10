@@ -190,7 +190,7 @@ private fun EditorTabItem(
                             onClick = { menuOpen = false; onPin() },
                         )
                     }
-                    if (tab.isBlank && allowManualSave) {
+                    if (tab.isBlank && allowManualSave && !tab.isReadOnly) {
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
                             text = { Text("Save") },
@@ -202,7 +202,7 @@ private fun EditorTabItem(
                             text    = { Text("Locate") },
                             onClick = { menuOpen = false; onLocate() },
                         )
-                        if (allowManualSave) DropdownMenuItem(
+                        if (allowManualSave && !tab.isReadOnly) DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.Save, contentDescription = null) },
                             text    = { Text("Save") },
                             onClick = { menuOpen = false; onSave() },

@@ -11,7 +11,7 @@
 //   { type: "languageServerMessage", message }
 //
 // Outbound (Kotlin → Monaco, via window.androidIDE.receiveMessage):
-//   { type: "loadFile",         path, content, language }
+//   { type: "loadFile",         path, content, language, readOnly? }
 //   { type: "setTheme",         theme }
 //   { type: "setFontSize",      size }
 //   { type: "requestSave",      path }
@@ -19,7 +19,7 @@
 //   { type: "forceLayout" }
 //   { type: "executeCommand",   command }
 //   { type: "insertText",       text }
-//   { type: "setEditorOptions", tabSize?, wordWrap?, lineNumbers?, fontSize? }
+//   { type: "setEditorOptions", tabSize?, wordWrap?, lineNumbers?, fontSize?, readOnly? }
 //   { type: "showFind" }
 //   { type: "showReplace" }
 
@@ -103,7 +103,12 @@ sealed class EditorOutbound {
     // ── File management ────────────────────────────────────────────────────
 
     /** Load a file into the editor. Creates or reuses a Monaco model for [path]. */
-    data class LoadFile(val path: String, val content: String, val language: String) : EditorOutbound()
+    data class LoadFile(
+        val path: String,
+        val content: String,
+        val language: String,
+        val readOnly: Boolean = false,
+    ) : EditorOutbound()
 
     /** Replace a clean cached model with bytes freshly read from storage. */
     data class ReloadFile(
@@ -151,6 +156,8 @@ sealed class EditorOutbound {
         val bracketPairColorization: Boolean? = null,
         /** Auto-close brackets: "always" | "languageDefined" | "never" */
         val autoClosingBrackets: String? = null,
+        /** Prevent all edits in the active model while preserving selection and copy. */
+        val readOnly: Boolean? = null,
     ) : EditorOutbound()
 
     // ── Layout ─────────────────────────────────────────────────────────────
@@ -255,7 +262,7 @@ sealed class EditorOutbound {
 
     private fun toJsonObject(): JSONObject = JSONObject().apply {
         when (val msg = this@EditorOutbound) {
-            is LoadFile        -> { put("type", "loadFile");    put("path", msg.path); put("content", msg.content); put("language", msg.language) }
+            is LoadFile        -> { put("type", "loadFile");    put("path", msg.path); put("content", msg.content); put("language", msg.language); put("readOnly", msg.readOnly) }
             is ReloadFile      -> {
                 put("type", "reloadFile")
                 put("path", msg.path)
@@ -280,6 +287,7 @@ sealed class EditorOutbound {
                 msg.cursorStyle?.let              { put("cursorStyle", it) }
                 msg.bracketPairColorization?.let  { put("bracketPairColorization", it) }
                 msg.autoClosingBrackets?.let      { put("autoClosingBrackets", it) }
+                msg.readOnly?.let                 { put("readOnly", it) }
             }
             is ForceLayout     -> put("type", "forceLayout")
             is ExecuteCommand  -> { put("type", "executeCommand"); put("command", msg.command) }

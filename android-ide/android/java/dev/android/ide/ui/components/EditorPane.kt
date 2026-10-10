@@ -243,8 +243,8 @@ fun EditorPane(
     val configuration = LocalConfiguration.current
     val layoutKey = "${configuration.screenWidthDp}x${configuration.screenHeightDp}"
 
-    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeTab?.content == null, isEditorReady, editorBindRevision) {
-        val content = if (activeTab?.content == null && activeTabContent.isNullOrEmpty()) {
+    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeTab?.content == null, activeTab?.isReadOnly, isEditorReady, editorBindRevision) {
+        val content = if (activeTab?.content == null && activeTabContent == null) {
             null
         } else {
             activeTabContent ?: activeTab?.content
@@ -256,6 +256,7 @@ fun EditorPane(
                     path     = activeTab.documentUri,
                     content  = content,
                     language = activeTab.language,
+                    readOnly = activeTab.isReadOnly,
                 ),
             )
             // Restore cursor position for this tab (if previously saved).

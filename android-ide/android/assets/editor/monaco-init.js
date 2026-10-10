@@ -98,6 +98,7 @@ window.addEventListener('resize', function () {
 
 var editor = null;          // monaco.editor.IStandaloneCodeEditor
 var currentPath = null;     // SAF URI of the currently loaded file
+var editorReadOnly = false;
 var contentChangeTimer = null;
 var CONTENT_CHANGE_DEBOUNCE_MS = 150;   // faster dirty-marking (was 300)
 var lspRequestId = 1;
@@ -574,7 +575,7 @@ require(['vs/editor/editor.main'], function () {
 // ---------------------------------------------------------------------------
 
 function insertPairedText(opening, closing) {
-  if (!editor || !opening || !closing) return;
+  if (!editor || editorReadOnly || !opening || !closing) return;
   var model = editor.getModel();
   var selection = editor.getSelection();
   if (!model || !selection) return;
@@ -607,7 +608,7 @@ function insertPairedText(opening, closing) {
 }
 
 function insertEditorSnippet(trigger, snippet) {
-  if (!editor || !snippet) return;
+  if (!editor || editorReadOnly || !snippet) return;
   var model = editor.getModel();
   var selection = editor.getSelection();
   if (!model || !selection) return;
@@ -652,7 +653,7 @@ window.androidIDE = {
     switch (msg.type) {
 
       case 'loadFile':
-        loadFile(msg.path, msg.content, msg.language);
+        loadFile(msg.path, msg.content, msg.language, msg.readOnly === true);
         break;
 
       case 'reloadFile':
@@ -685,6 +686,7 @@ window.androidIDE = {
         if (editor) {
           var opts = {};
           var wrapChanged = false;
+          if (msg.readOnly != null) editorReadOnly = msg.readOnly === true;
           if (msg.tabSize          != null) opts.tabSize          = msg.tabSize;
           if (msg.wordWrap         != null) { opts.wordWrap        = msg.wordWrap; wrapChanged = true; } // "on" / "off"
           if (msg.lineNumbers      != null) opts.lineNumbers       = msg.lineNumbers; // "on" / "off"
@@ -695,6 +697,7 @@ window.androidIDE = {
           if (msg.cursorStyle            != null) opts.cursorStyle          = msg.cursorStyle;
           if (msg.bracketPairColorization!= null) opts.bracketPairColorization = { enabled: msg.bracketPairColorization };
           if (msg.autoClosingBrackets    != null) opts.autoClosingBrackets  = msg.autoClosingBrackets;
+          if (msg.readOnly              != null) opts.readOnly              = msg.readOnly;
           if (Object.keys(opts).length > 0) {
             editor.updateOptions(opts);
             // re-layout immediately or Monaco displays broken wrapped lines.
@@ -773,12 +776,15 @@ window.androidIDE = {
           if (cutModel && cutSel && !cutSel.isEmpty()) {
             var cutText = cutModel.getValueInRange(cutSel);
             if (cutText) {
-              postToNative({ type: 'textCopied', text: cutText, isCut: true });
-              editor.executeEdits('cut', [{ range: cutSel, text: '', forceMoveMarkers: true }]);
+              postToNative({ type: 'textCopied', text: cutText, isCut: !editorReadOnly });
+              if (!editorReadOnly) editor.executeEdits('cut', [{ range: cutSel, text: '', forceMoveMarkers: true }]);
             }
           }
           break;
         }
+        if (editorReadOnly && !msg.command.startsWith('cursor') &&
+            msg.command !== 'selectAll' && msg.command !== 'editor.action.selectAll' &&
+            msg.command !== 'editor.action.clipboardCopyAction' && msg.command !== 'actions.find') break;
         // indent selected lines when a selection exists.
         if (msg.command === 'smartIndent') {
           var sel = editor.getSelection();
@@ -830,7 +836,7 @@ window.androidIDE = {
         break;
 
       case 'insertText':
-        if (editor && msg.text) {
+        if (editor && !editorReadOnly && msg.text) {
           // Use executeEdits for correct undo/redo behaviour and proper
           // indentation handling after multi-line pastes. This is more
           // correct than editor.trigger('keyboard', 'type', ...) which
@@ -864,7 +870,7 @@ window.androidIDE = {
         break;
 
       case 'showReplace':
-        if (editor) {
+        if (editor && !editorReadOnly) {
           var replaceAction = editor.getAction('editor.action.startFindReplaceAction');
           if (replaceAction) replaceAction.run();
         }
@@ -952,7 +958,7 @@ window.androidIDE = {
  * @param {string} content  - Full file text.
  * @param {string} language - Monaco language ID (e.g. "kotlin", "java").
  */
-function loadFile(path, content, language) {
+function loadFile(path, content, language, readOnly) {
   if (!editor) return;
   if (currentPath !== path) flushPendingContentChange();
   currentPath = path;
@@ -975,6 +981,8 @@ function loadFile(path, content, language) {
   }
 
   editor.setModel(model);
+  editorReadOnly = readOnly === true;
+  editor.updateOptions({ readOnly: readOnly === true });
   editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });
 
   // Apply layout using window.innerWidth/innerHeight, then schedule a

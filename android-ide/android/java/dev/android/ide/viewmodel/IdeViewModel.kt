@@ -72,8 +72,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+import java.security.MessageDigest
 import java.util.UUID
-
+data class ProjectPreviewTarget(val url: String, val reuseKey: String)
 private val BROWSER_PREVIEW_EXTENSIONS = setOf(
     "html", "htm", "md", "markdown", "svg", "pdf", "txt", "csv", "xml", "json",
     "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "tif", "tiff",
@@ -2795,7 +2796,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Resolve an editor document to a browser-loadable path only inside a native local workspace. */
-    fun browserPreviewUri(documentUri: String): String? {
+    fun browserContentUri(documentUri: String): String? {
         val state = _uiState.value
         if (!state.localStorageConfirmed) {
             _uiState.update { it.copy(statusMessage = "Cloud or remote project locations cannot be previewed") }
@@ -2854,8 +2855,13 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Resolve the editor's Preview/Run action to a directly previewable active file or the saved HTML fallback. */
-    suspend fun resolveActivePreviewUri(): String? {
+    /** Resolve the editor Preview action to a project-root HTTP URL and reusable browser destination. */
+    suspend fun resolveActivePreviewTarget(): ProjectPreviewTarget? {
+        val initialState = _uiState.value
+        if (!initialState.localStorageConfirmed || !initialState.localWorkspaceAvailable) {
+            _uiState.update { it.copy(statusMessage = initialState.localWorkspaceExplanation ?: "Browser preview requires a native local project path") }
+            return null
+        }
         val state = _uiState.value
         if (!state.localStorageConfirmed || !state.localWorkspaceAvailable) {
             _uiState.update { it.copy(statusMessage = state.localWorkspaceExplanation ?: "Browser preview requires a native local project path") }
@@ -2883,7 +2889,29 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 return null
             }
         }
-        return browserPreviewUri(targetUri)
+        val rootUri = state.projectRootUri ?: return null
+        val rootPath = safRepository.localFilesystemPath(rootUri)
+        val targetPath = safRepository.localFilesystemPath(targetUri)
+        if (rootPath == null || targetPath == null) {
+            _uiState.update { it.copy(statusMessage = "The local project path could not be resolved for preview") }
+            return null
+        }
+        val root = runCatching { File(rootPath).canonicalFile }.getOrNull()
+        val target = runCatching { File(targetPath).canonicalFile }.getOrNull()
+        if (root == null || target == null || !root.isDirectory || !target.isFile || !target.canRead() || !target.toPath().startsWith(root.toPath())) {
+            _uiState.update { it.copy(statusMessage = "The preview file is unavailable or outside the project root") }
+            return null
+        }
+        val url = try {
+            services.projectStaticPreviewServer.urlFor(root.path, target.path)
+        } catch (error: Exception) {
+            _uiState.update { it.copy(statusMessage = "Could not start the local preview server: ${error.message ?: "project path unavailable"}") }
+            return null
+        }
+        val digest = MessageDigest.getInstance("SHA-256").digest(root.path.toByteArray(Charsets.UTF_8))
+        val reuseKey = "project-root-" + digest.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        _uiState.update { it.copy(statusMessage = "") }
+        return ProjectPreviewTarget(url, reuseKey)
     }
 
     private suspend fun resolveProjectHtmlFile(rootUri: String, segments: List<String>): String? {

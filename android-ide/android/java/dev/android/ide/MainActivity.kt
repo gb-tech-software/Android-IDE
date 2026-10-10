@@ -5,31 +5,31 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
-import android.view.KeyEvent
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.setContent
 import androidx.lifecycle.ViewModelProvider
 import dev.android.ide.app.AppShellViewModel
-import dev.android.ide.contracts.TerminalBrowserRequestProtocol
+import dev.android.ide.app.ApplicationServices
+import dev.android.ide.app.ExternalContentRoute
+import dev.android.ide.app.ExternalContentRouter
+import dev.android.ide.contracts.OpenUrlRequestProtocol
 import dev.android.ide.contracts.TerminalStorageSetupProtocol
+import dev.android.ide.editor.StandaloneEditorViewModel
 import dev.android.ide.ui.AppRoot
 import dev.android.ide.viewmodel.IdeViewModel
 
 class MainActivity : ComponentActivity() {
+    private val externalContentRouter = ExternalContentRouter()
     private val storageSetupReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                STORAGE_SETUP_ACTION -> {
-                    if (intent.getStringExtra(STORAGE_SETUP_ACTION) == "storage") {
-                        intent.getStringExtra(TerminalStorageSetupProtocol.REQUEST_ID_EXTRA)
-                            ?.let(appShellViewModel::requestTerminalStorageSetup)
-                    }
-                }
-                TerminalBrowserRequestProtocol.ACTION -> intent.getStringExtra(TerminalBrowserRequestProtocol.URL_EXTRA)
-                    ?.let(appShellViewModel::requestTerminalBrowserNavigation)
+            if (intent.action == STORAGE_SETUP_ACTION && intent.getStringExtra(STORAGE_SETUP_ACTION) == "storage") {
+                intent.getStringExtra(TerminalStorageSetupProtocol.REQUEST_ID_EXTRA)
+                    ?.let(appShellViewModel::requestTerminalStorageSetup)
             }
         }
     }
@@ -40,9 +40,13 @@ class MainActivity : ComponentActivity() {
     val ideViewModel: IdeViewModel by lazy {
         ViewModelProvider(this)[IdeViewModel::class.java]
     }
+    val standaloneEditorViewModel: StandaloneEditorViewModel by lazy {
+        ViewModelProvider(this)[StandaloneEditorViewModel::class.java]
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleIncomingIntent(intent)
         window.statusBarColor = Color.rgb(32, 33, 36)
         window.navigationBarColor = Color.BLACK
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, true)
@@ -52,30 +56,61 @@ class MainActivity : ComponentActivity() {
         }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (!appShellViewModel.back()) {
-                    appShellViewModel.requestExitConfirmation()
-                }
+                if (!appShellViewModel.back()) appShellViewModel.requestExitConfirmation()
             }
         })
         setContent {
-            AppRoot(viewModel = appShellViewModel, ideViewModel = ideViewModel, onExit = ::finish)
+            AppRoot(
+                viewModel = appShellViewModel,
+                ideViewModel = ideViewModel,
+                standaloneEditorViewModel = standaloneEditorViewModel,
+                onExit = ::finish,
+            )
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        return when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> ideViewModel.handleVolumeKey(up = true) || super.onKeyDown(keyCode, event)
-            KeyEvent.KEYCODE_VOLUME_DOWN -> ideViewModel.handleVolumeKey(up = false) || super.onKeyDown(keyCode, event)
-            else -> super.onKeyDown(keyCode, event)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent) {
+        if (intent.action == OpenUrlRequestProtocol.ACTION) {
+            val requestId = intent.getStringExtra(OpenUrlRequestProtocol.REQUEST_ID_EXTRA)
+                ?.takeIf { REQUEST_ID_PATTERN.matches(it) }
+            val url = intent.getStringExtra(OpenUrlRequestProtocol.URL_EXTRA)?.trim().orEmpty()
+            val uri = runCatching { Uri.parse(url) }.getOrNull()
+            val receipts = ApplicationServices.from(application).browserNavigationReceipts
+            if (requestId != null && receipts.status(requestId) in setOf("dispatched", "rejected")) return
+            if (url.isBlank() || uri == null || uri.scheme?.lowercase() !in setOf("http", "https") || uri.host.isNullOrBlank()) {
+                receipts.record(requestId, "rejected")
+                return
+            }
+            appShellViewModel.requestBrowserNavigation(
+                url = url,
+                openInNewTab = intent.getBooleanExtra(OpenUrlRequestProtocol.OPEN_IN_NEW_TAB_EXTRA, true),
+                requestId = requestId,
+            )
+            return
         }
+        if (intent.action != Intent.ACTION_VIEW && intent.action != Intent.ACTION_SEND) return
+        when (val route = externalContentRouter.route(this, intent)) {
+            is ExternalContentRoute.Browser -> appShellViewModel.requestBrowserNavigation(route.request.url, route.request.openInNewTab)
+            ExternalContentRoute.Unsupported -> Unit
+            else -> appShellViewModel.requestExternalContent(route)
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_VOLUME_UP -> ideViewModel.handleVolumeKey(up = true) || super.onKeyDown(keyCode, event)
+        KeyEvent.KEYCODE_VOLUME_DOWN -> ideViewModel.handleVolumeKey(up = false) || super.onKeyDown(keyCode, event)
+        else -> super.onKeyDown(keyCode, event)
     }
 
     override fun onStart() {
         super.onStart()
-        val filter = IntentFilter().apply {
-            addAction(STORAGE_SETUP_ACTION)
-            addAction(TerminalBrowserRequestProtocol.ACTION)
-        }
+        val filter = IntentFilter().apply { addAction(STORAGE_SETUP_ACTION) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(storageSetupReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -88,10 +123,12 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         unregisterReceiver(storageSetupReceiver)
         appShellViewModel.background()
+        ApplicationServices.from(application).browserPersistenceCoordinator.flush()
         super.onStop()
     }
 
     private companion object {
         const val STORAGE_SETUP_ACTION = "dev.android.ide.app.reload_style"
+        val REQUEST_ID_PATTERN = Regex("[A-Za-z0-9._-]{1,80}")
     }
 }

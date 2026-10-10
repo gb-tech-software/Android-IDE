@@ -2,43 +2,74 @@ package dev.android.ide.browser
 
 import android.content.Context
 import org.json.JSONArray
-
-internal const val DEFAULT_HOME = "https://www.google.com"
-internal const val DEFAULT_SEARCH = "google"
+import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 
 /** Sole persistence boundary for browser tabs, settings, history, and downloads. */
-class BrowserStateStore(context: Context) {
+class BrowserStateStore(
+    context: Context,
+    private val engine: BrowserEngine,
+) : BrowserStorageService {
     private val preferences = context.applicationContext
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun readTabs(): JSONArray = runCatching {
-        JSONArray(preferences.getString(TABS_KEY, "[]"))
-    }.getOrDefault(JSONArray())
+    override fun readTabs(): List<BrowserTabDescriptor> = runCatching {
+        val array = JSONArray(preferences.getString(TABS_KEY, "[]"))
+        List(array.length()) { index -> array.optJSONObject(index) }.mapNotNull { item ->
+            item?.let {
+                BrowserTabDescriptor(
+                    id = it.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    url = it.optString("url", DEFAULT_HOME).ifBlank { DEFAULT_HOME },
+                    title = it.optString("title", "New tab").ifBlank { "New tab" },
+                    reuseKey = it.optString("reuseKey").takeIf(String::isNotBlank),
+                    serializedState = it.optString("state").takeIf(String::isNotBlank)?.let(::BrowserSerializedState),
+                    viewportWidth = it.optInt("viewportWidth", 0).takeIf { width -> width in 320..2400 },
+                    scrollY = it.optInt("scrollY", 0).coerceAtLeast(0),
+                    thumbnail = it.optString("thumbnailPath").takeIf { path -> path.isNotBlank() && File(path).isFile }
+                        ?.let(::BrowserTabThumbnail),
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
 
-    fun selectedTabId(): String? = preferences.getString(SELECTED_TAB_KEY, null)
+    override fun selectedTabId(): String? = preferences.getString(SELECTED_TAB_KEY, null)
 
-    fun saveTabs(tabs: JSONArray) {
-        preferences.edit().putString(TABS_KEY, tabs.toString()).apply()
+    override fun saveTabs(tabs: List<BrowserTabDescriptor>) {
+        val array = JSONArray()
+        tabs.forEach { tab ->
+            array.put(JSONObject().apply {
+                put("id", tab.id)
+                put("url", tab.url)
+                put("title", tab.title)
+                tab.reuseKey?.let { put("reuseKey", it) }
+                put("viewportWidth", tab.viewportWidth ?: 0)
+                put("scrollY", tab.scrollY)
+                tab.thumbnail?.path?.takeIf { File(it).isFile }?.let { put("thumbnailPath", it) }
+                tab.serializedState?.value?.let { put("state", it) }
+            })
+        }
+        preferences.edit().putString(TABS_KEY, array.toString()).apply()
     }
 
-    fun clearTabs() {
+    override fun clearTabs() {
         preferences.edit().remove(TABS_KEY).remove(SELECTED_TAB_KEY).apply()
     }
 
-    fun saveSelectedTab(id: String) {
+    override fun saveSelectedTab(id: String) {
         preferences.edit().putString(SELECTED_TAB_KEY, id).apply()
     }
 
-    fun readHistory(): List<String> = runCatching {
+    override fun readHistory(): List<String> = runCatching {
         val array = JSONArray(preferences.getString(HISTORY_KEY, "[]"))
         List(array.length()) { array.optString(it) }.filter(String::isNotBlank)
     }.getOrDefault(emptyList())
 
-    fun saveHistory(history: List<String>) {
+    override fun saveHistory(history: List<String>) {
         preferences.edit().putString(HISTORY_KEY, JSONArray(history).toString()).apply()
     }
 
-    fun readSettings(): BrowserSettings = BrowserSettings(
+    override fun readSettings(): BrowserSettings = BrowserSettings(
         searchEngine = preferences.getString(SEARCH_ENGINE_KEY, DEFAULT_SEARCH) ?: DEFAULT_SEARCH,
         customSearchUrl = preferences.getString(CUSTOM_SEARCH_KEY, "") ?: "",
         homePage = preferences.getString(HOME_PAGE_KEY, DEFAULT_HOME) ?: DEFAULT_HOME,
@@ -47,9 +78,11 @@ class BrowserStateStore(context: Context) {
             ?.let { if (it == "system") "application" else it } ?: "application",
         developerToolsEnabled = preferences.getBoolean(DEVTOOLS_KEY, true),
         desktopSiteDefault = preferences.getBoolean(DESKTOP_SITE_KEY, false),
+        defaultViewportWidthPx = preferences.getInt(DEFAULT_VIEWPORT_WIDTH_KEY, 0)
+            .takeIf { it in MIN_BROWSER_VIEWPORT_WIDTH_PX..MAX_BROWSER_VIEWPORT_WIDTH_PX },
     )
 
-    fun saveSettings(settings: BrowserSettings) {
+    override fun saveSettings(settings: BrowserSettings) {
         preferences.edit()
             .putString(SEARCH_ENGINE_KEY, settings.searchEngine)
             .putString(CUSTOM_SEARCH_KEY, settings.customSearchUrl)
@@ -57,6 +90,7 @@ class BrowserStateStore(context: Context) {
             .putString(THEME_KEY, settings.theme)
             .putBoolean(DEVTOOLS_KEY, settings.developerToolsEnabled)
             .putBoolean(DESKTOP_SITE_KEY, settings.desktopSiteDefault)
+            .putInt(DEFAULT_VIEWPORT_WIDTH_KEY, settings.defaultViewportWidthPx ?: 0)
             .apply()
         if (settings.downloadFolder == null) {
             preferences.edit().remove(DOWNLOAD_FOLDER_KEY).apply()
@@ -65,16 +99,55 @@ class BrowserStateStore(context: Context) {
         }
     }
 
-    fun readDownloads(): JSONArray = runCatching {
-        JSONArray(preferences.getString(DOWNLOADS_KEY, "[]"))
-    }.getOrDefault(JSONArray())
+    override fun readDownloads(): List<BrowserDownload> = runCatching {
+        val array = JSONArray(preferences.getString(DOWNLOADS_KEY, "[]"))
+        buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val uri = item.optString("uri").takeIf(String::isNotBlank) ?: continue
+                add(
+                    BrowserDownload(
+                        id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        name = item.optString("name").ifBlank { "download" },
+                        uri = uri,
+                        sourceUrl = item.optString("sourceUrl"),
+                        mimeType = item.optString("mimeType", "application/octet-stream"),
+                        size = item.optLong("size").coerceAtLeast(0L),
+                        timestamp = item.optLong("timestamp").coerceAtLeast(0L),
+                    ),
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
 
-    fun saveDownloads(downloads: JSONArray) {
-        preferences.edit().putString(DOWNLOADS_KEY, downloads.toString()).apply()
+    override fun saveDownloads(downloads: List<BrowserDownload>) {
+        val array = JSONArray()
+        downloads.forEach { download ->
+            array.put(JSONObject().apply {
+                put("id", download.id)
+                put("name", download.name)
+                put("uri", download.uri)
+                put("sourceUrl", download.sourceUrl)
+                put("mimeType", download.mimeType)
+                put("size", download.size)
+                put("timestamp", download.timestamp)
+            })
+        }
+        preferences.edit().putString(DOWNLOADS_KEY, array.toString()).apply()
     }
 
-    fun clearHistoryAndDownloads() {
+    override fun clearHistoryAndDownloads() {
         preferences.edit().remove(DOWNLOADS_KEY).remove(HISTORY_KEY).apply()
+    }
+
+    override fun clearSiteData(onComplete: (Result<Unit>) -> Unit) {
+        engine.clearSiteData(onComplete)
+    }
+
+    override fun developerToolsOpen(): Boolean = preferences.getBoolean(DEVTOOLS_OPEN_KEY, false)
+
+    override fun saveDeveloperToolsOpen(open: Boolean) {
+        preferences.edit().putBoolean(DEVTOOLS_OPEN_KEY, open).apply()
     }
 
     companion object {
@@ -88,7 +161,9 @@ class BrowserStateStore(context: Context) {
         private const val DOWNLOAD_FOLDER_KEY = "download_folder"
         private const val THEME_KEY = "theme"
         private const val DEVTOOLS_KEY = "developer_tools_enabled"
+        private const val DEVTOOLS_OPEN_KEY = "developer_tools_open"
         private const val DESKTOP_SITE_KEY = "desktop_site_default"
+        private const val DEFAULT_VIEWPORT_WIDTH_KEY = "default_viewport_width"
         private const val HISTORY_KEY = "navigation_history"
     }
 }

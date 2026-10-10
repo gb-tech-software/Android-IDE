@@ -9,6 +9,11 @@ import dev.android.ide.data.TerminalSettingsRepository
 import dev.android.ide.data.ThemeRepository
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.browser.BrowserStateStore
+import dev.android.ide.browser.BrowserPersistenceCoordinator
+import dev.android.ide.browser.BrowserApplicationService
+import dev.android.ide.browser.BrowserEngine
+import dev.android.ide.browser.GeckoViewBrowserEngine
+import dev.android.ide.browser.GeckoBrowserDeveloperToolsService
 import org.mozilla.geckoview.GeckoRuntime
 import dev.android.ide.filesystem.AndroidIdeFileSystem
 import dev.android.ide.lifecycle.LifecycleCoordinatorImpl
@@ -23,6 +28,9 @@ import dev.android.ide.runtime.BundledTermuxRuntimeInstaller
 import dev.android.ide.runtime.LanguageServerRuntimeAdapterImpl
 import dev.android.ide.workspace.ProjectWorkspaceService
 import dev.android.ide.runtime.TerminalRuntimeAdapterImpl
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Application composition root.
@@ -42,8 +50,24 @@ class ApplicationServices private constructor(application: Application) {
     val crashRecoveryRepository = CrashRecoveryRepository(context)
     val lifecycleStateStore = LifecycleStateStore(context)
     val themeResolver = ThemeResolver(context)
-    val browserStateStore = BrowserStateStore(context)
+    val browserStateStore by lazy { BrowserStateStore(context, browserEngine) }
     val browserRuntime by lazy { GeckoRuntime.create(context) }
+    val browserEngine: BrowserEngine by lazy { GeckoViewBrowserEngine(browserRuntime) }
+    val browserDeveloperTools by lazy { GeckoBrowserDeveloperToolsService(browserRuntime) }
+    private val browserApplicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val projectStaticPreviewServer by lazy { ProjectStaticPreviewServer() }
+    val browserNavigationReceipts by lazy { BrowserNavigationReceiptStore(context) }
+    val browserPersistenceCoordinator by lazy { BrowserPersistenceCoordinator(browserApplicationScope) }
+    val browserApplicationService by lazy {
+        BrowserApplicationService(
+            context,
+            browserStateStore,
+            browserPersistenceCoordinator,
+            browserEngine,
+            browserDeveloperTools,
+            browserApplicationScope,
+        )
+    }
 
     val applicationStateStore = ApplicationStateStore(context)
     val runtimeStateStore = RuntimeStateStore(context)

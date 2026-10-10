@@ -203,9 +203,3 @@ object TerminalStorageSetupProtocol {
     const val REQUEST_ID_EXTRA = "dev.android.ide.extra.STORAGE_SETUP_REQUEST_ID"
     const val RESULT_DIRECTORY = ".android-ide-storage-setup"
 }
-
-/** Internal broadcast contract used by bundled terminal open-url command shims. */
-object TerminalBrowserRequestProtocol {
-    const val ACTION = "dev.android.ide.terminal.OPEN_BROWSER"
-    const val URL_EXTRA = "dev.android.ide.extra.BROWSER_URL"
-}

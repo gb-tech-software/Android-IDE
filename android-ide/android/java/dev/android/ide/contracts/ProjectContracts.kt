@@ -34,6 +34,7 @@ enum class Surface {
     PROJECTS,
     PROJECT_DETAILS,
     EDITOR,
+    STANDALONE_EDITOR,
     TERMINAL,
     BROWSER,
     SETTINGS,

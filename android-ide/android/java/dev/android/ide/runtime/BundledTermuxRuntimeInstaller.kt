@@ -3,7 +3,7 @@ package dev.android.ide.runtime
 import android.content.Context
 import android.os.Build
 import android.system.Os
-import dev.android.ide.contracts.TerminalBrowserRequestProtocol
+import dev.android.ide.contracts.OpenUrlRequestProtocol
 import dev.android.ide.contracts.ErrorCategory
 import dev.android.ide.contracts.OperationOutcome
 import dev.android.ide.contracts.OperationReport
@@ -54,7 +54,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
 
             installInteractiveShellProfile()
             installStorageSetupCommand()
-            installBrowserRoutingCommands()
+            installUrlNavigationCommand()
             shellStartupFailure()?.let { throw IOException(it) }
             OperationReport(OperationOutcome.COMPLETE, "Bundled terminal, Git, language servers, and preview tools are ready")
         }.getOrElse { error ->
@@ -519,18 +519,29 @@ if [ "${'$'}result_code" != "0" ]; then exit 1; fi
         setMode(command, EXECUTABLE_FILE_MODE)
     }
 
-    /** Keep browser-opening commands inside Android IDE; no external intent fallback is allowed. */
-    private fun installBrowserRoutingCommands() {
+    /** Publish ordinary URL navigation requests to the application; no external intent fallback is allowed. */
+    private fun installUrlNavigationCommand() {
         val commandDirectory = File(prefix, "lib/android-ide/bin")
         ensureDirectory(commandDirectory, PREFIX_DIRECTORY_MODE, "Android IDE command directory")
-        val action = TerminalBrowserRequestProtocol.ACTION
-        val urlExtra = TerminalBrowserRequestProtocol.URL_EXTRA
+        val action = OpenUrlRequestProtocol.ACTION
+        val urlExtra = OpenUrlRequestProtocol.URL_EXTRA
+        val requestIdExtra = OpenUrlRequestProtocol.REQUEST_ID_EXTRA
+        val newTabExtra = OpenUrlRequestProtocol.OPEN_IN_NEW_TAB_EXTRA
         val packageName = context.packageName
+        val receiptDirectory = File(context.filesDir, "browser-navigation-receipts").absolutePath
         val opener = File(commandDirectory, "android-ide-open-url")
         opener.writeText(
             """#!/system/bin/sh
+new_tab=true
+while [ "${'$'}#" -gt 0 ]; do
+    case "${'$'}1" in
+        --current) new_tab=false; shift ;;
+        --new-tab) new_tab=true; shift ;;
+        *) break ;;
+    esac
+done
 if [ "${'$'}#" -lt 1 ]; then
-    echo 'usage: android-ide-open-url URL' >&2
+    echo 'usage: android-ide-open-url [--current|--new-tab] URL' >&2
     exit 2
 fi
 url=${'$'}1
@@ -539,20 +550,58 @@ case "${'$'}url" in
 esac
 case "${'$'}url" in
     http://*|https://*) ;;
-    *) echo 'Android IDE Browser accepts only HTTP(S) URLs from Terminal.' >&2; exit 2 ;;
+    *) echo 'Android IDE URL navigation accepts only HTTP(S) URLs.' >&2; exit 2 ;;
 esac
-user_id=${'$'}{TERMUX__USER_ID:-0}
-case "${'$'}user_id" in
-    ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
-esac
-output=${'$'}(am broadcast --user "${'$'}user_id" -a "$action" -p "$packageName" --es "$urlExtra" "${'$'}url" 2>&1)
+request_id=${'$'}(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')
+if [ -z "${'$'}request_id" ]; then request_id="term-${'$'}${'$'}-${'$'}(date +%s)"; fi
+receipt_directory="${'$'}receiptDirectory"
+receipt="${'$'}receipt_directory/${'$'}request_id.status"
+mkdir -p "${'$'}receipt_directory" || { echo 'Unable to create Android IDE request receipt directory.' >&2; exit 1; }
+rm -f "${'$'}receipt"
+component="${'$'}packageName/dev.android.ide.MainActivity"
+output_file="${'$'}{TMPDIR:-/tmp}/android-ide-open-url-${'$'}request_id.log"
+am start -W -n "${'$'}component" -a "${'$'}action" \
+    --es "${'$'}urlExtra" "${'$'}url" \
+    --es "${'$'}requestIdExtra" "${'$'}request_id" \
+    --ez "${'$'}newTabExtra" "${'$'}new_tab" >"${'$'}output_file" 2>&1
 result=${'$'}?
 if [ "${'$'}result" -ne 0 ]; then
-    printf 'Android IDE Browser request failed (exit %s).\n' "${'$'}result" >&2
-    [ -z "${'$'}output" ] || printf '%s\n' "${'$'}output" >&2
+    printf 'Android IDE URL request could not be delivered (exit %s).\n' "${'$'}result" >&2
+    [ ! -s "${'$'}output_file" ] || cat "${'$'}output_file" >&2
+    rm -f "${'$'}output_file" "${'$'}receipt"
     exit "${'$'}result"
 fi
-printf 'Opened in Android IDE Browser: %s\n' "${'$'}url"
+attempt=0
+while [ "${'$'}attempt" -lt 10 ]; do
+    if [ -f "${'$'}receipt" ]; then
+        status=${'$'}(cat "${'$'}receipt" 2>/dev/null)
+        case "${'$'}status" in
+            dispatched)
+                rm -f "${'$'}output_file"
+                printf 'Delivered URL request %s to Android IDE Browser: %s\n' "${'$'}request_id" "${'$'}url"
+                exit 0
+                ;;
+            rejected)
+                rm -f "${'$'}output_file"
+                echo 'Android IDE rejected the URL navigation request.' >&2
+                exit 1
+                ;;
+        esac
+    fi
+    sleep 1
+    attempt=${'$'}((attempt + 1))
+done
+status=unconfirmed
+[ ! -f "${'$'}receipt" ] || status=${'$'}(cat "${'$'}receipt" 2>/dev/null)
+if [ "${'$'}status" = accepted ]; then
+    rm -f "${'$'}output_file"
+    printf 'Android IDE accepted URL request %s, but Browser dispatch was not confirmed before the wait deadline.\n' "${'$'}request_id"
+    exit 0
+fi
+printf 'Android IDE did not confirm browser dispatch (request %s, status %s).\n' "${'$'}request_id" "${'$'}status" >&2
+[ ! -s "${'$'}output_file" ] || cat "${'$'}output_file" >&2
+rm -f "${'$'}output_file"
+exit 1
 """.trimIndent() + "\n",
         )
         setMode(opener, EXECUTABLE_FILE_MODE)

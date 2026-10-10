@@ -40,4 +40,6 @@ data class EditorTab(
     val isTemporary: Boolean = false,
     val isPinned: Boolean = false,
     val isImagePreview: Boolean = false,
+    /** True when the current document may be viewed but the source cannot be written. */
+    val isReadOnly: Boolean = false,
 )

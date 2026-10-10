@@ -1,6 +1,8 @@
 package dev.android.ide.ui.screen
 
 import android.Manifest
+import android.app.Activity
+import android.app.role.RoleManager
 import android.os.Build
 import android.content.Intent
 import android.provider.Settings
@@ -61,6 +63,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -592,6 +595,7 @@ private fun BrowserSettingsContent() {
     var searchSheetOpen by rememberSaveable { mutableStateOf(false) }
     var homeSheetOpen by rememberSaveable { mutableStateOf(false) }
     var themeSheetOpen by rememberSaveable { mutableStateOf(false) }
+    var viewportDefaultSheetOpen by rememberSaveable { mutableStateOf(false) }
     var searchDraft by rememberSaveable(state.settings.customSearchUrl) { mutableStateOf(state.settings.customSearchUrl) }
     var homeDraft by rememberSaveable(state.settings.homePage) { mutableStateOf(state.settings.homePage) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
@@ -603,6 +607,12 @@ private fun BrowserSettingsContent() {
             browser.setDownloadFolder(uri.toString())
             message = "Download folder saved"
         }.onFailure { message = "Android did not grant access to that folder" }
+    }
+    val browserRoleManager = remember(context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) context.getSystemService(RoleManager::class.java) else null
+    }
+    val browserRoleRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        message = if (result.resultCode == Activity.RESULT_OK) "Android IDE is now the selected browser" else "Browser role was not changed"
     }
     val searchLabels = mapOf("google" to "Google", "bing" to "Bing", "duckduckgo" to "DuckDuckGo", "brave" to "Brave Search", "startpage" to "Startpage", "custom" to "Custom")
     SettingsCard {
@@ -635,6 +645,22 @@ private fun BrowserSettingsContent() {
         Text("Existing records are checked when Downloads opens. Duplicate names require confirmation.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
     }
     SettingsCard {
+        Text("New tab viewport", style = MaterialTheme.typography.titleSmall)
+        val defaultViewport = browser.viewportPresets().firstOrNull { it.second == state.settings.defaultViewportWidthPx }
+        val viewportLabel = when {
+            state.settings.defaultViewportWidthPx == null -> "Device width"
+            defaultViewport != null -> "${defaultViewport.first} (${defaultViewport.second}px)"
+            else -> "Custom (${state.settings.defaultViewportWidthPx}px)"
+        }
+        Row(Modifier.fillMaxWidth().clickable { viewportDefaultSheetOpen = true }, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(viewportLabel)
+                Text("Starting content width for new tabs", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+            }
+            Text("Change", color = LocalIdeColors.current.textSecondary)
+        }
+    }
+    SettingsCard {
         Text("Appearance and browsing", style = MaterialTheme.typography.titleSmall)
         Row(Modifier.fillMaxWidth().clickable { themeSheetOpen = true }, verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -646,13 +672,34 @@ private fun BrowserSettingsContent() {
         VisibilitySettingRow("Desktop site", "Reload the current tab using the desktop user-agent.", state.settings.desktopSiteDefault, browser::setDesktopSiteDefault)
     }
     SettingsCard {
+        Text("Default browser", style = MaterialTheme.typography.titleSmall)
+        val roleAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            browserRoleManager?.isRoleAvailable(RoleManager.ROLE_BROWSER) == true
+        val roleHeld = roleAvailable && browserRoleManager?.isRoleHeld(RoleManager.ROLE_BROWSER) == true
+        Text(
+            if (roleHeld) "Android IDE is selected as the browser" else "Request Android’s default-browser role",
+            style = MaterialTheme.typography.bodySmall,
+            color = LocalIdeColors.current.textSecondary,
+        )
+        if (roleAvailable && !roleHeld) {
+            OutlinedButton(onClick = {
+                browserRoleManager?.let { browserRoleRequest.launch(it.createRequestRoleIntent(RoleManager.ROLE_BROWSER)) }
+            }) { Text("Set as default browser") }
+        }
+    }
+    SettingsCard {
         Text("Developer tools", style = MaterialTheme.typography.titleSmall)
-        VisibilitySettingRow("Enable developer tools", "Allow the console, elements, network, resources, sources, and snippets panel.", state.settings.developerToolsEnabled, browser::setDeveloperToolsEnabled)
+        VisibilitySettingRow("Enable developer tools", "Allow the current console, elements, and network panels.", state.settings.developerToolsEnabled, browser::setDeveloperToolsEnabled)
     }
     SettingsCard {
         Text("Browsing data", style = MaterialTheme.typography.titleSmall)
-        Text("Clear browser history and download records. This does not delete files from the download folder.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-        OutlinedButton(onClick = { browser.clearBrowserData(); message = "Browser data cleared" }) { Text("Clear browser data") }
+        Text("Clear site data, browser history, and download records. Downloaded files in the selected folder are not deleted.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+        OutlinedButton(onClick = browser::clearBrowserData, enabled = !state.clearingBrowserData) {
+            Text(if (state.clearingBrowserData) "Clearing browser data…" else "Clear browser data")
+        }
+        state.browserDataClearMessage?.let {
+            Text(it, color = if (it.startsWith("Could not")) MaterialTheme.colorScheme.error else LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
+        }
     }
     message?.let { Text(it, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall) }
 
@@ -687,6 +734,23 @@ private fun BrowserSettingsContent() {
                 Row(Modifier.fillMaxWidth().clickable { browser.setTheme(id); themeSheetOpen = false }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = state.settings.theme == id, onClick = null)
                     Text(label)
+                }
+            }
+        }
+    }
+    if (viewportDefaultSheetOpen) ModalBottomSheet(onDismissRequest = { viewportDefaultSheetOpen = false }) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("New tab viewport", style = MaterialTheme.typography.titleLarge)
+            browser.viewportPresets().forEach { (label, width) ->
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        browser.setDefaultViewportWidth(width)
+                        viewportDefaultSheetOpen = false
+                    },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = state.settings.defaultViewportWidthPx == width, onClick = null)
+                    Text(if (width == null) "Device width" else "$label (${width}px)")
                 }
             }
         }

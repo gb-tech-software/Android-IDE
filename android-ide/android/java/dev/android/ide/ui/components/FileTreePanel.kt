@@ -162,7 +162,7 @@ fun FileTreePanel(
     contentSearchWarning: String? = null,
     onOpenTerminalAtRoot: () -> Unit = {},
     onOpenTerminalAt: (FileNode) -> Unit = {},
-    onOpenBrowserPreview: (FileNode) -> Unit = {},
+    onOpenBrowserContent: (FileNode) -> Unit = {},
     defaultPreviewPath: String? = null,
     onSetDefaultPreview: (FileNode) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -331,7 +331,7 @@ fun FileTreePanel(
                         onSelect                 = onToggleNodeSelection,
                         onShowDuplicateDialog    = onShowDuplicateDialog,
                         onOpenTerminalAt         = onOpenTerminalAt,
-                        onOpenBrowserPreview     = onOpenBrowserPreview,
+                        onOpenBrowserContent     = onOpenBrowserContent,
                         isDefaultPreview         = defaultPreviewPath != null && nodes.pathTo(node.documentUri)?.removePrefix("/") == defaultPreviewPath,
                         onSetDefaultPreview      = onSetDefaultPreview,
                     )
@@ -347,7 +347,7 @@ private val browserPreviewExtensions = setOf(
     "mp4", "webm", "ogv", "mkv", "mov", "m4v", "avi", "mp3", "wav", "ogg", "flac", "m4a", "aac",
 )
 
-private fun isBrowserPreviewCandidate(node: FileNode): Boolean =
+private fun isBrowserContentCandidate(node: FileNode): Boolean =
     !node.isDirectory && node.displayName.substringAfterLast('.', "").lowercase() in browserPreviewExtensions
 
 private fun isHtmlPreviewCandidate(node: FileNode): Boolean =
@@ -539,7 +539,7 @@ private fun FileTreeRow(
     onSelect: (String) -> Unit,
     onShowDuplicateDialog: (FileNode) -> Unit,
     onOpenTerminalAt: (FileNode) -> Unit,
-    onOpenBrowserPreview: (FileNode) -> Unit,
+    onOpenBrowserContent: (FileNode) -> Unit,
     isDefaultPreview: Boolean,
     onSetDefaultPreview: (FileNode) -> Unit,
 ) {
@@ -746,11 +746,11 @@ private fun FileTreeRow(
                             text    = { Text("Duplicate") },
                             onClick = { menuOpen = false; onShowDuplicateDialog(node) },
                         )
-                        if (fullWorkspaceAvailable && isBrowserPreviewCandidate(node)) {
+                        if (fullWorkspaceAvailable && isBrowserContentCandidate(node)) {
                             DropdownMenuItem(
                                 leadingIcon = { Icon(Icons.Default.Visibility, null) },
-                                text = { Text("Preview in browser") },
-                                onClick = { menuOpen = false; onOpenBrowserPreview(node) },
+                                text = { Text("Open in browser") },
+                                onClick = { menuOpen = false; onOpenBrowserContent(node) },
                             )
                         }
                         if (fullWorkspaceAvailable && isHtmlPreviewCandidate(node)) {

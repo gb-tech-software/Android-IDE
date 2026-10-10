@@ -1,12 +1,10 @@
 package dev.android.ide.ui.screen
 
 import android.graphics.BitmapFactory
-import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
-import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
@@ -76,7 +74,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -95,19 +92,6 @@ import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-
-private const val MAX_VIEWPORT_WIDTH = 2400
-
-/**
- * Keeps pull-to-refresh tied to the document rather than to GeckoView's native
- * view bounds. Gecko renders the document internally, so canScrollVertically()
- * alone can report that the view is at its top while the web page is still far
- * below its own top.
- */
-private class BrowserRefreshLayout(context: Context) : SwipeRefreshLayout(context) {
-    var pageScrollY: Int = 0
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,6 +105,7 @@ fun BrowserSurface(
 ) {
     val browser: BrowserViewModel = viewModel()
     val context = LocalContext.current
+    val registerScrollListener = remember(browser) { browser::setScrollListener }
     val themeResolver = remember { ThemeResolver(context) }
     val state by browser.uiState.collectAsState()
     var addressValue by remember {
@@ -138,12 +123,12 @@ fun BrowserSurface(
     var errorVisible by remember { mutableStateOf(false) }
     var previousScrollY by remember { mutableIntStateOf(0) }
     var tabSearchQuery by remember { mutableStateOf("") }
-    val visibleGeckoView = remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
+    val visibleBrowserSurface = remember { mutableStateOf<BrowserSurfaceBinding?>(null) }
     val focusManager = LocalFocusManager.current
 
     LaunchedEffect(initialNavigation?.id) {
         val request = initialNavigation ?: return@LaunchedEffect
-        if (request.temporary) browser.openTemporaryTab(request.url) else browser.navigate(request.url)
+        browser.navigateRequest(request.url, request.openInNewTab, request.reuseKey)
         onInitialNavigationConsumed(request.id)
     }
 
@@ -168,7 +153,7 @@ fun BrowserSurface(
         ResolvedTheme.LIGHT -> lightColorScheme()
     }
     MaterialTheme(colorScheme = browserColorScheme) {
-        BrowserSurfaceContent(modifier, state, browser, visibleGeckoView, addressValue, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabPreview(it, visibleGeckoView.value) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
+        BrowserSurfaceContent(modifier, state, browser, registerScrollListener, visibleBrowserSurface, addressValue, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
     }
 }
 
@@ -178,7 +163,8 @@ private fun BrowserSurfaceContent(
     modifier: Modifier,
     state: dev.android.ide.browser.BrowserUiState,
     browser: BrowserViewModel,
-    visibleGeckoView: androidx.compose.runtime.MutableState<org.mozilla.geckoview.GeckoView?>,
+    registerScrollListener: (String, ((Int) -> Unit)?) -> Unit,
+    visibleBrowserSurface: androidx.compose.runtime.MutableState<BrowserSurfaceBinding?>,
     addressValue: TextFieldValue,
     setAddressValue: (TextFieldValue) -> Unit,
     addressFocused: Boolean,
@@ -214,6 +200,7 @@ private fun BrowserSurfaceContent(
 ) {
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
+    val viewportRange = browser.viewportRange()
     Column(modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Browser") },
@@ -312,9 +299,7 @@ private fun BrowserSurfaceContent(
                         ) {
                             val firstSuggestion = browser.addressEditSuggestion()
                             val normalizedQuery = addressValue.text.trim()
-                            val matchingHistory = history
-                                .filter { it != firstSuggestion && (normalizedQuery.isBlank() || it.contains(normalizedQuery, ignoreCase = true)) }
-                                .take(8)
+                            val matchingHistory = browser.historySuggestions(normalizedQuery, firstSuggestion)
                             fun selectSuggestion(value: String) {
                                 val selected = addressValue.selection
                                 val (start, end) = if (!selected.collapsed) {
@@ -376,39 +361,19 @@ private fun BrowserSurfaceContent(
             state.selectedTabId?.let { tabId ->
                 AndroidView(
                     factory = { browserContext ->
-                        BrowserRefreshLayout(browserContext).apply {
-                            val geckoView = org.mozilla.geckoview.GeckoView(browserContext)
-                            visibleGeckoView.value = geckoView
-                            addView(geckoView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                            setOnChildScrollUpCallback { _, _ ->
-                                // GeckoView is not the document's scroll container. Its native
-                                // canScrollVertically result is only a fallback; Gecko's scroll
-                                // delegate supplies the authoritative page offset below.
-                                pageScrollY > 0 || geckoView.canScrollVertically(-1)
-                            }
-                            setOnRefreshListener {
-                                browser.reload()
-                            }
+                        BrowserSurfaceBinding(browserContext).apply {
+                            visibleBrowserSurface.value = this
+                            setOnRefreshListener { browser.reload() }
                         }
                     },
-                    update = { refreshContainer ->
-                        val view = refreshContainer.getChildAt(0) as? org.mozilla.geckoview.GeckoView
-                        if (view != null) {
-                            visibleGeckoView.value = view
-                            val desiredWidth = state.viewportWidth?.let { (it * density.density).roundToInt() }
-                            val params = view.layoutParams
-                            val targetWidth = desiredWidth ?: ViewGroup.LayoutParams.MATCH_PARENT
-                            if (params.width != targetWidth) {
-                                params.width = targetWidth
-                                view.layoutParams = params
-                                view.requestLayout()
-                                refreshContainer.requestLayout()
-                            }
-                            browser.bind(view, tabId) { scrollY ->
-                                // SwipeRefreshLayout decides whether to intercept before GeckoView
+                    update = { surfaceBinding ->
+                        visibleBrowserSurface.value = surfaceBinding
+                        val desiredWidth = state.viewportWidth?.let { (it * density.density).roundToInt() }
+                        browser.engineSession(tabId)?.let { engineSession ->
+                            surfaceBinding.bind(tabId, engineSession, desiredWidth, registerScrollListener) { scrollY ->
+                                // SwipeRefreshLayout decides whether to intercept before the engine view
                                 // receives a drag. Keep this value current so an upward/downward
                                 // page scroll remains a page scroll everywhere except document top.
-                                refreshContainer.pageScrollY = scrollY.coerceAtLeast(0)
                                 setUrlRowVisible(when {
                                     scrollY <= 0 -> true
                                     scrollY > previousScrollY + 2 -> false
@@ -418,7 +383,7 @@ private fun BrowserSurfaceContent(
                                 setPreviousScrollY(scrollY)
                             }
                         }
-                        if (!state.loading) refreshContainer.isRefreshing = false
+                        if (!state.loading) surfaceBinding.isRefreshing = false
                     },
                     modifier = if (state.viewportWidth == null) Modifier.fillMaxSize() else Modifier.width(state.viewportWidth.dp).fillMaxHeight(),
                 )
@@ -458,7 +423,7 @@ private fun BrowserSurfaceContent(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(visibleTabs, key = { it.id }) { tab ->
-                    TabPreviewCard(
+                    TabThumbnailCard(
                         tab,
                         tab.id == state.selectedTabId,
                         onSelect = { browser.selectTab(tab.id); setTabsOpen(false) },
@@ -477,14 +442,23 @@ private fun BrowserSurfaceContent(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Current: ${state.viewportWidth?.let { "$it px" } ?: "Device width"}", style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(value = viewportText, onValueChange = { setViewportText(it.filter(Char::isDigit).take(4)); setViewportError(null) }, label = { Text("320–$MAX_VIEWPORT_WIDTH px") }, singleLine = true)
+                    browser.viewportPresets().chunked(2).forEach { row ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                            row.forEach { (label, width) ->
+                                TextButton(onClick = { browser.setViewportPreset(width); setViewportOpen(false) }) {
+                                    Text(if (width == null) label else "$label · ${width}px")
+                                }
+                            }
+                        }
+                    }
+                    OutlinedTextField(value = viewportText, onValueChange = { setViewportText(it.filter(Char::isDigit).take(4)); setViewportError(null) }, label = { Text("${viewportRange.first}–${viewportRange.last} px") }, singleLine = true)
                     viewportError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     val width = viewportText.toIntOrNull()
-                    if (width == null || width !in 320..MAX_VIEWPORT_WIDTH) setViewportError("Enter a width from 320 to $MAX_VIEWPORT_WIDTH pixels.")
+                    if (width == null || width !in viewportRange) setViewportError("Enter a width from ${viewportRange.first} to ${viewportRange.last} pixels.")
                     else { browser.setViewportWidth(width); setViewportOpen(false) }
                 }) { Text("Apply") }
             },
@@ -626,7 +600,7 @@ private fun BrowserContextMenuSheet(
             )
             if (link != null) {
                 BrowserContextAction("Open in new tab", onOpenLinkInNewTab)
-                BrowserContextAction("Preview page", onOpenCurrent)
+                BrowserContextAction("Open in current tab", onOpenCurrent)
                 BrowserContextAction("Copy link address") { copy("Link address", link) }
                 if (!menu.textContent.isNullOrBlank()) BrowserContextAction("Copy link text") { copy("Link text", menu.textContent) }
                 BrowserContextAction("Download link", onDownload)
@@ -657,27 +631,27 @@ private fun BrowserContextAction(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TabPreviewCard(tab: BrowserTabUi, selected: Boolean, onSelect: () -> Unit, onClose: () -> Unit) {
-    val preview = remember(tab.previewPath) {
-        tab.previewPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
+private fun TabThumbnailCard(tab: BrowserTabUi, selected: Boolean, onSelect: () -> Unit, onClose: () -> Unit) {
+    val thumbnail = remember(tab.thumbnailPath) {
+        tab.thumbnailPath?.let { BitmapFactory.decodeFile(it)?.asImageBitmap() }
     }
     Card(onClick = onSelect, colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.fillMaxWidth().height(235.dp)) {
             Box(
                 Modifier.fillMaxWidth().height(160.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surface),
             ) {
-                if (preview != null) {
-                    Image(preview, contentDescription = "Snapshot of ${tab.title}", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                if (thumbnail != null) {
+                    Image(thumbnail, contentDescription = "Thumbnail of ${tab.title}", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 } else {
                     Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.Language, contentDescription = null)
-                        Text("Preview not available", style = MaterialTheme.typography.labelMedium)
+                        Text("Thumbnail not available", style = MaterialTheme.typography.labelMedium)
                     }
                 }
                 IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd)) { Icon(Icons.Default.Close, "Close tab") }
             }
-            Text(tab.title.ifBlank { "New tab" }, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), maxLines = 2, style = MaterialTheme.typography.titleSmall.copy(fontStyle = if (tab.isTemporary) FontStyle.Italic else FontStyle.Normal))
-            Text(if (tab.isTemporary) "Temporary preview" else tab.host, modifier = Modifier.padding(horizontal = 10.dp), maxLines = 1, style = MaterialTheme.typography.labelSmall)
+            Text(tab.title.ifBlank { "New tab" }, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), maxLines = 2, style = MaterialTheme.typography.titleSmall)
+            Text(tab.host, modifier = Modifier.padding(horizontal = 10.dp), maxLines = 1, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -714,6 +688,11 @@ private fun DownloadsDialog(downloads: List<BrowserDownload>, browser: BrowserVi
                                             if (intent == null) browser.reportError("The downloaded file is no longer available")
                                             else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
                                         }) { Text("Open") }
+                                        TextButton(onClick = {
+                                            val intent = browser.shareDownload(item.id)
+                                            if (intent == null) browser.reportError("The downloaded file is no longer available")
+                                            else context.startActivity(Intent.createChooser(intent, "Share download"))
+                                        }) { Text("Share") }
                                         TextButton(onClick = { browser.deleteDownload(item.id) }) { Text("Delete") }
                                     } else {
                                         TextButton(onClick = { browser.removeUnavailableDownload(item.id) }) { Text("Remove") }

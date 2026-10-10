@@ -103,7 +103,8 @@ fun EditorSurface(
     onOpenSettings: () -> Unit,
     onExportProject: (String) -> Unit,
     onFeedback: (String) -> Unit,
-    onOpenBrowserPreview: (String) -> Unit,
+    onOpenBrowserContent: (String) -> Unit,
+    onOpenProjectPreview: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by ideViewModel.uiState.collectAsState()
@@ -124,7 +125,7 @@ fun EditorSurface(
             onOpenNavigation = onOpenGlobalNavigation,
             modifier = modifier,
         )
-        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserPreview = onOpenBrowserPreview)
+        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
         return
     }
 
@@ -135,7 +136,8 @@ fun EditorSurface(
         onOpenGlobalNavigation = onOpenGlobalNavigation,
         onOpenSettings = onOpenSettings,
         onFeedback = onFeedback,
-        onOpenBrowserPreview = onOpenBrowserPreview,
+        onOpenBrowserContent = onOpenBrowserContent,
+        onOpenProjectPreview = onOpenProjectPreview,
         modifier = modifier.fillMaxSize().background(LocalIdeColors.current.background),
     )
     if (state.fileMutationLoading) {
@@ -155,7 +157,7 @@ fun EditorSurface(
             }
         }
     }
-    EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserPreview = onOpenBrowserPreview)
+    EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
 }
 
 @Composable
@@ -208,7 +210,7 @@ fun EditorSidebar(
     onOpenSettings: () -> Unit,
     onFeedback: (String) -> Unit,
     onOpenTerminal: (String) -> Unit,
-    onOpenBrowserPreview: (String) -> Unit,
+    onOpenBrowserContent: (String) -> Unit,
     rootNode: FileNode?,
     ideViewModel: IdeViewModel,
     modifier: Modifier,
@@ -349,8 +351,8 @@ fun EditorSidebar(
                 onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) },
                 onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) },
                 onOpenTerminalAt = { onOpenTerminal(it.documentUri) },
-                onOpenBrowserPreview = { node ->
-                    ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview)
+                onOpenBrowserContent = { node ->
+                    ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent)
                 },
                 defaultPreviewPath = state.defaultPreviewPath,
                 onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) },
@@ -379,7 +381,7 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserPreview = { node -> ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
+                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
             )
             EditorPanel.CONTENT_SEARCH -> FileTreePanel(
                 nodes = state.fileTree, clipboardItems = state.clipboardItems, clipboardIsCut = state.clipboardIsCut,
@@ -406,7 +408,7 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserPreview = { node -> ideViewModel.browserPreviewUri(node.documentUri)?.let(onOpenBrowserPreview) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
+                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
             )
         }
         }
@@ -429,7 +431,8 @@ private fun EditorWorkspace(
     onOpenGlobalNavigation: () -> Unit,
     onOpenSettings: () -> Unit,
     onFeedback: (String) -> Unit,
-    onOpenBrowserPreview: (String) -> Unit,
+    onOpenBrowserContent: (String) -> Unit,
+    onOpenProjectPreview: (String, String) -> Unit,
     modifier: Modifier,
 ) {
     val colors = LocalIdeColors.current
@@ -460,11 +463,11 @@ private fun EditorWorkspace(
             onSaveAs = ideViewModel::showSaveAsDialog,
             onPreview = {
                 previewScope.launch {
-                    val previewUri = ideViewModel.resolveActivePreviewUri()
-                    if (previewUri == null) previewNotice = ideViewModel.uiState.value.statusMessage
+                    val previewTarget = ideViewModel.resolveActivePreviewTarget()
+                    if (previewTarget == null) previewNotice = ideViewModel.uiState.value.statusMessage
                     else {
                         previewNotice = null
-                        onOpenBrowserPreview(previewUri)
+                        onOpenProjectPreview(previewTarget.url, previewTarget.reuseKey)
                     }
                 }
             },
@@ -614,7 +617,7 @@ private fun EditorTopBar(
             }
         }
         IconButton(onClick = onFind, enabled = activeTab != null) { Icon(Icons.Default.Search, "Find in document", tint = colors.textSecondary) }
-        IconButton(onClick = onPreview, enabled = activeTab != null && state.localStorageConfirmed && state.localWorkspaceAvailable) { Icon(Icons.Default.PlayArrow, "Preview or run project", tint = colors.textSecondary) }
+        IconButton(onClick = onPreview, enabled = activeTab != null && state.localStorageConfirmed && state.localWorkspaceAvailable) { Icon(Icons.Default.PlayArrow, "Preview project", tint = colors.textSecondary) }
         if (!state.editorSettings.autoSave && activeTab != null && !activeTab.isImagePreview) {
             IconButton(onClick = onSave) {
                 Icon(Icons.Default.Save, "Save active document", tint = colors.textSecondary)
@@ -675,7 +678,7 @@ private fun EditorDialogHost(
     state: IdeUiState,
     ideViewModel: IdeViewModel,
     onChooseExportDestination: (FileOpDialog.Export) -> Unit,
-    onOpenBrowserPreview: (String) -> Unit,
+    onOpenBrowserContent: (String) -> Unit,
 ) {
     when (val dialog = state.fileOpDialog) {
         is FileOpDialog.BinaryOpenError -> {
@@ -692,7 +695,7 @@ private fun EditorDialogHost(
                 confirmButton = {
                     if (state.localStorageConfirmed && state.localWorkspaceAvailable && browserRenderable) {
                         Button(onClick = {
-                            ideViewModel.browserPreviewUri(dialog.documentUri)?.let(onOpenBrowserPreview)
+                            ideViewModel.browserContentUri(dialog.documentUri)?.let(onOpenBrowserContent)
                             ideViewModel.dismissFileOpDialog()
                         }) { Text("Open in browser") }
                     } else TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("OK") }

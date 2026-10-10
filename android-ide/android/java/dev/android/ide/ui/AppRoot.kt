@@ -1,16 +1,21 @@
 package dev.android.ide.ui
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,7 +28,11 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.Modifier
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.app.ExternalContentActionKind
+import dev.android.ide.app.ExternalContentRoute
 import dev.android.ide.data.ThemeResolver
+import dev.android.ide.contracts.Surface
+import dev.android.ide.editor.StandaloneEditorViewModel
 import dev.android.ide.project.CreateProjectTemplate
 import dev.android.ide.ui.shell.AppShell
 import dev.android.ide.ui.screen.humanReadableStorageLocation
@@ -35,7 +44,7 @@ private fun projectNameIsValid(name: String): Boolean =
 
 /** Composition root: owns Android launchers and reviewed acquisition workflow state. */
 @Composable
-fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: () -> Unit) {
+fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standaloneEditorViewModel: StandaloneEditorViewModel, onExit: () -> Unit) {
     val context = LocalContext.current
     val shellState by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
@@ -134,6 +143,46 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
         pendingBatchExportIds = emptySet()
     }
 
+    LaunchedEffect(shellState.pendingExternalContent) {
+        when (val route = shellState.pendingExternalContent) {
+            is ExternalContentRoute.Browser -> {
+                viewModel.requestBrowserNavigation(route.request.url, route.request.openInNewTab)
+                viewModel.consumeExternalContent(route.request.requestId)
+            }
+            is ExternalContentRoute.Editor -> {
+                viewModel.navigate(Surface.STANDALONE_EDITOR)
+                standaloneEditorViewModel.open(route.request)
+                viewModel.consumeExternalContent(route.request.requestId)
+            }
+            is ExternalContentRoute.ImportArchive -> {
+                zipUri = route.request.uri
+                zipName = (route.request.displayName ?: "Imported project").removeSuffix(".zip").ifBlank { "Imported project" }
+                zipDescription = ""
+                zipDestination = null
+                zipConfirmationVisible = false
+                zipReviewVisible = true
+                viewModel.consumeExternalContent(route.request.requestId)
+            }
+            is ExternalContentRoute.External -> {
+                val contentUri = Uri.parse(route.request.uri)
+                val readIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(contentUri, route.request.mimeType ?: "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(route.request.grantedFlags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                }
+                val chooser = Intent.createChooser(readIntent, "Open with").apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, arrayOf(ComponentName(context.packageName, "dev.android.ide.MainActivity")))
+                    }
+                }
+                runCatching { context.startActivity(chooser) }
+                    .onFailure { pickerFeedback = "No external application could open this item." }
+                viewModel.consumeExternalContent(route.request.requestId)
+            }
+            is ExternalContentRoute.Choose, null, ExternalContentRoute.Unsupported -> Unit
+        }
+    }
+
     val baseDensity = LocalDensity.current
     val uiScale = ideState.editorSettings.uiFontScale
     val resolvedDark = resolvedAppTheme == dev.android.ide.data.ResolvedTheme.DARK
@@ -160,6 +209,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
         AppShell(
             viewModel = viewModel,
             ideViewModel = ideViewModel,
+            standaloneEditorViewModel = standaloneEditorViewModel,
             onExit = onExit,
             onCreateProject = { initialName ->
                 viewModel.clearOperationFeedback()
@@ -196,6 +246,27 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 operationReviewVisible = false
             },
         )
+
+        (shellState.pendingExternalContent as? ExternalContentRoute.Choose)?.let { choice ->
+            AlertDialog(
+                onDismissRequest = { viewModel.consumeExternalContent(choice.request.requestId) },
+                title = { Text("Open ${choice.request.displayName ?: "content"}") },
+                text = {
+                    Column {
+                        Text("Choose an available way to open this item.")
+                        choice.actions.forEach { action ->
+                            TextButton(
+                                onClick = { viewModel.selectExternalContentAction(action.kind) },
+                            ) { Text(action.label) }
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { viewModel.consumeExternalContent(choice.request.requestId) }) { Text("Cancel") }
+                },
+            )
+        }
 
         if (createVisible || createReviewVisible) {
             CreateNewProjectDialog(

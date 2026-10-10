@@ -66,10 +66,17 @@ data class AppShellState(
     val navigationPromptVisible: Boolean = false,
     val pendingNavigation: Surface? = null,
     val pendingBackNavigation: Boolean = false,
-    val pendingBrowserNavigation: BrowserNavigationRequest? = null,
+    val pendingBrowserNavigations: List<BrowserNavigationRequest> = emptyList(),
+    val pendingExternalContent: ExternalContentRoute? = null,
 )
 
-data class BrowserNavigationRequest(val id: String, val url: String, val temporary: Boolean = false)
+data class BrowserNavigationRequest(
+    val id: String,
+    val url: String,
+    val openInNewTab: Boolean = false,
+    val reuseKey: String? = null,
+    val receiptTracked: Boolean = false,
+)
 
 data class FolderInspection(
     val path: String,
@@ -546,46 +553,86 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 detailsLoading = false,
             )
         }
-        applicationState.recordSurface(surface)
+        if (surface != Surface.STANDALONE_EDITOR) applicationState.recordSurface(surface)
     }
 
-    /** Route an in-app terminal browser request; external schemes are never launched. */
-    fun requestTerminalBrowserNavigation(url: String) {
-        val uri = runCatching { Uri.parse(url.trim()) }.getOrNull() ?: return
-        val scheme = uri.scheme?.lowercase() ?: return
-        if (scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) return
-        queueBrowserNavigation(uri.toString())
-    }
-
-    /** Route a project media file only when it resolves inside the selected local project. */
-    fun requestLocalBrowserPreview(fileUri: String) {
-        val uri = runCatching { Uri.parse(fileUri) }.getOrNull() ?: return
-        if (uri.scheme?.equals("file", ignoreCase = true) != true) return
-        val filePath = uri.path ?: return
-        val candidate = runCatching { File(filePath).canonicalFile }.getOrNull() ?: return
-        if (!candidate.isFile || !candidate.canRead()) return
-        val project = _state.value.projects.firstOrNull { it.id == _state.value.selectedProjectId } ?: return
-        val rootPath = saf.localFilesystemPath(project.location.stableId) ?: return
-        val root = runCatching { File(rootPath).canonicalFile.toPath() }.getOrNull() ?: return
-        if (!candidate.toPath().startsWith(root)) return
-        queueBrowserNavigation(candidate.toURI().toString(), temporary = true)
+    /** Queue an ordinary browser navigation request; the originating workflow is not encoded. */
+    fun requestBrowserNavigation(
+        url: String,
+        openInNewTab: Boolean = false,
+        reuseKey: String? = null,
+        requestId: String? = null,
+    ) {
+        val value = url.trim()
+        if (value.isBlank()) return
+        queueBrowserNavigation(value, openInNewTab, reuseKey, requestId)
     }
 
     fun consumeBrowserNavigationRequest(requestId: String) {
+        var receiptTracked = false
         _state.update { current ->
-            if (current.pendingBrowserNavigation?.id == requestId) current.copy(pendingBrowserNavigation = null) else current
+            val request = current.pendingBrowserNavigations.firstOrNull()
+            if (request?.id == requestId) {
+                receiptTracked = request.receiptTracked
+                current.copy(pendingBrowserNavigations = current.pendingBrowserNavigations.drop(1))
+            } else current
+        }
+        if (receiptTracked) services.browserNavigationReceipts.record(requestId, "dispatched")
+    }
+
+    /** Deliver external content to a capability chooser or to its selected owner. */
+    fun requestExternalContent(route: ExternalContentRoute) {
+        if (route !is ExternalContentRoute.Unsupported) {
+            _state.update { it.copy(pendingExternalContent = route) }
         }
     }
 
-    private fun queueBrowserNavigation(url: String, temporary: Boolean = false) {
-        _state.update { it.copy(pendingBrowserNavigation = BrowserNavigationRequest(UUID.randomUUID().toString(), url, temporary)) }
+    fun selectExternalContentAction(kind: ExternalContentActionKind) {
+        val choice = _state.value.pendingExternalContent as? ExternalContentRoute.Choose ?: return
+        val action = choice.actions.firstOrNull { it.kind == kind } ?: return
+        val request = choice.request
+        val selected = when (action.kind) {
+            ExternalContentActionKind.BROWSER -> ExternalContentRoute.Browser(OpenUrlRequest(request.uri, requestId = request.requestId))
+            ExternalContentActionKind.EDITOR -> ExternalContentRoute.Editor(request)
+            ExternalContentActionKind.IMPORT_ARCHIVE -> ExternalContentRoute.ImportArchive(request)
+            ExternalContentActionKind.EXTERNAL -> ExternalContentRoute.External(request)
+        }
+        _state.update { current ->
+            if (current.pendingExternalContent == choice) current.copy(pendingExternalContent = selected) else current
+        }
+    }
+
+    fun consumeExternalContent(requestId: String) {
+        _state.update { current ->
+            val pending = current.pendingExternalContent
+            if (pending?.requestId() == requestId) current.copy(pendingExternalContent = null) else current
+        }
+    }
+
+    private fun queueBrowserNavigation(url: String, openInNewTab: Boolean, reuseKey: String?, requestId: String?) {
+        val id = requestId?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
+        _state.update { current ->
+            if (current.pendingBrowserNavigations.any { it.id == id }) current
+            else current.copy(pendingBrowserNavigations = current.pendingBrowserNavigations + BrowserNavigationRequest(id, url, openInNewTab, reuseKey, requestId != null))
+        }
+        if (requestId != null) services.browserNavigationReceipts.record(id, "accepted")
         navigate(Surface.BROWSER)
     }
 
     fun back(): Boolean {
         val current = _state.value
         if (current.operationInProgress) {
-            _state.update { it.copy(navigationPromptVisible = true, pendingNavigation = null, pendingBackNavigation = true) }
+            val cancelBrowserQueue = current.pendingBrowserNavigations.isNotEmpty()
+            val cancelledReceipts = if (cancelBrowserQueue) current.pendingBrowserNavigations.filter { it.receiptTracked }.map { it.id } else emptyList()
+            _state.update {
+                it.copy(
+                    navigationPromptVisible = true,
+                    pendingNavigation = null,
+                    pendingBackNavigation = true,
+                    pendingBrowserNavigations = if (cancelBrowserQueue) emptyList() else it.pendingBrowserNavigations,
+                )
+            }
+            cancelledReceipts.forEach { services.browserNavigationReceipts.record(it, "rejected") }
             return true
         }
         if (current.navigationStack.size <= 1) return false
@@ -606,13 +653,32 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun dismissNavigationPrompt() {
-        _state.update { it.copy(navigationPromptVisible = false, pendingNavigation = null, pendingBackNavigation = false) }
+        val cancelBrowserQueue = _state.value.pendingBrowserNavigations.isNotEmpty()
+        val cancelledReceipts = if (cancelBrowserQueue) _state.value.pendingBrowserNavigations.filter { it.receiptTracked }.map { it.id } else emptyList()
+        _state.update {
+            it.copy(
+                navigationPromptVisible = false,
+                pendingNavigation = null,
+                pendingBackNavigation = false,
+                pendingBrowserNavigations = if (cancelBrowserQueue) emptyList() else it.pendingBrowserNavigations,
+            )
+        }
+        cancelledReceipts.forEach { services.browserNavigationReceipts.record(it, "rejected") }
     }
 
     fun continuePendingNavigation() {
         val current = _state.value
         if (current.pendingBackNavigation) {
-            _state.update { it.copy(navigationPromptVisible = false, pendingNavigation = null, pendingBackNavigation = false) }
+            val cancelledReceipts = current.pendingBrowserNavigations.filter { it.receiptTracked }.map { it.id }
+            _state.update {
+                it.copy(
+                    navigationPromptVisible = false,
+                    pendingNavigation = null,
+                    pendingBackNavigation = false,
+                    pendingBrowserNavigations = emptyList(),
+                )
+            }
+            cancelledReceipts.forEach { services.browserNavigationReceipts.record(it, "rejected") }
             if (current.navigationStack.size > 1) {
                 val stack = current.navigationStack.dropLast(1)
                 _state.update { it.copy(surface = stack.last(), navigationStack = stack, restoring = false, detailsLoading = false) }
@@ -622,7 +688,17 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         }
         val destination = current.pendingNavigation ?: return dismissNavigationPrompt()
         if (_state.value.operationInProgress) return
-        _state.update { it.copy(navigationPromptVisible = false, pendingNavigation = null, pendingBackNavigation = false) }
+        val cancelBrowserQueue = destination != Surface.BROWSER && current.pendingBrowserNavigations.isNotEmpty()
+        val cancelledReceipts = if (cancelBrowserQueue) current.pendingBrowserNavigations.filter { it.receiptTracked }.map { it.id } else emptyList()
+        _state.update {
+            it.copy(
+                navigationPromptVisible = false,
+                pendingNavigation = null,
+                pendingBackNavigation = false,
+                pendingBrowserNavigations = if (cancelBrowserQueue) emptyList() else it.pendingBrowserNavigations,
+            )
+        }
+        cancelledReceipts.forEach { services.browserNavigationReceipts.record(it, "rejected") }
         navigate(destination)
     }
 

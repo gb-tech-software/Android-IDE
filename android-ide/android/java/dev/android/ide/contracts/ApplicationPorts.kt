@@ -1,11 +1,6 @@
 // Shared application contracts. Implementations stay in their owning domain packages.
 package dev.android.ide.contracts
 
-interface BrowserPreviewAdapter {
-    suspend fun listTabs(): List<BrowserTabIdentity>
-    suspend fun closeTab(tabId: String): OperationReport
-}
-
 interface CredentialVaultAdapter {
     suspend fun listCredentialIds(): List<String>
     suspend fun revoke(credentialId: String): OperationReport
@@ -29,3 +24,10 @@ interface LifecycleCoordinator {
 }
 
 /** Facts shared across domains. Event payloads must never contain secrets. */
+object OpenUrlRequestProtocol {
+    /** Explicit MainActivity action used by the bundled terminal URL helper. */
+    const val ACTION = "dev.android.ide.action.OPEN_URL_REQUEST"
+    const val URL_EXTRA = "dev.android.ide.extra.OPEN_URL"
+    const val REQUEST_ID_EXTRA = "dev.android.ide.extra.OPEN_URL_REQUEST_ID"
+    const val OPEN_IN_NEW_TAB_EXTRA = "dev.android.ide.extra.OPEN_URL_NEW_TAB"
+}
