@@ -25,6 +25,7 @@ import dev.android.ide.project.ProjectStorageAdapterImpl
 import dev.android.ide.project.GitMetadataReader
 import dev.android.ide.runtime.RuntimeStateStore
 import dev.android.ide.runtime.BundledTermuxRuntimeInstaller
+import dev.android.ide.runtime.LanguageServerPackageInstaller
 import dev.android.ide.runtime.LanguageServerRuntimeAdapterImpl
 import dev.android.ide.workspace.ProjectWorkspaceService
 import dev.android.ide.runtime.TerminalRuntimeAdapterImpl
@@ -76,6 +77,7 @@ class ApplicationServices private constructor(application: Application) {
     val terminalSettingsRepository = TerminalSettingsRepository(context)
     val projectWorkspace = ProjectWorkspaceService(fileSystem.resources)
     val bundledRuntimeInstaller = BundledTermuxRuntimeInstaller(context)
+    val languageServerPackageInstaller by lazy { LanguageServerPackageInstaller(context, bundledRuntimeInstaller) }
     val terminalRuntime = TerminalRuntimeAdapterImpl(context, projectWorkspace, bundledRuntimeInstaller)
 
     val projectStorage = ProjectStorageAdapterImpl(fileSystem.documents, fileSystem.operations)
@@ -92,7 +94,7 @@ class ApplicationServices private constructor(application: Application) {
 
     fun languageServerAdapter(
         onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit,
-    ) = LanguageServerRuntimeAdapterImpl(projectWorkspace, bundledRuntimeInstaller, onMessage)
+    ) = LanguageServerRuntimeAdapterImpl(projectWorkspace, bundledRuntimeInstaller, languageServerPackageInstaller, onMessage)
 
     companion object {
         private val instances = java.util.WeakHashMap<Application, ApplicationServices>()

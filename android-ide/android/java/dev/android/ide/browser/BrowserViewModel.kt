@@ -451,7 +451,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         sessions[_uiState.value.selectedTabId]?.let { tab ->
             tab.viewportWidth = width
             tabService.update(tab.id) { it.copy(viewportWidth = tab.viewportWidth) }
-            sessionFor(tab).setViewport(width)
             persistTabs()
             publish()
         }

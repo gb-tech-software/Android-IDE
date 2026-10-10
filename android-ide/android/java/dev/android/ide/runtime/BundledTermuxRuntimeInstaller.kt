@@ -21,15 +21,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     private val home get() = userFiles
     private val storageBridge = TermuxStorageBridge(context, home)
     private val storageSetupResultChannel = TerminalStorageSetupResultChannel(home)
-    private val defaultPackagesMarker = File(context.filesDir, ".android-ide-offline-runtime-2026.10.09-r1")
-    private val bundledToolsRevision = "2026.10.09-r1"
-
-    /** Runtime packages are installed through the terminal's own package manager; no second UI is needed. */
-    val defaultPackagePlan: List<String> = listOf(
-        "curl", "git", "openssh", "ca-certificates", "procps", "nodejs-lts", "python", "zip", "unzip",
-        "live-server", "typescript", "typescript-language-server", "pyright", "vscode-langservers-extracted",
-    )
-
+    @Synchronized
     fun initialize(onProgress: (String) -> Unit = {}): OperationReport {
         val assetName = when (Build.SUPPORTED_ABIS.firstOrNull()) {
             "arm64-v8a" -> "aarch64"
@@ -47,16 +39,13 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
             ensureDirectory(File(prefix, "tmp"), PRIVATE_DIRECTORY_MODE, "Termux temporary directory")
             onProgress("Checking the bundled Termux bootstrap…")
             if (!marker.isFile) installBootstrap(assetName, marker)
-
-            onProgress("Setting up the bundled offline terminal packages…")
-            val packages = installBundledRuntimePackages(assetName, onProgress)
-            if (packages.outcome != OperationOutcome.COMPLETE) return@runCatching packages
+            removeObsoleteBundledTools()
 
             installInteractiveShellProfile()
             installStorageSetupCommand()
             installUrlNavigationCommand()
             shellStartupFailure()?.let { throw IOException(it) }
-            OperationReport(OperationOutcome.COMPLETE, "Bundled terminal, Git, language servers, and preview tools are ready")
+            OperationReport(OperationOutcome.COMPLETE, "Default Termux bootstrap is ready")
         }.getOrElse { error ->
             unavailable("The bundled terminal runtime could not be initialized: ${error.message ?: "unknown error"}")
         }
@@ -68,6 +57,16 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     fun rebuildStorageLinks(): OperationReport = storageBridge.rebuildLinks()
     fun publishStorageSetupResult(requestId: String, report: OperationReport) =
         storageSetupResultChannel.publish(requestId, report)
+
+    private fun removeObsoleteBundledTools() {
+        File(context.filesDir, "termux-runtime-bundle.staging").deleteRecursively()
+        File(context.filesDir, ".android-ide-offline-runtime-2026.10.09-r1").delete()
+        File(prefix, "lib/android-ide/tools/2026.10.09-r1").deleteRecursively()
+        listOf(
+            "live-server", "pyright-langserver", "tsc", "tsserver", "typescript-language-server",
+            "vscode-css-language-server", "vscode-html-language-server", "vscode-json-language-server",
+        ).forEach { File(prefix, "lib/android-ide/bin/$it").delete() }
+    }
 
     /** The same environment is used by the preflight probe and the interactive PTY. */
     fun sessionEnvironment(): Array<String> = arrayOf(
@@ -144,7 +143,7 @@ PS1='\[\033[1;32m\]${'$'}(_android_ide_prompt_path)\${'$'} \[\033[0m\]'
     /** Run the exact shell/cwd combination used by a new terminal session before advertising readiness. */
     fun shellStartupFailure(): String? = runCatching {
         ensureDirectory(home, PRIVATE_DIRECTORY_MODE, "Terminal home")
-        if (!repairRuntimeExecutables(includeNpm = false)) {
+        if (!repairRuntimeExecutables()) {
             throw IOException("${File(prefix, "bin/sh").absolutePath} is not executable")
         }
         val process = ProcessBuilder(File(prefix, "bin/sh").absolutePath, "-c", "exit 0")
@@ -165,204 +164,6 @@ PS1='\[\033[1;32m\]${'$'}(_android_ide_prompt_path)\${'$'} \[\033[0m\]'
     }.getOrElse { error ->
         "Bundled shell could not start in ${home.absolutePath}: ${error.message ?: error.javaClass.simpleName}"
     }
-
-    private fun installBundledRuntimePackages(
-        assetName: String,
-        onProgress: (String) -> Unit,
-    ): OperationReport {
-        val shell = File(prefix, "bin/sh")
-        if (defaultPackagesMarker.isFile && runtimePackagesAvailable()) {
-            return OperationReport(OperationOutcome.COMPLETE, "Bundled offline runtime packages are available")
-        }
-        if (!repairRuntimeExecutables(includeNpm = false)) {
-            return OperationReport(
-                OperationOutcome.BLOCKED,
-                "The bundled shell or package manager is not executable",
-                ErrorCategory.UNAVAILABLE_RUNTIME,
-            )
-        }
-
-        val staging = File(context.filesDir, "termux-runtime-bundle.staging")
-        return try {
-            onProgress("Unpacking the offline terminal and language-tool bundle…")
-            if (staging.exists() && !staging.deleteRecursively()) throw IOException("Unable to clear runtime bundle staging")
-            ensureDirectory(staging, PRIVATE_DIRECTORY_MODE, "Runtime bundle staging")
-            extractRuntimeBundle(assetName, staging)
-
-            val repository = File(staging, "offline-repo")
-            val packageIndex = File(repository, "Packages.gz")
-            val packageManifest = File(repository, "manifest.json")
-            if (!repository.isDirectory || !packageIndex.isFile || !packageManifest.isFile) {
-                throw IOException("The bundled offline package repository is incomplete")
-            }
-            val sourceList = File(staging, "offline.sources.list")
-            sourceList.writeText("deb [trusted=yes] file:${repository.absolutePath} ./\n")
-            val aptLists = File(prefix, "var/lib/apt/lists/android-ide-offline")
-            ensureDirectory(File(prefix, "var/lib/apt/lists"), PREFIX_DIRECTORY_MODE, "APT list directory")
-            if (aptLists.exists() && !aptLists.deleteRecursively()) throw IOException("Unable to clear stale offline APT indexes")
-            ensureDirectory(aptLists, PREFIX_DIRECTORY_MODE, "Offline APT list directory")
-
-            onProgress("Setting up bundled terminal packages without network access…")
-            val aptOptions = "-o Dir::Etc::sourcelist='${sourceList.absolutePath}' " +
-                "-o Dir::Etc::sourceparts='-' " +
-                "-o Dir::State::lists='${aptLists.absolutePath}' " +
-                "-o APT::Get::List-Cleanup='0' -o Acquire::Languages='none'"
-            val update = runCommand(shell, "\"${File(prefix, "bin/apt-get").absolutePath}\" $aptOptions update")
-            if (update.exitCode != 0) {
-                return OperationReport(
-                    OperationOutcome.PARTIAL,
-                    commandFailure("The bundled offline package index could not be prepared", update),
-                    ErrorCategory.PACKAGE_FAILURE,
-                    recoveryHint = "Install an APK containing the complete runtime bundle for this device architecture.",
-                )
-            }
-            val packageNames = listOf("ca-certificates", "curl", "git", "nodejs-lts", "openssh", "procps", "python", "unzip", "zip")
-            val install = runCommand(
-                shell,
-                "\"${File(prefix, "bin/apt-get").absolutePath}\" $aptOptions install -y --no-install-recommends ${packageNames.joinToString(" ")}",
-            )
-            if (install.exitCode != 0) {
-                return OperationReport(
-                    OperationOutcome.PARTIAL,
-                    commandFailure("The bundled offline terminal packages could not be set up", install),
-                    ErrorCategory.PACKAGE_FAILURE,
-                    recoveryHint = "Install an APK with a matching, complete offline runtime bundle and retry Terminal initialization.",
-                )
-            }
-
-            val toolManifest = File(staging, "tools/commands.json")
-            val nodeModules = File(staging, "tools/node_modules")
-            if (!toolManifest.isFile || !nodeModules.isDirectory) throw IOException("The bundled language-tool tree is incomplete")
-            val toolRoot = File(prefix, "lib/android-ide/tools/$bundledToolsRevision")
-            val installedModules = File(toolRoot, "node_modules")
-            copyDirectoryTree(nodeModules, installedModules)
-            val commandDirectory = File(prefix, "lib/android-ide/bin")
-            ensureDirectory(commandDirectory, PREFIX_DIRECTORY_MODE, "Android IDE command directory")
-            installBundledCommandWrappers(toolManifest, installedModules, commandDirectory)
-
-            if (!repairRuntimeExecutables(includeNpm = true) || !runtimePackagesAvailable()) {
-                throw IOException("One or more bundled terminal or language-server commands are missing")
-            }
-            shellStartupFailure()?.let { throw IOException(it) }
-            defaultPackagesMarker.writeText(defaultPackagePlan.joinToString("\n"))
-            OperationReport(OperationOutcome.COMPLETE, "Bundled offline terminal packages are ready")
-        } catch (error: Exception) {
-            OperationReport(
-                OperationOutcome.PARTIAL,
-                "The bundled offline terminal tools could not be initialized: ${error.message ?: error.javaClass.simpleName}",
-                ErrorCategory.PACKAGE_FAILURE,
-                recoveryHint = "Install an APK containing the complete offline runtime bundle for this device architecture and retry Terminal initialization.",
-            )
-        } finally {
-            if (staging.exists()) staging.deleteRecursively()
-        }
-    }
-
-    private fun runtimePackagesAvailable(): Boolean {
-        val baseline = listOf("curl", "git", "ssh", "node", "npm", "python", "zip", "unzip", "ps")
-        if (!baseline.all { File(prefix, "bin/$it").canExecute() } || !File(prefix, "etc/tls/cert.pem").isFile) return false
-        val tools = File(prefix, "lib/android-ide/bin")
-        return listOf(
-            "live-server",
-            "pyright-langserver",
-            "tsc",
-            "tsserver",
-            "typescript-language-server",
-            "vscode-css-language-server",
-            "vscode-html-language-server",
-            "vscode-json-language-server",
-        ).all { File(tools, it).canExecute() }
-    }
-
-    private fun extractRuntimeBundle(assetName: String, destination: File) {
-        val assetPath = "termux/runtime-$assetName.zip"
-        context.assets.open(assetPath).buffered().use { input ->
-            ZipInputStream(input).use { zip ->
-                while (true) {
-                    val entry = zip.nextEntry ?: break
-                    val relative = entry.name
-                    if (relative.isBlank() || relative.startsWith("/") || relative.contains('\\') ||
-                        relative.split('/').any { it == ".." || it == "." }
-                    ) throw IOException("The bundled runtime archive contains an unsafe path")
-                    val target = File(destination, relative).canonicalFile
-                    if (!target.toPath().startsWith(destination.canonicalFile.toPath())) {
-                        throw IOException("The bundled runtime archive escapes its staging directory")
-                    }
-                    if (entry.isDirectory) {
-                        ensureDirectory(target, PREFIX_DIRECTORY_MODE, "Runtime bundle directory")
-                    } else {
-                        target.parentFile?.let { ensureDirectory(it, PREFIX_DIRECTORY_MODE, "Runtime bundle parent") }
-                        target.outputStream().buffered().use { output -> zip.copyTo(output) }
-                        setMode(target, 0b110100100)
-                    }
-                    zip.closeEntry()
-                }
-            }
-        }
-    }
-
-    private fun copyDirectoryTree(source: File, destination: File) {
-        if (!source.isDirectory) throw IOException("Bundled language-tool directory is missing")
-        ensureDirectory(destination, PREFIX_DIRECTORY_MODE, "Installed language-tool directory")
-        source.listFiles()?.forEach { child ->
-            val target = File(destination, child.name)
-            if (child.isDirectory) {
-                copyDirectoryTree(child, target)
-            } else {
-                child.inputStream().buffered().use { input -> target.outputStream().buffered().use(input::copyTo) }
-                setMode(target, 0b110100100)
-            }
-        }
-    }
-
-    private fun installBundledCommandWrappers(
-        manifestFile: File,
-        installedModules: File,
-        commandDirectory: File,
-    ) {
-        val commands = org.json.JSONObject(manifestFile.readText()).optJSONObject("commands")
-            ?: throw IOException("The bundled language-tool command manifest is invalid")
-        val commandNamePattern = Regex("[A-Za-z0-9._-]+")
-        val entryPattern = Regex("[A-Za-z0-9._/-]+")
-        val iterator = commands.keys()
-        while (iterator.hasNext()) {
-            val command = iterator.next()
-            if (!commandNamePattern.matches(command)) throw IOException("Invalid bundled command name")
-            val definition = commands.optJSONObject(command) ?: throw IOException("Invalid command entry for $command")
-            val packageName = definition.optString("package")
-            val entry = definition.optString("entry")
-            if (packageName !in defaultToolPackages || !entryPattern.matches(entry) || entry.split('/').any { it == ".." || it == "." }) {
-                throw IOException("Invalid language-tool entry point for $command")
-            }
-            val modulePath = File(installedModules, packageName.replace('/', File.separatorChar)).canonicalFile
-            val entryFile = File(modulePath, entry).canonicalFile
-            if (!modulePath.isDirectory || !entryFile.isFile || !entryFile.toPath().startsWith(modulePath.toPath())) {
-                throw IOException("The language-tool entry point for $command is missing")
-            }
-            val script = """#!/system/bin/sh
-_android_ide_prefix=${'$'}{PREFIX:-${prefix.absolutePath}}
-exec "${'$'}_android_ide_prefix/bin/node" "${'$'}_android_ide_prefix/lib/android-ide/tools/$bundledToolsRevision/node_modules/${packageName.replace("'", "'\\''")}/$entry" "${'$'}@"
-""".trimIndent() + "\n"
-            val wrapper = File(commandDirectory, command)
-            wrapper.writeText(script)
-            setMode(wrapper, EXECUTABLE_FILE_MODE)
-        }
-        if (commands.length() == 0 || !runtimePackagesAvailableExceptTools()) {
-            throw IOException("The bundled language-tool command manifest is incomplete")
-        }
-    }
-
-    private fun runtimePackagesAvailableExceptTools(): Boolean =
-        listOf("curl", "git", "ssh", "node", "npm", "python", "zip", "unzip", "ps")
-            .all { File(prefix, "bin/$it").canExecute() } && File(prefix, "etc/tls/cert.pem").isFile
-
-    private val defaultToolPackages = setOf(
-        "live-server",
-        "pyright",
-        "typescript",
-        "typescript-language-server",
-        "vscode-langservers-extracted",
-    )
 
     private fun installBootstrap(assetName: String, marker: File) {
         val assetPath = "termux/bootstrap-$assetName.zip"
@@ -398,7 +199,7 @@ exec "${'$'}_android_ide_prefix/bin/node" "${'$'}_android_ide_prefix/lib/android
             if (!staging.renameTo(prefix)) throw IOException("Unable to install the bundled runtime directory")
             ensureDirectory(prefix, PREFIX_DIRECTORY_MODE, "Termux prefix")
             ensureDirectory(File(prefix, "bin"), PREFIX_DIRECTORY_MODE, "Termux binary directory")
-            if (!repairRuntimeExecutables(includeNpm = false)) {
+            if (!repairRuntimeExecutables()) {
                 throw IOException("The unpacked shell or package manager is not executable")
             }
             marker.writeText(assetName)
@@ -429,11 +230,11 @@ exec "${'$'}_android_ide_prefix/bin/node" "${'$'}_android_ide_prefix/lib/android
         }
     }
 
-    private fun repairRuntimeExecutables(includeNpm: Boolean): Boolean = runCatching {
+    private fun repairRuntimeExecutables(): Boolean = runCatching {
         ensureDirectory(prefix, PREFIX_DIRECTORY_MODE, "Termux prefix")
         val bin = File(prefix, "bin")
         ensureDirectory(bin, PREFIX_DIRECTORY_MODE, "Termux binary directory")
-        val required = if (includeNpm) listOf("sh", "pkg", "npm") else listOf("sh", "pkg")
+        val required = listOf("sh", "pkg")
         required.forEach { name ->
             val executable = File(bin, name)
             if (!executable.exists()) throw IOException("${executable.absolutePath} is missing")
@@ -637,30 +438,6 @@ exec "${'$'}{PREFIX:-${prefix.absolutePath}}/lib/android-ide/bin/android-ide-ope
         } catch (error: Exception) {
             throw IOException("Unable to set executable permissions on ${file.absolutePath}: ${error.message}", error)
         }
-    }
-
-    private data class CommandResult(val exitCode: Int?, val output: String = "", val failure: String? = null)
-
-    private fun runCommand(shell: File, command: String): CommandResult = runCatching {
-        val process = ProcessBuilder(shell.absolutePath, "-c", command)
-            .directory(home)
-            .redirectErrorStream(true)
-            .apply {
-                sessionEnvironment().forEach { entry ->
-                    val separator = entry.indexOf('=')
-                    environment()[entry.substring(0, separator)] = entry.substring(separator + 1)
-                }
-            }
-            .start()
-        val output = readOutputTail(process.inputStream)
-        CommandResult(process.waitFor(), output)
-    }.getOrElse { error -> CommandResult(null, failure = error.message ?: error.javaClass.simpleName) }
-
-    private fun commandFailure(summary: String, result: CommandResult): String = buildString {
-        append(summary)
-        result.exitCode?.let { append(" (exit $it)") }
-        result.failure?.let { append(": ").append(it) }
-        result.output.trim().takeLast(800).takeIf { it.isNotEmpty() }?.let { append(": ").append(it) }
     }
 
     private fun readOutputTail(input: InputStream, maxChars: Int = 8_000): String {

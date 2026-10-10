@@ -144,6 +144,9 @@ data class IdeUiState(
 
     /** Protocol features actually advertised by the active file's language server. */
     val languageServerFeatures: Set<LanguageServerFeature> = emptySet(),
+    /** Package setup information is surfaced in settings only while LSP is enabled. */
+    val languageServerPackageSetupMessage: String? = null,
+    val languageServerPackageSetupCanRetry: Boolean = false,
 
     /** True once Monaco sends the "ready" message. */
     val isEditorReady: Boolean = false,

@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -31,6 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class LanguageServerRuntimeAdapterImpl(
     private val workspace: ProjectWorkspaceService,
     private val installer: BundledTermuxRuntimeInstaller,
+    private val packageInstaller: LanguageServerPackageInstaller,
     private val onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit = { _, _, _ -> },
 ) : LanguageServerAdapter {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -40,6 +42,9 @@ class LanguageServerRuntimeAdapterImpl(
     override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus {
         val definition = LanguageServerRegistry.forLanguage(languageId)
             ?: return unavailable(project, languageId, "No language server is registered for $languageId")
+        if (!packageInstaller.arePackagesInstalled()) {
+            return unavailable(project, languageId, "Pinned language-server packages are not installed yet")
+        }
         val resolution = workspace.resolve(project)
         val cwd = resolution.terminalPath
             ?.let(::File)
@@ -56,12 +61,9 @@ class LanguageServerRuntimeAdapterImpl(
         }
 
         return runCatching {
-            val executable = File(installer.prefix(), "lib/android-ide/bin/${definition.requiredExecutable}")
-            val command = if (executable.canExecute()) {
-                listOf(executable.absolutePath) + definition.command.drop(1)
-            } else {
-                definition.command
-            }
+            val executable = packageInstaller.executablePath(definition.requiredExecutable)
+            if (!executable.canExecute()) throw IOException("Pinned language-server command is missing: ${executable.name}")
+            val command = listOf(executable.absolutePath) + definition.command.drop(1)
             val process = ProcessBuilder(command)
                 .directory(cwd)
                 .apply {
@@ -127,6 +129,11 @@ class LanguageServerRuntimeAdapterImpl(
         processes.filterKeys { it.projectId == projectId }.values.map { live ->
             live.status.copy(initialized = live.initialized.isCompleted)
         }
+
+    override suspend fun stopAll(): OperationReport {
+        processes.keys.toList().forEach { key -> stop(key.projectId, key.serverId) }
+        return OperationReport(OperationOutcome.COMPLETE, "All language servers stopped")
+    }
 
     fun shutdown() {
         processes.values.forEach { live -> runCatching { live.process.destroy() } }

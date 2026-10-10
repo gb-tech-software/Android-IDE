@@ -1,10 +1,12 @@
 {
-  "name": "android-ide-bundled-runtime-tools",
+  "name": "android-ide-language-servers",
   "private": true,
   "version": "1.0.0",
-  "description": "Offline runtime tools shipped with the Android IDE Termux bundle",
+  "description": "Pinned language-server packages installed only when the editor LSP setting is enabled",
+  "engines": {
+    "node": ">=24.18"
+  },
   "dependencies": {
-    "live-server": "1.2.2",
     "pyright": "1.1.414",
     "typescript": "6.0.3",
     "typescript-language-server": "6.0.1",

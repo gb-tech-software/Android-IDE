@@ -81,7 +81,7 @@ Higher-level domains depend on these logical contracts, not on SAF, Termux, WebV
 | `RuntimeWorkspaceAdapter` | Private workspace initialization, root identity, and project working directories |
 | `TerminalRuntimeAdapter` | Sessions, PTY I/O, resize, child tracking, termination, and availability |
 | `EditorDocumentAdapter` | Stable project-relative document identity, load/save, external-change reporting, and recovery separation |
-| `LanguageServerAdapter` | Terminal-managed LSP process lifecycle, provider-backed workspace, framed JSON-RPC transport, and availability reporting |
+| `LanguageServerAdapter` | Settings-gated LSP process lifecycle, on-demand pinned package setup, provider-backed workspace, framed JSON-RPC transport, and enabled-only availability reporting |
 | `GitAdapter` | Canonical runtime Git status, mutations, configuration, output, and errors |
 | `BrowserPreviewAdapter` | Global browser/preview state and failure isolation from project and runtime ownership |
 | `CredentialVaultAdapter` | Secure credential lifecycle, redaction, revocation, and provider access without exposing secrets |

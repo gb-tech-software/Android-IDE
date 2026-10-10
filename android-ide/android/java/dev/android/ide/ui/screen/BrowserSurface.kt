@@ -11,8 +11,11 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -78,12 +81,14 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.PopupProperties
 import kotlin.math.roundToInt
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import dev.android.ide.app.BrowserNavigationRequest
 import dev.android.ide.browser.BrowserDownload
 import dev.android.ide.browser.BrowserContextKind
@@ -111,6 +116,7 @@ fun BrowserSurface(
     var addressValue by remember {
         mutableStateOf(TextFieldValue(state.address, TextRange(state.address.length)))
     }
+    var debouncedSuggestionQuery by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
     var addressSuggestionsOpen by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -135,6 +141,15 @@ fun BrowserSurface(
     LaunchedEffect(state.address, addressFocused) {
         if (!addressFocused) addressValue = TextFieldValue(state.address, TextRange(state.address.length))
     }
+    LaunchedEffect(addressValue.text, addressFocused, addressSuggestionsOpen) {
+        if (!addressFocused || !addressSuggestionsOpen) {
+            debouncedSuggestionQuery = ""
+        } else {
+            val query = addressValue.text.trim()
+            delay(150)
+            debouncedSuggestionQuery = query
+        }
+    }
     LaunchedEffect(state.error) { if (state.error != null) errorVisible = true }
     BackHandler(enabled = state.selectedTabId != null) {
         if (addressFocused) {
@@ -153,7 +168,7 @@ fun BrowserSurface(
         ResolvedTheme.LIGHT -> lightColorScheme()
     }
     MaterialTheme(colorScheme = browserColorScheme) {
-        BrowserSurfaceContent(modifier, state, browser, registerScrollListener, visibleBrowserSurface, addressValue, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
+        BrowserSurfaceContent(modifier, state, browser, registerScrollListener, visibleBrowserSurface, addressValue, debouncedSuggestionQuery, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
     }
 }
 
@@ -166,6 +181,7 @@ private fun BrowserSurfaceContent(
     registerScrollListener: (String, ((Int) -> Unit)?) -> Unit,
     visibleBrowserSurface: androidx.compose.runtime.MutableState<BrowserSurfaceBinding?>,
     addressValue: TextFieldValue,
+    debouncedSuggestionQuery: String,
     setAddressValue: (TextFieldValue) -> Unit,
     addressFocused: Boolean,
     setAddressFocused: (Boolean) -> Unit,
@@ -201,6 +217,10 @@ private fun BrowserSurfaceContent(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val viewportRange = browser.viewportRange()
+    val viewportScrollState = rememberScrollState()
+    LaunchedEffect(state.selectedTabId, state.viewportWidth) {
+        viewportScrollState.scrollTo(0)
+    }
     Column(modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Browser") },
@@ -296,10 +316,15 @@ private fun BrowserSurfaceContent(
                             expanded = addressFocused && addressSuggestionsOpen,
                             onDismissRequest = { setAddressSuggestionsOpen(false) },
                             modifier = Modifier.widthIn(min = 180.dp, max = 320.dp),
+                            properties = PopupProperties(focusable = false),
                         ) {
                             val firstSuggestion = browser.addressEditSuggestion()
                             val normalizedQuery = addressValue.text.trim()
-                            val matchingHistory = browser.historySuggestions(normalizedQuery, firstSuggestion)
+                            val matchingHistory = if (debouncedSuggestionQuery == normalizedQuery) {
+                                browser.historySuggestions(debouncedSuggestionQuery, firstSuggestion)
+                            } else {
+                                emptyList()
+                            }
                             fun selectSuggestion(value: String) {
                                 val selected = addressValue.selection
                                 val (start, end) = if (!selected.collapsed) {
@@ -349,7 +374,7 @@ private fun BrowserSurfaceContent(
             val label = if (progress.totalBytes > 0) "Downloading ${progress.name} · ${(progress.bytes * 100 / progress.totalBytes).toInt()}%" else "Downloading ${progress.name}…"
             Text(label, modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
         }
-        Box(modifier = Modifier.fillMaxSize().clickable {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().clickable {
             if (addressFocused) {
                 focusManager.clearFocus()
                 setAddressFocused(false)
@@ -358,35 +383,43 @@ private fun BrowserSurfaceContent(
             }
             setUrlRowVisible(true)
         }) {
-            state.selectedTabId?.let { tabId ->
-                AndroidView(
-                    factory = { browserContext ->
-                        BrowserSurfaceBinding(browserContext).apply {
-                            visibleBrowserSurface.value = this
-                            setOnRefreshListener { browser.reload() }
-                        }
-                    },
-                    update = { surfaceBinding ->
-                        visibleBrowserSurface.value = surfaceBinding
-                        val desiredWidth = state.viewportWidth?.let { (it * density.density).roundToInt() }
-                        browser.engineSession(tabId)?.let { engineSession ->
-                            surfaceBinding.bind(tabId, engineSession, desiredWidth, registerScrollListener) { scrollY ->
-                                // SwipeRefreshLayout decides whether to intercept before the engine view
-                                // receives a drag. Keep this value current so an upward/downward
-                                // page scroll remains a page scroll everywhere except document top.
-                                setUrlRowVisible(when {
-                                    scrollY <= 0 -> true
-                                    scrollY > previousScrollY + 2 -> false
-                                    scrollY < previousScrollY - 2 -> true
-                                    else -> urlRowVisible
-                                })
-                                setPreviousScrollY(scrollY)
+            // Measure the Gecko surface at the requested CSS viewport width; the horizontal
+            // scroll container prevents phone-sized parent constraints from clamping it.
+            val viewportWidth = state.viewportWidth?.dp ?: maxWidth
+            Row(Modifier.fillMaxSize().horizontalScroll(viewportScrollState)) {
+                state.selectedTabId?.let { tabId ->
+                    AndroidView(
+                        factory = { browserContext ->
+                            BrowserSurfaceBinding(browserContext).apply {
+                                visibleBrowserSurface.value = this
+                                setOnRefreshListener { browser.reload() }
                             }
-                        }
-                        if (!state.loading) surfaceBinding.isRefreshing = false
-                    },
-                    modifier = if (state.viewportWidth == null) Modifier.fillMaxSize() else Modifier.width(state.viewportWidth.dp).fillMaxHeight(),
-                )
+                        },
+                        update = { surfaceBinding ->
+                            visibleBrowserSurface.value = surfaceBinding
+                            // DevTools controls live inside GeckoView. Do not let a drag on
+                            // its panel/controls be intercepted as a pull-to-refresh gesture.
+                            surfaceBinding.isEnabled = !state.developerToolsOpen
+                            val desiredWidth = state.viewportWidth?.let { (it * density.density).roundToInt() }
+                            browser.engineSession(tabId)?.let { engineSession ->
+                                surfaceBinding.bind(tabId, engineSession, desiredWidth, registerScrollListener) { scrollY ->
+                                    // SwipeRefreshLayout decides whether to intercept before the engine view
+                                    // receives a drag. Keep this value current so an upward/downward
+                                    // page scroll remains a page scroll everywhere except document top.
+                                    setUrlRowVisible(when {
+                                        scrollY <= 0 -> true
+                                        scrollY > previousScrollY + 2 -> false
+                                        scrollY < previousScrollY - 2 -> true
+                                        else -> urlRowVisible
+                                    })
+                                    setPreviousScrollY(scrollY)
+                                }
+                            }
+                            if (!state.loading) surfaceBinding.isRefreshing = false
+                        },
+                        modifier = Modifier.width(viewportWidth).fillMaxHeight(),
+                    )
+                }
             }
         }
     }

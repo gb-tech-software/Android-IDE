@@ -49,5 +49,5 @@ interface LanguageServerAdapter {
     suspend fun send(projectId: String, serverId: String, message: ByteArray): OperationReport
     suspend fun stop(projectId: String, serverId: String): OperationReport
     suspend fun status(projectId: String): List<LanguageServerStatus>
+    suspend fun stopAll(): OperationReport
 }
-

@@ -69,6 +69,11 @@ class BrowserSurfaceBinding(context: Context) : SwipeRefreshLayout(context) {
                 engineView.requestLayout()
                 requestLayout()
             }
+            engineView.post {
+                if (activeSession === session && activeViewportWidth == viewportWidthPx) {
+                    session.setViewport(viewportWidthPx)
+                }
+            }
         }
         onScroll(trackedScrollY)
     }

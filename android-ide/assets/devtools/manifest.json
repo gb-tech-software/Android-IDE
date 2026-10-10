@@ -9,9 +9,13 @@
     }
   },
   "permissions": ["<all_urls>", "nativeMessaging"],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "web_accessible_resources": ["eruda.js", "page-bridge.js"],
   "content_scripts": [{
     "matches": ["<all_urls>"],
-    "js": ["eruda.js", "devtools.js"],
-    "run_at": "document_idle"
+    "js": ["devtools.js"],
+    "run_at": "document_start"
   }]
 }

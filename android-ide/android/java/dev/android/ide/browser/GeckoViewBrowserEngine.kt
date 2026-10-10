@@ -72,6 +72,7 @@ private class GeckoBrowserEngineSession(
     private var canGoForward = false
     private var pendingHistoryAddress: String? = null
     private var lastKnownUrl: String? = null
+    private var viewportWidthPx: Int? = null
 
     init {
         geckoSession.setNavigationDelegate(object : GeckoSession.NavigationDelegate {
@@ -212,7 +213,11 @@ private class GeckoBrowserEngineSession(
     override fun reload() = geckoSession.reload()
     override fun stop() = geckoSession.stop()
     override fun clearHistory() = geckoSession.purgeHistory()
-    override fun setViewport(widthPx: Int?) = Unit
+    override fun setViewport(widthPx: Int?) {
+        if (viewportWidthPx == widthPx) return
+        viewportWidthPx = widthPx
+        if (lastKnownUrl != null) geckoSession.reload()
+    }
 
     override fun setDesktopSite(enabled: Boolean) {
         geckoSession.settings.setUserAgentMode(

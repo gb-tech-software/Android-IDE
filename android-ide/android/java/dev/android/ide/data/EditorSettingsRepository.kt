@@ -17,6 +17,7 @@ class EditorSettingsRepository(context: Context) {
         private const val KEY_WORD_WRAP            = "word_wrap"
         private const val KEY_LINE_NUMBERS         = "line_numbers"
         private const val KEY_AUTO_SAVE            = "auto_save"
+        private const val KEY_LANGUAGE_SERVER_ENABLED = "language_server_enabled"
         private const val KEY_EDITOR_THEME         = "editor_theme"
         private const val KEY_VOLUME_MODE          = "volume_key_mode"
         private const val KEY_SHOW_KEYBOARD_BAR    = "show_keyboard_toolbar"
@@ -42,6 +43,7 @@ class EditorSettingsRepository(context: Context) {
         wordWrap             = prefs.getBoolean(KEY_WORD_WRAP, false),
         lineNumbers          = prefs.getBoolean(KEY_LINE_NUMBERS, true),
         autoSave             = prefs.getBoolean(KEY_AUTO_SAVE, false),
+        languageServerEnabled = prefs.getBoolean(KEY_LANGUAGE_SERVER_ENABLED, false),
         editorTheme          = prefs.getString(KEY_EDITOR_THEME, "application")?.let { if (it == "system") "application" else it } ?: "application",
         showKeyboardToolbar  = prefs.getBoolean(KEY_SHOW_KEYBOARD_BAR, true),
         showSymbolBar        = prefs.getBoolean(KEY_SHOW_SYMBOL_BAR, true),
@@ -70,6 +72,7 @@ class EditorSettingsRepository(context: Context) {
             .putBoolean(KEY_WORD_WRAP,           settings.wordWrap)
             .putBoolean(KEY_LINE_NUMBERS,        settings.lineNumbers)
             .putBoolean(KEY_AUTO_SAVE,           settings.autoSave)
+            .putBoolean(KEY_LANGUAGE_SERVER_ENABLED, settings.languageServerEnabled)
             .putString (KEY_EDITOR_THEME,        settings.editorTheme)
             .putBoolean(KEY_SHOW_KEYBOARD_BAR,   settings.showKeyboardToolbar)
             .putBoolean(KEY_SHOW_SYMBOL_BAR,     settings.showSymbolBar)

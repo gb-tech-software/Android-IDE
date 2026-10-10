@@ -31,13 +31,8 @@ val prepareTermuxBootstrap = tasks.register<Exec>("prepareTermuxBootstrap") {
     val script = rootProject.projectDir.resolve("../../scripts/fetch-termux-bootstrap.sh").normalize()
     commandLine("bash", script.absolutePath, termuxAbi.get())
 }
-val prepareTermuxRuntimeBundle = tasks.register<Exec>("prepareTermuxRuntimeBundle") {
-    val script = rootProject.projectDir.resolve("../../scripts/fetch-termux-runtime-bundle.sh").normalize()
-    commandLine("bash", script.absolutePath, termuxAbi.get())
-}
 tasks.named("preBuild").configure {
     dependsOn(prepareTermuxBootstrap)
-    dependsOn(prepareTermuxRuntimeBundle)
 }
 
 android {

@@ -3,9 +3,9 @@ package dev.android.ide.editor
 import dev.android.ide.contracts.LanguageServerDefinition
 
 /**
- * Language servers are ordinary Termux packages and are launched with stdio
- * JSON-RPC. The registry maps Monaco language IDs to launch commands without
- * making the editor depend on a particular package implementation.
+ * Language-server executables are installed from the app's pinned on-demand
+ * package set inside the private Termux prefix and launched with stdio JSON-RPC.
+ * This registry maps Monaco language IDs to commands without bundling the tools.
  */
 object LanguageServerRegistry {
     val definitions: List<LanguageServerDefinition> = listOf(

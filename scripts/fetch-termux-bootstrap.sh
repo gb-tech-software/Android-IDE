@@ -47,6 +47,7 @@ if [[ ! -f "$TARGET" ]] || [[ "$(sha256sum "$TARGET" | cut -d' ' -f1)" != "$SHA"
   trap - EXIT
 fi
 
-# Keep only the selected archive in the generated assets directory.
-find "$OUT_DIR" -maxdepth 1 -type f -name 'bootstrap-*.zip' ! -name "$ASSET" -delete
+# Keep only the selected default bootstrap archive. Runtime package bundles are
+# intentionally not generated or shipped; optional LSP packages install on demand.
+find "$OUT_DIR" -maxdepth 1 -type f \( -name 'bootstrap-*.zip' ! -name "$ASSET" -o -name 'runtime-*.zip' \) -delete
 printf 'Prepared pinned Termux bootstrap %s for %s at %s\n' "$TAG" "$ABI" "$TARGET"

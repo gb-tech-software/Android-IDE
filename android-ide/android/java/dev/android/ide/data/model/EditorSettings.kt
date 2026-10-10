@@ -65,6 +65,8 @@ data class EditorSettings(
      * Range: 0.75 – 1.50. Default: 1.0 (system default).
      */
     val uiFontScale: Float = 1.0f,
+    /** Install and use pinned language-server packages only when explicitly enabled. */
+    val languageServerEnabled: Boolean = false,
 
 ) {
     companion object {

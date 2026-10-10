@@ -388,6 +388,25 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Auto save", "Save changes shortly after editing.", s.autoSave, { ideViewModel.setEditorSettings(s.copy(autoSave = it)) })
     }
+    SettingsCard {
+        Text("Language intelligence", style = MaterialTheme.typography.titleSmall)
+        VisibilitySettingRow(
+            "Enable language servers",
+            "Optional pinned TypeScript, Python, HTML, CSS, and JSON tools are installed only when enabled and internet is available.",
+            s.languageServerEnabled,
+            { ideViewModel.setEditorSettings(s.copy(languageServerEnabled = it)) },
+        )
+        if (s.languageServerEnabled) {
+            uiState.languageServerPackageSetupMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+            }
+            if (uiState.languageServerPackageSetupCanRetry) {
+                OutlinedButton(onClick = ideViewModel::retryLanguageServerPackageInstallation) {
+                    Text("Retry package setup")
+                }
+            }
+        }
+    }
     KeyboardSettingsContent(uiState, s, ideViewModel)
     FileTreeSettingsContent(s, ideViewModel)
 }

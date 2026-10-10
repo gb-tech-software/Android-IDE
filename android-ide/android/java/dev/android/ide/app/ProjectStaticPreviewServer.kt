@@ -12,7 +12,6 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
-import java.security.SecureRandom
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -25,7 +24,6 @@ class ProjectStaticPreviewServer : Closeable {
         val socket: ServerSocket,
         val clients: ExecutorService,
         val accepting: AtomicBoolean,
-        val capability: String,
     ) {
         val port: Int get() = socket.localPort
     }
@@ -45,7 +43,7 @@ class ProjectStaticPreviewServer : Closeable {
         }
         val relative = root.toPath().relativize(target.toPath()).toString().replace(File.separatorChar, '/')
         val encoded = Uri.encode(relative, "/-_.~")
-        "http://127.0.0.1:${server.port}/$CAPABILITY_ROUTE/${server.capability}/$encoded"
+        "http://127.0.0.1:${server.port}/$encoded"
     }
 
     private fun startServer(root: File): RunningServer {
@@ -55,10 +53,7 @@ class ProjectStaticPreviewServer : Closeable {
         val clients = Executors.newFixedThreadPool(4) { runnable ->
             Thread(runnable, "ide-preview-http-client").apply { isDaemon = true }
         }
-        val capabilityBytes = ByteArray(24)
-        SecureRandom().nextBytes(capabilityBytes)
-        val capability = capabilityBytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-        val running = RunningServer(root, socket, clients, AtomicBoolean(true), capability)
+        val running = RunningServer(root, socket, clients, AtomicBoolean(true))
         Thread({
             while (running.accepting.get()) {
                 try {
@@ -99,15 +94,7 @@ class ProjectStaticPreviewServer : Closeable {
                 val rawPath = runCatching { java.net.URI(target).rawPath }.getOrNull()
                     ?.takeIf { it.startsWith('/') }
                     ?: return writeResponse(output, 400, "Bad Request", "text/plain", ByteArray(0), method)
-                val tokenPrefix = "/$CAPABILITY_ROUTE/${server.capability}/"
-                val tokenPathRequest = rawPath.startsWith(tokenPrefix)
-                val cookieName = "$COOKIE_NAME_PREFIX${server.capability}"
-                val cookieAuthorized = headers["cookie"]?.split(';')
-                    ?.any { it.trim() == "$cookieName=${server.capability}" } == true
-                if (!tokenPathRequest && !cookieAuthorized) {
-                    return writeResponse(output, 403, "Forbidden", "text/plain", ByteArray(0), method)
-                }
-                val requestPath = if (tokenPathRequest) rawPath.removePrefix(tokenPrefix) else rawPath.removePrefix("/")
+                val requestPath = rawPath.removePrefix("/")
                 val decodedPath = runCatching { Uri.decode(requestPath) }.getOrNull()
                     ?: return writeResponse(output, 400, "Bad Request", "text/plain", ByteArray(0), method)
                 if (decodedPath.contains('\u0000') || decodedPath.contains('\\')) {
@@ -131,7 +118,6 @@ class ProjectStaticPreviewServer : Closeable {
                 val reason = if (status == 200) "OK" else "Partial Content"
                 val extra = buildMap {
                     if (range != null) put("Content-Range", "bytes $start-$end/$fileLength")
-                    if (tokenPathRequest) put("Set-Cookie", "$cookieName=${server.capability}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400")
                 }
                 writeHeaders(output, status, reason, mimeType(file), length, extra)
                 if (method == "GET" && length > 0L) {
@@ -267,8 +253,4 @@ class ProjectStaticPreviewServer : Closeable {
         }
     }
 
-    private companion object {
-        const val CAPABILITY_ROUTE = "__android_ide_preview"
-        const val COOKIE_NAME_PREFIX = "ide_preview_"
-    }
 }

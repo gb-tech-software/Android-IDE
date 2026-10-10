@@ -34,6 +34,7 @@ import dev.android.ide.saf.PathResolutionScope
 import dev.android.ide.saf.SafeMutationResult
 import dev.android.ide.saf.TextDocumentCodec
 import dev.android.ide.app.ApplicationServices
+import dev.android.ide.runtime.LanguageServerPackageInstaller
 import dev.android.ide.viewmodel.model.AppScreen
 import dev.android.ide.viewmodel.model.EditorTab
 import dev.android.ide.viewmodel.model.FileNode
@@ -61,6 +62,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -108,6 +110,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val projectRepository = services.projectRepository
     private val sessionRepository = services.sessionRepository
     private val editorSettingsRepo = services.editorSettingsRepository
+    private val languageServerPackageInstaller = services.languageServerPackageInstaller
     private val crashRecovery     = services.crashRecoveryRepository
     private val lifecycleStore    = services.lifecycleStateStore
     private val themeResolver     = services.themeResolver
@@ -130,13 +133,15 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     val editorCommand: SharedFlow<EditorOutbound> = _editorCommand.asSharedFlow()
 
     private val languageServers = services.languageServerAdapter { projectId, serverId, message ->
-        _editorCommand.tryEmit(
-            EditorOutbound.LanguageServerMessage(
-                projectId = projectId,
-                serverId = serverId,
-                message = rewriteLanguageServerResponseUris(message.toString(Charsets.UTF_8)),
-            ),
-        )
+        if (_uiState.value.editorSettings.languageServerEnabled) {
+            _editorCommand.tryEmit(
+                EditorOutbound.LanguageServerMessage(
+                    projectId = projectId,
+                    serverId = serverId,
+                    message = rewriteLanguageServerResponseUris(message.toString(Charsets.UTF_8)),
+                ),
+            )
+        }
     }
 
     /**
@@ -154,6 +159,30 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val previousSessionDirty = crashRecovery.isPreviousSessionDirty()
         crashRecovery.markSessionStart()
         lifecycleStore.markProcessStarted()
+        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.setEnabled(true)
+        viewModelScope.launch {
+            languageServerPackageInstaller.state.collect { setup ->
+                val enabled = _uiState.value.editorSettings.languageServerEnabled
+                _uiState.update { state ->
+                    if (state.editorSettings.languageServerEnabled) {
+                        state.copy(
+                            languageServerPackageSetupMessage = setup.message ?: "Checking language-server packages…",
+                            languageServerPackageSetupCanRetry = setup.canRetry,
+                        )
+                    } else {
+                        state.copy(languageServerPackageSetupMessage = null, languageServerPackageSetupCanRetry = false)
+                    }
+                }
+                if (enabled && setup.state == LanguageServerPackageInstaller.State.READY) {
+                    val current = _uiState.value
+                    val active = current.openTabs.firstOrNull { it.id == current.activeTabId }
+                    val content = active?.let { pendingContent[it.id] ?: it.content }
+                    if (active != null && content != null && !active.isImagePreview) {
+                        initializeLanguageServerDocument(active.id, active.documentUri, active.language, content, current.projectRootUri)
+                    }
+                }
+            }
+        }
         restoreSession(previousSessionDirty)
         refreshProjectMetadata()
     }
@@ -170,6 +199,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAppForeground() {
         lifecycleStore.markForeground()
+        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.refresh()
     }
 
     fun onAppBackground() {
@@ -371,6 +401,27 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val previousTheme = previousSettings.editorTheme
         editorSettingsRepo.setEditorSettings(settings)
         _uiState.update { it.copy(editorSettings = settings) }
+        if (settings.languageServerEnabled != previousSettings.languageServerEnabled) {
+            if (settings.languageServerEnabled) {
+                languageServerPackageInstaller.setEnabled(true)
+            } else {
+                languageServerPackageInstaller.setEnabled(false)
+                _uiState.update {
+                    it.copy(
+                        languageIntelligenceAvailable = false,
+                        languageServerFeatures = emptySet(),
+                        languageServerPackageSetupMessage = null,
+                        languageServerPackageSetupCanRetry = false,
+                        statusMessage = it.statusMessage.takeUnless { message ->
+                            message.contains("language intelligence", ignoreCase = true) ||
+                                message.contains("language-server", ignoreCase = true) ||
+                                message.contains("language server", ignoreCase = true)
+                        }.orEmpty(),
+                    )
+                }
+                viewModelScope.launch { languageServers.stopAll() }
+            }
+        }
         sendEditorCommand(EditorOutbound.SetEditorOptions(
             tabSize                = settings.tabSize,
             wordWrap               = settings.wordWrap,
@@ -391,6 +442,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             refreshProject()
         }
+    }
+
+    fun retryLanguageServerPackageInstallation() {
+        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.retry()
     }
 
     fun setVolumeKeyMode(mode: VolumeKeyMode) {
@@ -1214,10 +1269,14 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         initialContent: String,
         projectRootAtOpen: String?,
     ) {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return
         viewModelScope.launch {
+            if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             val languageServer = startLanguageServerForActiveProject(language, projectRootAtOpen) ?: return@launch
             val currentTab = _uiState.value.openTabs.firstOrNull { it.id == tabId } ?: return@launch
-            if (_uiState.value.projectRootUri != projectRootAtOpen || currentTab.documentUri != documentUri) return@launch
+            if (!_uiState.value.editorSettings.languageServerEnabled ||
+                _uiState.value.projectRootUri != projectRootAtOpen || currentTab.documentUri != documentUri
+            ) return@launch
             val latestContent = pendingContent[currentTab.id] ?: currentTab.content ?: initialContent
             lspDocumentVersions[documentUri] = 1
             sendLanguageServerNotification(
@@ -1233,7 +1292,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 },
             )
             _uiState.update { state ->
-                if (state.activeTabId == tabId) {
+                if (state.activeTabId == tabId && state.editorSettings.languageServerEnabled) {
                     state.copy(
                         languageIntelligenceAvailable = true,
                         languageServerFeatures = languageServer.supportedFeatures,
@@ -1247,10 +1306,22 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         languageId: String,
         rootUri: String? = _uiState.value.projectRootUri,
     ): LanguageServerContext? {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return null
+        if (!languageServerPackageInstaller.arePackagesInstalled()) {
+            languageServerPackageInstaller.refresh()
+            return null
+        }
+        if (!_uiState.value.editorSettings.languageServerEnabled) return null
         rootUri ?: return null
         val project = projectManagement.registeredProjectAt(rootUri) ?: return null
         val status = languageServers.start(project, languageId)
-        if (!status.available && status.explanation != null) {
+        if (!_uiState.value.editorSettings.languageServerEnabled) {
+            if (status.available) languageServers.stop(project.id, status.serverId)
+            return null
+        }
+        if (!status.available && status.explanation != null &&
+            languageServerPackageInstaller.state.value.state == LanguageServerPackageInstaller.State.READY
+        ) {
             _uiState.update { it.copy(statusMessage = "Language intelligence unavailable: ${status.explanation}") }
         }
         return if (status.available && status.initialized) {
@@ -1306,7 +1377,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         method: String,
         params: JSONObject,
     ) {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return
         viewModelScope.launch {
+            if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             languageServers.send(
                 context.projectId,
                 context.serverId,
@@ -1610,6 +1683,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun sendLanguageServerNotificationForTab(tab: EditorTab, method: String, params: JSONObject) {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return
         val rootUri = _uiState.value.projectRootUri ?: return
         val project = projectManagement.registeredProjectAt(rootUri) ?: return
         val definition = LanguageServerRegistry.forLanguage(tab.language) ?: return
@@ -1621,6 +1695,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onLanguageServerMessage(rawMessage: String) {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return
         val tab = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
         val rootUri = _uiState.value.projectRootUri ?: return
         val project = projectManagement.registeredProjectAt(rootUri) ?: return
@@ -1630,6 +1705,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             ?.optJSONObject("textDocument")
             ?.put("uri", languageServerDocumentUri(tab.documentUri))
         viewModelScope.launch {
+            if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             val report = languageServers.send(
                 project.id,
                 definition.id,
@@ -1637,6 +1713,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (report.outcome != OperationOutcome.COMPLETE) {
                 _uiState.update { state ->
+                    if (!state.editorSettings.languageServerEnabled) return@update state
                     state.copy(
                         statusMessage = report.message,
                         languageIntelligenceAvailable = if (
