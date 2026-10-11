@@ -205,8 +205,8 @@ class FileManagementService(private val saf: SafRepository) {
     suspend fun inspectChildren(parentUri: String): ChildrenInspectionResult =
         saf.inspectChildren(parentUri)
 
-    suspend fun read(sourceUri: String): ByteArray? =
-        if (isConfirmedLocalStorageUri(sourceUri)) saf.readFile(sourceUri) else null
+    suspend fun read(sourceUri: String, maxBytes: Int? = null): ByteArray? =
+        if (isConfirmedLocalStorageUri(sourceUri)) saf.readFile(sourceUri, maxBytes) else null
 
     suspend fun write(
         sourceUri: String,

@@ -11,6 +11,18 @@ import dev.android.ide.data.model.RecoveryEntry
 import dev.android.ide.data.model.VolumeKeyMode
 import dev.android.ide.contracts.LanguageServerFeature
 
+data class EditorDiagnostic(
+    val documentUri: String,
+    val startLine: Int,
+    val startColumn: Int,
+    val endLine: Int,
+    val endColumn: Int,
+    /** LSP diagnostic severity: 1 error, 2 warning, 3 information, 4 hint. */
+    val severity: Int,
+    val message: String,
+    val source: String? = null,
+)
+
 data class IdeUiState(
     // ── Navigation ─────────────────────────────────────────────────────────
     /** Which top-level screen is visible. */
@@ -144,6 +156,8 @@ data class IdeUiState(
 
     /** Protocol features actually advertised by the active file's language server. */
     val languageServerFeatures: Set<LanguageServerFeature> = emptySet(),
+    /** Current LSP diagnostics keyed by project document URI; not persisted across sessions. */
+    val languageServerDiagnostics: Map<String, List<EditorDiagnostic>> = emptyMap(),
     /** Package setup information is surfaced in settings only while LSP is enabled. */
     val languageServerPackageSetupMessage: String? = null,
     val languageServerPackageSetupCanRetry: Boolean = false,

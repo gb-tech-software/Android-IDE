@@ -6,26 +6,33 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -43,14 +50,37 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Image as ImageIcon
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.TextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -60,6 +90,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -67,6 +98,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +110,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -87,10 +120,20 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.Image
-import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import dev.android.ide.app.BrowserNavigationRequest
 import dev.android.ide.browser.BrowserDownload
+import dev.android.ide.browser.BrowserDownloadStatus
+import dev.android.ide.browser.DuplicateDownloadPrompt
+import dev.android.ide.browser.BrowserWebsitePromptAnswer
+import dev.android.ide.browser.BrowserWebsitePromptKind
+import dev.android.ide.browser.BrowserWebsitePromptRequest
 import dev.android.ide.browser.BrowserContextKind
 import dev.android.ide.browser.BrowserContextMenu
 import dev.android.ide.browser.BrowserTabUi
@@ -101,6 +144,7 @@ import dev.android.ide.data.ResolvedTheme
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserSurface(
+    browser: BrowserViewModel,
     onOpenNavigation: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onApplicationBack: () -> Unit = {},
@@ -108,20 +152,35 @@ fun BrowserSurface(
     onInitialNavigationConsumed: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val browser: BrowserViewModel = viewModel()
     val context = LocalContext.current
     val registerScrollListener = remember(browser) { browser::setScrollListener }
     val themeResolver = remember { ThemeResolver(context) }
     val state by browser.uiState.collectAsState()
+    val singleFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val prompt = browser.uiState.value.websitePrompt ?: return@rememberLauncherForActivityResult
+        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
+            browser.answerWebsitePrompt(
+                prompt.id,
+                BrowserWebsitePromptAnswer(accepted = uri != null, selectedFileUris = listOfNotNull(uri?.toString())),
+            )
+        }
+    }
+    val multipleFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        val prompt = browser.uiState.value.websitePrompt ?: return@rememberLauncherForActivityResult
+        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
+            browser.answerWebsitePrompt(
+                prompt.id,
+                BrowserWebsitePromptAnswer(accepted = uris.isNotEmpty(), selectedFileUris = uris.map(Uri::toString)),
+            )
+        }
+    }
     var addressValue by remember {
         mutableStateOf(TextFieldValue(state.address, TextRange(state.address.length)))
     }
     var debouncedSuggestionQuery by remember { mutableStateOf("") }
     var addressFocused by remember { mutableStateOf(false) }
     var addressSuggestionsOpen by remember { mutableStateOf(false) }
-    var menuOpen by remember { mutableStateOf(false) }
     var tabsOpen by remember { mutableStateOf(false) }
-    var downloadsOpen by remember { mutableStateOf(false) }
     var viewportOpen by remember { mutableStateOf(false) }
     var viewportText by remember { mutableStateOf("") }
     var viewportError by remember { mutableStateOf<String?>(null) }
@@ -151,8 +210,18 @@ fun BrowserSurface(
         }
     }
     LaunchedEffect(state.error) { if (state.error != null) errorVisible = true }
-    BackHandler(enabled = state.selectedTabId != null) {
-        if (addressFocused) {
+    LaunchedEffect(state.websitePrompt?.id) {
+        val prompt = state.websitePrompt ?: return@LaunchedEffect
+        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
+            val mimeTypes = prompt.mimeTypes.filter(String::isNotBlank).toTypedArray().ifEmpty { arrayOf("*/*") }
+            if (prompt.multiple) multipleFilePicker.launch(mimeTypes)
+            else singleFilePicker.launch(mimeTypes)
+        }
+    }
+    BackHandler(enabled = state.downloadsPageOpen || state.selectedTabId != null) {
+        if (state.downloadsPageOpen) {
+            browser.hideDownloadsPage()
+        } else if (addressFocused) {
             focusManager.clearFocus()
             addressValue = TextFieldValue(state.address, TextRange(state.address.length))
             addressFocused = false
@@ -168,7 +237,45 @@ fun BrowserSurface(
         ResolvedTheme.LIGHT -> lightColorScheme()
     }
     MaterialTheme(colorScheme = browserColorScheme) {
-        BrowserSurfaceContent(modifier, state, browser, registerScrollListener, visibleBrowserSurface, addressValue, debouncedSuggestionQuery, { addressValue = it }, addressFocused, { addressFocused = it }, addressSuggestionsOpen, { addressSuggestionsOpen = it }, state.history, browser::clearHistoryEntry, { browser.createTab() }, { state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }; tabsOpen = true }, { onOpenNavigation() }, { onOpenSettings() }, tabSearchQuery, { tabSearchQuery = it }, { urlRowVisible = it }, urlRowVisible, menuOpen, { menuOpen = it }, tabsOpen, { tabsOpen = it }, downloadsOpen, { downloadsOpen = it }, viewportOpen, { viewportOpen = it }, viewportText, { viewportText = it }, viewportError, { viewportError = it }, errorVisible, { errorVisible = it }, previousScrollY, { previousScrollY = it })
+        BrowserSurfaceContent(
+            modifier = modifier,
+            state = state,
+            browser = browser,
+            registerScrollListener = registerScrollListener,
+            visibleBrowserSurface = visibleBrowserSurface,
+            addressValue = addressValue,
+            debouncedSuggestionQuery = debouncedSuggestionQuery,
+            setAddressValue = { addressValue = it },
+            addressFocused = addressFocused,
+            setAddressFocused = { addressFocused = it },
+            addressSuggestionsOpen = addressSuggestionsOpen,
+            setAddressSuggestionsOpen = { addressSuggestionsOpen = it },
+            history = state.history,
+            clearHistoryEntry = browser::clearHistoryEntry,
+            createTab = { browser.createTab() },
+            openTabs = {
+                state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }
+                tabsOpen = true
+            },
+            onOpenNavigation = onOpenNavigation,
+            onOpenSettings = onOpenSettings,
+            tabSearchQuery = tabSearchQuery,
+            setTabSearchQuery = { tabSearchQuery = it },
+            setUrlRowVisible = { urlRowVisible = it },
+            urlRowVisible = urlRowVisible,
+            tabsOpen = tabsOpen,
+            setTabsOpen = { tabsOpen = it },
+            viewportOpen = viewportOpen,
+            setViewportOpen = { viewportOpen = it },
+            viewportText = viewportText,
+            setViewportText = { viewportText = it },
+            viewportError = viewportError,
+            setViewportError = { viewportError = it },
+            errorVisible = errorVisible,
+            setErrorVisible = { errorVisible = it },
+            previousScrollY = previousScrollY,
+            setPreviousScrollY = { previousScrollY = it },
+        )
     }
 }
 
@@ -197,12 +304,8 @@ private fun BrowserSurfaceContent(
     setTabSearchQuery: (String) -> Unit,
     setUrlRowVisible: (Boolean) -> Unit,
     urlRowVisible: Boolean,
-    menuOpen: Boolean,
-    setMenuOpen: (Boolean) -> Unit,
     tabsOpen: Boolean,
     setTabsOpen: (Boolean) -> Unit,
-    downloadsOpen: Boolean,
-    setDownloadsOpen: (Boolean) -> Unit,
     viewportOpen: Boolean,
     setViewportOpen: (Boolean) -> Unit,
     viewportText: String,
@@ -217,208 +320,277 @@ private fun BrowserSurfaceContent(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val viewportRange = browser.viewportRange()
-    val viewportScrollState = rememberScrollState()
-    LaunchedEffect(state.selectedTabId, state.viewportWidth) {
-        viewportScrollState.scrollTo(0)
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
+    BackHandler(enabled = drawerState.isOpen) {
+        drawerScope.launch { drawerState.close() }
     }
-    Column(modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { Text("Browser") },
-            navigationIcon = { IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open Android IDE navigation") } },
-            actions = {
-                IconButton(onClick = { if (state.loading) browser.stop() else browser.reload() }, enabled = state.selectedTabId != null) {
-                    Icon(Icons.Default.Refresh, if (state.loading) "Stop loading" else "Refresh")
-                }
-                IconButton(onClick = createTab) { Icon(Icons.Default.Add, "New tab") }
-                IconButton(onClick = openTabs) {
-                    Box(
-                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center,
+    fun closeDrawerThen(action: () -> Unit) {
+        drawerScope.launch {
+            drawerState.close()
+            action()
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = false,
+        drawerContent = {
+            BoxWithConstraints {
+                val drawerWidth = minOf(maxWidth * 0.82f, 360.dp)
+                ModalDrawerSheet(
+                    modifier = Modifier.width(drawerWidth).fillMaxHeight(),
+                    drawerShape = RoundedCornerShape(topEnd = 28.dp, bottomEnd = 28.dp),
+                ) {
+                    Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Text(state.tabs.size.toString(), style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-                IconButton(onClick = { setMenuOpen(true) }) { Icon(Icons.Default.MoreVert, "Browser menu") }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { setMenuOpen(false) }) {
-                    if (state.settings.developerToolsEnabled) {
-                        DropdownMenuItem(
-                            leadingIcon = { Icon(Icons.Default.DeveloperMode, null) },
-                            text = { Text(if (state.developerToolsOpen) "Hide developer tools" else "Show developer tools") },
-                            onClick = { setMenuOpen(false); browser.toggleDeveloperTools() },
-                        )
-                    }
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Download, null) },
-                        text = { Text("Downloads") },
-                        onClick = { setMenuOpen(false); browser.reconcileDownloads(); setDownloadsOpen(true) },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Settings, null) },
-                        text = { Text("Custom viewport") },
-                        onClick = {
-                            setMenuOpen(false)
-                            setViewportText(state.viewportWidth?.toString().orEmpty())
-                            setViewportError(null)
-                            setViewportOpen(true)
-                        },
-                    )
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.Settings, null) },
-                        text = { Text("Browser settings") },
-                        onClick = { setMenuOpen(false); onOpenSettings() },
-                    )
-                }
-            },
-        )
-        AnimatedVisibility(
-            visible = urlRowVisible,
-            enter = slideInVertically(initialOffsetY = { -it }),
-            exit = slideOutVertically(targetOffsetY = { -it }),
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    IconButton(onClick = browser::goHome) { Icon(Icons.Default.Home, "Home page") }
-                    Box(Modifier.weight(1f)) {
-                        OutlinedTextField(
-                            value = addressValue,
-                            onValueChange = {
-                                setAddressValue(it)
-                                setAddressSuggestionsOpen(true)
-                            },
-                            modifier = Modifier.fillMaxWidth().onFocusChanged { focusState ->
-                                if (focusState.isFocused && !addressFocused) {
-                                    setAddressFocused(true)
-                                    setAddressSuggestionsOpen(true)
-                                    setAddressValue(TextFieldValue("", TextRange.Zero))
-                                } else if (!focusState.isFocused && addressFocused) {
-                                    setAddressFocused(false)
-                                    setAddressSuggestionsOpen(false)
-                                    setAddressValue(TextFieldValue(state.address, TextRange(state.address.length)))
+                        val activeTab = state.tabs.firstOrNull { it.id == state.selectedTabId }
+                        val activeDownloadCount = state.downloads.count {
+                            it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED
+                        }
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp)) {
+                            Text("Browser menu", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                activeTab?.host?.takeIf { it.isNotBlank() }
+                                    ?: activeTab?.title?.takeIf { it.isNotBlank() }
+                                    ?: "No page open",
+                                maxLines = 1,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        NavigationDrawerItem(
+                            icon = { Icon(if (state.loading) Icons.Default.Stop else Icons.Default.Refresh, contentDescription = null) },
+                            label = { Text(if (state.loading) "Stop loading" else "Refresh") },
+                            selected = false,
+                            onClick = {
+                                if (state.selectedTabId != null) {
+                                    closeDrawerThen { if (state.loading) browser.stop() else browser.reload() }
                                 }
                             },
-                            singleLine = true,
-                            label = { Text("Search or enter address") },
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = {
-                                browser.navigate(addressValue.text)
-                                focusManager.clearFocus()
-                                setAddressFocused(false)
-                                setAddressSuggestionsOpen(false)
-                            }),
-                            trailingIcon = if (addressFocused && addressValue.text.isNotEmpty()) ({
-                                IconButton(onClick = { setAddressValue(TextFieldValue("", TextRange.Zero)) }) { Icon(Icons.Default.Close, "Clear address") }
-                            }) else null,
+                            modifier = Modifier.padding(horizontal = 12.dp),
                         )
-                        DropdownMenu(
-                            expanded = addressFocused && addressSuggestionsOpen,
-                            onDismissRequest = { setAddressSuggestionsOpen(false) },
-                            modifier = Modifier.widthIn(min = 180.dp, max = 320.dp),
-                            properties = PopupProperties(focusable = false),
-                        ) {
-                            val firstSuggestion = browser.addressEditSuggestion()
-                            val normalizedQuery = addressValue.text.trim()
-                            val matchingHistory = if (debouncedSuggestionQuery == normalizedQuery) {
-                                browser.historySuggestions(debouncedSuggestionQuery, firstSuggestion)
-                            } else {
-                                emptyList()
-                            }
-                            fun selectSuggestion(value: String) {
-                                val selected = addressValue.selection
-                                val (start, end) = if (!selected.collapsed) {
-                                    selected.min to selected.max
-                                } else if (addressValue.text.any(Char::isWhitespace) || value.any(Char::isWhitespace)) {
-                                    0 to addressValue.text.length
-                                } else {
-                                    val cursor = selected.start.coerceIn(0, addressValue.text.length)
-                                    val start = (cursor - 1 downTo 0)
-                                        .firstOrNull { addressValue.text[it].isWhitespace() }
-                                        ?.plus(1) ?: 0
-                                    val end = (cursor until addressValue.text.length)
-                                        .firstOrNull { addressValue.text[it].isWhitespace() }
-                                        ?: addressValue.text.length
-                                    start to end
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.Download, contentDescription = null) },
+                            label = { Text(if (activeDownloadCount > 0) "Downloads · $activeDownloadCount active" else "Downloads") },
+                            selected = false,
+                            onClick = { closeDrawerThen(browser::showDownloadsPage) },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.PhoneAndroid, contentDescription = null) },
+                            label = { Text("Custom viewport") },
+                            selected = false,
+                            onClick = {
+                                closeDrawerThen {
+                                    setViewportText(state.viewportWidth?.toString().orEmpty())
+                                    setViewportError(null)
+                                    setViewportOpen(true)
                                 }
-                                val nextText = addressValue.text.replaceRange(start, end, value)
-                                setAddressValue(TextFieldValue(nextText, TextRange(start + value.length)))
-                                setAddressSuggestionsOpen(false)
-                            }
-                            firstSuggestion?.let { value ->
-                                AddressSuggestionRow(
-                                    value = value,
-                                    subtitle = state.tabs.firstOrNull { it.id == state.selectedTabId }?.title,
-                                    onSelect = { selectSuggestion(value) },
-                                )
-                            }
-                            if (normalizedQuery.isNotBlank() && normalizedQuery != firstSuggestion) {
-                                AddressSuggestionRow(value = normalizedQuery, onSelect = { selectSuggestion(normalizedQuery) })
-                            }
-                            matchingHistory.forEach { entry ->
-                                AddressSuggestionRow(
-                                    value = entry,
-                                    onSelect = { selectSuggestion(entry) },
-                                    onRemove = { clearHistoryEntry(entry) },
-                                )
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                        if (state.settings.developerToolsEnabled) {
+                            NavigationDrawerItem(
+                                icon = { Icon(Icons.Default.DeveloperMode, contentDescription = null) },
+                                label = { Text(if (state.developerToolsOpen) "Hide developer tools" else "Show developer tools") },
+                                selected = false,
+                                onClick = { closeDrawerThen(browser::toggleDeveloperTools) },
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                            )
+                        }
+                        HorizontalDivider(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                            label = { Text("Browser settings") },
+                            selected = false,
+                            onClick = { closeDrawerThen(onOpenSettings) },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                        )
+                    }
+                }
+            }
+        },
+    ) {
+        Column(modifier.fillMaxSize()) {
+            TopAppBar(
+                title = { Text(if (state.downloadsPageOpen) "Downloads" else "Browser") },
+                navigationIcon = {
+                    IconButton(onClick = if (state.downloadsPageOpen) browser::hideDownloadsPage else onOpenNavigation) {
+                        Icon(if (state.downloadsPageOpen) Icons.Default.ArrowBack else Icons.Default.Menu, if (state.downloadsPageOpen) "Back to browser" else "Open Android IDE navigation")
+                    }
+                },
+                actions = {
+                    if (state.downloadsPageOpen) {
+                        IconButton(onClick = browser::reconcileDownloads) { Icon(Icons.Default.Refresh, "Refresh downloads") }
+                    } else {
+                        IconButton(onClick = createTab) { Icon(Icons.Default.Add, "New tab") }
+                        IconButton(onClick = openTabs) {
+                            Box(
+                                modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(state.tabs.size.toString(), style = MaterialTheme.typography.labelLarge)
                             }
                         }
+                        IconButton(onClick = { drawerScope.launch { drawerState.open() } }) {
+                            Icon(Icons.Default.MoreVert, "Browser menu")
+                        }
                     }
-                    IconButton(onClick = browser::goBack, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoBack == true) { Icon(Icons.Default.ArrowBack, "Back") }
-                    IconButton(onClick = browser::goForward, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoForward == true) { Icon(Icons.Default.ArrowForward, "Forward") }
-                }
-            }
-        }
-        if (state.loading) Text("Loading ${state.loadProgress}%", modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
-        state.downloadProgress?.let { progress ->
-            val label = if (progress.totalBytes > 0) "Downloading ${progress.name} · ${(progress.bytes * 100 / progress.totalBytes).toInt()}%" else "Downloading ${progress.name}…"
-            Text(label, modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
-        }
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().clickable {
-            if (addressFocused) {
-                focusManager.clearFocus()
-                setAddressFocused(false)
-                setAddressSuggestionsOpen(false)
-                setAddressValue(TextFieldValue(state.address, TextRange(state.address.length)))
-            }
-            setUrlRowVisible(true)
-        }) {
-            // Measure the Gecko surface at the requested CSS viewport width; the horizontal
-            // scroll container prevents phone-sized parent constraints from clamping it.
-            val viewportWidth = state.viewportWidth?.dp ?: maxWidth
-            Row(Modifier.fillMaxSize().horizontalScroll(viewportScrollState)) {
-                state.selectedTabId?.let { tabId ->
-                    AndroidView(
-                        factory = { browserContext ->
-                            BrowserSurfaceBinding(browserContext).apply {
-                                visibleBrowserSurface.value = this
-                                setOnRefreshListener { browser.reload() }
-                            }
-                        },
-                        update = { surfaceBinding ->
-                            visibleBrowserSurface.value = surfaceBinding
-                            // DevTools controls live inside GeckoView. Do not let a drag on
-                            // its panel/controls be intercepted as a pull-to-refresh gesture.
-                            surfaceBinding.isEnabled = !state.developerToolsOpen
-                            val desiredWidth = state.viewportWidth?.let { (it * density.density).roundToInt() }
-                            browser.engineSession(tabId)?.let { engineSession ->
-                                surfaceBinding.bind(tabId, engineSession, desiredWidth, registerScrollListener) { scrollY ->
-                                    // SwipeRefreshLayout decides whether to intercept before the engine view
-                                    // receives a drag. Keep this value current so an upward/downward
-                                    // page scroll remains a page scroll everywhere except document top.
-                                    setUrlRowVisible(when {
-                                        scrollY <= 0 -> true
-                                        scrollY > previousScrollY + 2 -> false
-                                        scrollY < previousScrollY - 2 -> true
-                                        else -> urlRowVisible
-                                    })
-                                    setPreviousScrollY(scrollY)
+                },
+            )
+            if (state.downloadsPageOpen) {
+                DownloadsScreen(
+                    downloads = state.downloads,
+                    browser = browser,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                AnimatedVisibility(
+                    visible = urlRowVisible,
+                    enter = slideInVertically(initialOffsetY = { -it }),
+                    exit = slideOutVertically(targetOffsetY = { -it }),
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IconButton(onClick = browser::goHome) { Icon(Icons.Default.Home, "Home page") }
+                            Box(Modifier.weight(1f)) {
+                                OutlinedTextField(
+                                    value = addressValue,
+                                    onValueChange = {
+                                        setAddressValue(it)
+                                        setAddressSuggestionsOpen(true)
+                                    },
+                                    modifier = Modifier.fillMaxWidth().onFocusChanged { focusState ->
+                                        if (focusState.isFocused && !addressFocused) {
+                                            setAddressFocused(true)
+                                            setAddressSuggestionsOpen(true)
+                                            setAddressValue(TextFieldValue("", TextRange.Zero))
+                                        } else if (!focusState.isFocused && addressFocused) {
+                                            setAddressFocused(false)
+                                            setAddressSuggestionsOpen(false)
+                                            setAddressValue(TextFieldValue(state.address, TextRange(state.address.length)))
+                                        }
+                                    },
+                                    singleLine = true,
+                                    label = { Text("Search or enter address") },
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                    keyboardActions = KeyboardActions(onSearch = {
+                                        browser.navigate(addressValue.text)
+                                        focusManager.clearFocus()
+                                        setAddressFocused(false)
+                                        setAddressSuggestionsOpen(false)
+                                    }),
+                                    trailingIcon = if (addressFocused && addressValue.text.isNotEmpty()) ({
+                                        IconButton(onClick = { setAddressValue(TextFieldValue("", TextRange.Zero)) }) { Icon(Icons.Default.Close, "Clear address") }
+                                    }) else null,
+                                )
+                                DropdownMenu(
+                                    expanded = addressFocused && addressSuggestionsOpen,
+                                    onDismissRequest = { setAddressSuggestionsOpen(false) },
+                                    modifier = Modifier.widthIn(min = 180.dp, max = 320.dp),
+                                    properties = PopupProperties(focusable = false),
+                                ) {
+                                    val firstSuggestion = browser.addressEditSuggestion()
+                                    val normalizedQuery = addressValue.text.trim()
+                                    val matchingHistory = if (debouncedSuggestionQuery == normalizedQuery) {
+                                        browser.historySuggestions(debouncedSuggestionQuery, firstSuggestion)
+                                    } else {
+                                        emptyList()
+                                    }
+                                    fun selectSuggestion(value: String) {
+                                        val selected = addressValue.selection
+                                        val (start, end) = if (!selected.collapsed) {
+                                            selected.min to selected.max
+                                        } else if (addressValue.text.any(Char::isWhitespace) || value.any(Char::isWhitespace)) {
+                                            0 to addressValue.text.length
+                                        } else {
+                                            val cursor = selected.start.coerceIn(0, addressValue.text.length)
+                                            val start = (cursor - 1 downTo 0)
+                                                .firstOrNull { addressValue.text[it].isWhitespace() }
+                                                ?.plus(1) ?: 0
+                                            val end = (cursor until addressValue.text.length)
+                                                .firstOrNull { addressValue.text[it].isWhitespace() }
+                                                ?: addressValue.text.length
+                                            start to end
+                                        }
+                                        val nextText = addressValue.text.replaceRange(start, end, value)
+                                        setAddressValue(TextFieldValue(nextText, TextRange(start + value.length)))
+                                        setAddressSuggestionsOpen(false)
+                                    }
+                                    firstSuggestion?.let { value ->
+                                        AddressSuggestionRow(
+                                            value = value,
+                                            subtitle = state.tabs.firstOrNull { it.id == state.selectedTabId }?.title,
+                                            onSelect = { selectSuggestion(value) },
+                                        )
+                                    }
+                                    if (normalizedQuery.isNotBlank() && normalizedQuery != firstSuggestion) {
+                                        AddressSuggestionRow(value = normalizedQuery, onSelect = { selectSuggestion(normalizedQuery) })
+                                    }
+                                    matchingHistory.forEach { entry ->
+                                        AddressSuggestionRow(
+                                            value = entry,
+                                            onSelect = { selectSuggestion(entry) },
+                                            onRemove = { clearHistoryEntry(entry) },
+                                        )
+                                    }
                                 }
                             }
-                            if (!state.loading) surfaceBinding.isRefreshing = false
-                        },
-                        modifier = Modifier.width(viewportWidth).fillMaxHeight(),
-                    )
+                            IconButton(onClick = browser::goBack, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoBack == true) { Icon(Icons.Default.ArrowBack, "Back") }
+                            IconButton(onClick = browser::goForward, enabled = state.tabs.firstOrNull { it.id == state.selectedTabId }?.canGoForward == true) { Icon(Icons.Default.ArrowForward, "Forward") }
+                        }
+                    }
+                }
+                if (state.loading) Text("Loading ${state.loadProgress}%", modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
+                // Do not put a Compose click target over GeckoView: it can compete with
+                // page controls and the floating DevTools panel for touch ownership.
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    // Keep the visible host at the device's available size. For a custom
+                    // CSS viewport, GeckoView renders at that width and its content is
+                    // uniformly scaled into the host rather than exposed in a scroller.
+                    val requestedViewportWidthPx = state.viewportWidth?.let {
+                        (it * density.density).roundToInt().coerceAtLeast(1)
+                    }
+                    state.selectedTabId?.let { tabId ->
+                        AndroidView(
+                            factory = { browserContext ->
+                                BrowserSurfaceBinding(browserContext).apply {
+                                    visibleBrowserSurface.value = this
+                                    setOnRefreshListener { browser.reload() }
+                                }
+                            },
+                            update = { surfaceBinding ->
+                                visibleBrowserSurface.value = surfaceBinding
+                                // The floating DevTools panel owns its gestures while open;
+                                // in particular, dragging its launcher must not pull-refresh.
+                                surfaceBinding.isEnabled = !state.developerToolsOpen
+                                browser.engineSession(tabId)?.let { engineSession ->
+                                    surfaceBinding.bind(tabId, engineSession, requestedViewportWidthPx, registerScrollListener) { scrollY ->
+                                        // SwipeRefreshLayout decides whether to intercept before the engine view
+                                        // receives a drag. Keep this value current so an upward/downward
+                                        // page scroll remains a page scroll everywhere except document top.
+                                        setUrlRowVisible(when {
+                                            scrollY <= 0 -> true
+                                            scrollY > previousScrollY + 2 -> false
+                                            scrollY < previousScrollY - 2 -> true
+                                            else -> urlRowVisible
+                                        })
+                                        setPreviousScrollY(scrollY)
+                                    }
+                                }
+                                if (!state.loading) surfaceBinding.isRefreshing = false
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                }
                 }
             }
         }
@@ -467,7 +639,6 @@ private fun BrowserSurfaceContent(
             }
         }
     }
-    if (downloadsOpen) DownloadsDialog(state.downloads, browser, onDismiss = { setDownloadsOpen(false) })
     if (viewportOpen) {
         AlertDialog(
             onDismissRequest = { setViewportOpen(false) },
@@ -513,13 +684,26 @@ private fun BrowserSurfaceContent(
         )
     }
     state.duplicateDownload?.let { prompt ->
+        DuplicateDownloadDialog(prompt, browser::confirmDuplicateDownload)
+    }
+    state.navigationFailure?.let { failure ->
         AlertDialog(
-            onDismissRequest = { browser.confirmDuplicateDownload(false) },
-            title = { Text("File already exists") },
-            text = { Text("${prompt.name} is already present in the download list. Replace it?") },
-            confirmButton = { TextButton(onClick = { browser.confirmDuplicateDownload(true) }) { Text("Replace") } },
-            dismissButton = { TextButton(onClick = { browser.confirmDuplicateDownload(false) }) { Text("Keep existing") } },
+            onDismissRequest = browser::dismissNavigationFailure,
+            title = { Text(failure.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(failure.message)
+                    if (failure.address.isNotBlank()) {
+                        Text(failure.address, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = browser::retryNavigationFailure) { Text("Try again") } },
+            dismissButton = { TextButton(onClick = browser::dismissNavigationFailure) { Text("Dismiss") } },
         )
+    }
+    state.websitePrompt?.takeUnless { it.kind == BrowserWebsitePromptKind.FILE }?.let { prompt ->
+        WebsitePromptDialog(prompt) { answer -> browser.answerWebsitePrompt(prompt.id, answer) }
     }
     if (errorVisible) {
         AlertDialog(onDismissRequest = { setErrorVisible(false); browser.clearError() }, title = { Text("Browser error") }, text = { Text(state.error.orEmpty()) }, confirmButton = { TextButton(onClick = { setErrorVisible(false); browser.clearError() }) { Text("OK") } })
@@ -532,9 +716,198 @@ private fun BrowserSurfaceContent(
             onOpenMediaInNewTab = browser::openContextMediaInNewTab,
             onOpenCurrent = browser::loadContextUrlInCurrentTab,
             onOpenMediaCurrent = browser::loadContextMediaInCurrentTab,
-            onDownload = browser::downloadContextResource,
+            onDownloadLink = { browser.downloadContextResource(contextMenu.linkUri) },
+            onDownloadMedia = { browser.downloadContextResource(contextMenu.mediaUri) },
         )
     }
+}
+
+@Composable
+private fun WebsitePromptDialog(
+    prompt: BrowserWebsitePromptRequest,
+    onAnswer: (BrowserWebsitePromptAnswer) -> Unit,
+) {
+    var value by remember(prompt.id) { mutableStateOf(prompt.defaultValue.orEmpty()) }
+    var username by remember(prompt.id) { mutableStateOf(prompt.defaultUsername.orEmpty()) }
+    var password by remember(prompt.id) { mutableStateOf(prompt.defaultPassword.orEmpty()) }
+    var selectedIds by remember(prompt.id) {
+        mutableStateOf(prompt.choices.filter { it.selected }.map { it.id }.toSet())
+    }
+    val title = prompt.title?.takeIf(String::isNotBlank) ?: when (prompt.kind) {
+        BrowserWebsitePromptKind.ALERT -> "Alert"
+        BrowserWebsitePromptKind.CONFIRM -> "Confirm"
+        BrowserWebsitePromptKind.TEXT -> "Input required"
+        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Leave this page?"
+        BrowserWebsitePromptKind.REPOST -> "Resubmit form?"
+        BrowserWebsitePromptKind.AUTH -> "Sign in"
+        BrowserWebsitePromptKind.POPUP -> "Pop-up blocked"
+        BrowserWebsitePromptKind.CHOICE -> "Choose an option"
+        BrowserWebsitePromptKind.COLOR -> "Choose a color"
+        BrowserWebsitePromptKind.DATE_TIME -> "Enter a value"
+        BrowserWebsitePromptKind.FILE -> "Choose a file"
+    }
+    val confirmLabel = when (prompt.kind) {
+        BrowserWebsitePromptKind.ALERT -> "OK"
+        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Leave"
+        BrowserWebsitePromptKind.REPOST -> "Continue"
+        BrowserWebsitePromptKind.AUTH -> "Sign in"
+        BrowserWebsitePromptKind.POPUP -> "Allow"
+        BrowserWebsitePromptKind.CHOICE -> "Select"
+        else -> "OK"
+    }
+    val dismissLabel = when (prompt.kind) {
+        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Stay"
+        BrowserWebsitePromptKind.REPOST -> "Cancel"
+        BrowserWebsitePromptKind.POPUP -> "Block"
+        else -> "Cancel"
+    }
+    AlertDialog(
+        onDismissRequest = { onAnswer(BrowserWebsitePromptAnswer(accepted = false)) },
+        title = { Text(title) },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (prompt.origin.isNotBlank()) {
+                    Text(prompt.origin, style = MaterialTheme.typography.labelMedium)
+                }
+                prompt.message?.takeIf(String::isNotBlank)?.let { Text(it) }
+                when (prompt.kind) {
+                    BrowserWebsitePromptKind.TEXT -> OutlinedTextField(
+                        value = value,
+                        onValueChange = { value = it },
+                        label = { Text("Response") },
+                        singleLine = true,
+                    )
+                    BrowserWebsitePromptKind.COLOR -> OutlinedTextField(
+                        value = value,
+                        onValueChange = { value = it },
+                        label = { Text("Color (for example, #336699)") },
+                        singleLine = true,
+                    )
+                    BrowserWebsitePromptKind.DATE_TIME -> OutlinedTextField(
+                        value = value,
+                        onValueChange = { value = it },
+                        label = { Text(prompt.inputType ?: "Date or time") },
+                        singleLine = true,
+                    )
+                    BrowserWebsitePromptKind.AUTH -> {
+                        if (!prompt.passwordOnly) {
+                            OutlinedTextField(
+                                value = username,
+                                onValueChange = { username = it },
+                                label = { Text("Username") },
+                                singleLine = true,
+                            )
+                        }
+                        OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { Text("Password") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                        )
+                    }
+                    BrowserWebsitePromptKind.CHOICE -> {
+                        prompt.choices.forEach { choice ->
+                            val selected = choice.id in selectedIds
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                if (prompt.multiple) {
+                                    Checkbox(
+                                        checked = selected,
+                                        enabled = !choice.disabled,
+                                        onCheckedChange = { checked ->
+                                            selectedIds = if (checked) selectedIds + choice.id else selectedIds - choice.id
+                                        },
+                                    )
+                                } else {
+                                    RadioButton(
+                                        selected = selected,
+                                        enabled = !choice.disabled,
+                                        onClick = { selectedIds = setOf(choice.id) },
+                                    )
+                                }
+                                Text(
+                                    choice.label,
+                                    modifier = Modifier.clickable(enabled = !choice.disabled) {
+                                        selectedIds = if (prompt.multiple) {
+                                            if (selected) selectedIds - choice.id else selectedIds + choice.id
+                                        } else setOf(choice.id)
+                                    },
+                                    color = if (choice.disabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = prompt.kind != BrowserWebsitePromptKind.CHOICE || prompt.multiple || selectedIds.size == 1,
+                onClick = {
+                    onAnswer(
+                        BrowserWebsitePromptAnswer(
+                            accepted = true,
+                            value = value,
+                            username = username,
+                            password = password,
+                            selectedIds = selectedIds.toList(),
+                        ),
+                    )
+                },
+            ) { Text(confirmLabel) }
+        },
+        dismissButton = {
+            if (prompt.kind != BrowserWebsitePromptKind.ALERT) {
+                TextButton(onClick = { onAnswer(BrowserWebsitePromptAnswer(accepted = false)) }) { Text(dismissLabel) }
+            }
+        },
+    )
+}
+
+@Composable
+private fun DuplicateDownloadDialog(
+    prompt: DuplicateDownloadPrompt,
+    onResolve: (String?, Boolean) -> Unit,
+) {
+    var fileName by remember(prompt) { mutableStateOf(prompt.name) }
+    var autoRenameFutureConflicts by remember(prompt.sourceUrl) { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = { onResolve(null, false) },
+        title = { Text("File already exists") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("A file named ${prompt.name} already exists in the selected download folder. Choose another name, or cancel this download.")
+                OutlinedTextField(
+                    value = fileName,
+                    onValueChange = { fileName = it },
+                    label = { Text("Download file name") },
+                    singleLine = true,
+                )
+                prompt.validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = autoRenameFutureConflicts,
+                        onCheckedChange = { autoRenameFutureConflicts = it },
+                    )
+                    Text("Always rename future duplicates automatically")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = fileName.isNotBlank(),
+                onClick = { onResolve(fileName, autoRenameFutureConflicts) },
+            ) { Text("Download") }
+        },
+        dismissButton = { TextButton(onClick = { onResolve(null, false) }) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -569,22 +942,34 @@ private fun BrowserContextMenuSheet(
     onOpenMediaInNewTab: () -> Unit,
     onOpenCurrent: () -> Unit,
     onOpenMediaCurrent: () -> Unit,
-    onDownload: () -> Unit,
+    onDownloadLink: () -> Unit,
+    onDownloadMedia: () -> Unit,
 ) {
     val context = LocalContext.current
     val link = menu.linkUri
     val media = menu.mediaUri
-    val primaryUrl = link ?: media
+    val primaryUrl = media ?: link
+    val mediaType = contextResourceType(menu.kind, primaryUrl)
+    val name = menu.title?.takeIf(String::isNotBlank)
+        ?: menu.altText?.takeIf(String::isNotBlank)
+        ?: primaryUrl?.let { Uri.parse(it).lastPathSegment?.let(Uri::decode) }?.takeIf(String::isNotBlank)
+        ?: "Selected ${mediaType.lowercase()}"
+    val pageUri = Uri.parse(menu.pageUrl ?: primaryUrl.orEmpty())
+    val host = pageUri.host?.removePrefix("www.")
+    val faviconUrl = pageUri.buildUpon().encodedPath("/favicon.ico").clearQuery().fragment(null).build().toString()
+    var mediaPreview by remember(media, mediaType) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var pageIcon by remember(host) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+
+    LaunchedEffect(media, mediaType) {
+        mediaPreview = if (mediaType == "Image") media?.let { loadContextPreview(it, 2 * 1024 * 1024) } else null
+    }
+    LaunchedEffect(menu.pageUrl, host) {
+        pageIcon = host?.let { loadContextPreview(faviconUrl, 256 * 1024) }
+    }
+
     fun copy(label: String, value: String?) {
         if (value.isNullOrBlank()) return
         context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(label, value))
-        onDismiss()
-    }
-    fun copyImage(value: String?) {
-        if (value.isNullOrBlank()) return
-        context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(
-            ClipData.newUri(context.contentResolver, "Image", Uri.parse(value)),
-        )
         onDismiss()
     }
     fun share(label: String, value: String?) {
@@ -605,61 +990,147 @@ private fun BrowserContextMenuSheet(
         runCatching { context.startActivity(intent) }
         onDismiss()
     }
+
     Dialog(onDismissRequest = onDismiss) {
-        Card(
-            Modifier.fillMaxWidth().padding(20.dp),
-            shape = RoundedCornerShape(28.dp),
-        ) {
+        Card(Modifier.fillMaxWidth().padding(20.dp), shape = RoundedCornerShape(28.dp)) {
             Column(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                Modifier.fillMaxWidth().heightIn(max = 650.dp).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-            Text(
-                when (menu.kind) {
-                    BrowserContextKind.LINK -> "Link"
-                    BrowserContextKind.IMAGE -> "Image"
-                    BrowserContextKind.VIDEO -> "Video"
-                    BrowserContextKind.AUDIO -> "Audio"
-                    BrowserContextKind.LINKED_MEDIA -> "Link and media"
-                },
-                style = MaterialTheme.typography.titleLarge,
-            )
-            Text(
-                (menu.title ?: menu.altText ?: menu.textContent ?: primaryUrl ?: "Selected item").take(180),
-                maxLines = 2,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-            if (link != null) {
-                BrowserContextAction("Open in new tab", onOpenLinkInNewTab)
-                BrowserContextAction("Open in current tab", onOpenCurrent)
-                BrowserContextAction("Copy link address") { copy("Link address", link) }
-                if (!menu.textContent.isNullOrBlank()) BrowserContextAction("Copy link text") { copy("Link text", menu.textContent) }
-                BrowserContextAction("Download link", onDownload)
-                BrowserContextAction("Share link") { share("Share link", link) }
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Box(
+                        Modifier.width(76.dp).height(76.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (mediaPreview != null) {
+                            Image(mediaPreview!!, contentDescription = "Preview of $name", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        } else {
+                            Icon(contextResourceIcon(mediaType), contentDescription = mediaType, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(name.take(140), maxLines = 2, style = MaterialTheme.typography.titleMedium)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(Modifier.size(22.dp).clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                                if (pageIcon != null) Image(pageIcon!!, contentDescription = "Site icon", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                                else Icon(Icons.Default.Language, contentDescription = "Website", modifier = Modifier.size(16.dp))
+                            }
+                            Text(host ?: "Web resource", maxLines = 1, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        menu.pageTitle?.takeIf { it.isNotBlank() && it != name }?.let {
+                            Text(it, maxLines = 1, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                if (link != null) {
+                    ContextMenuSectionLabel("LINK")
+                    BrowserContextAction(Icons.Default.OpenInNew, "Open link in new tab", onOpenLinkInNewTab)
+                    BrowserContextAction(Icons.Default.ArrowForward, "Open link in current tab", onOpenCurrent)
+                    BrowserContextAction(Icons.Default.Link, "Copy link address") { copy("Link address", link) }
+                    if (!menu.textContent.isNullOrBlank()) BrowserContextAction(Icons.Default.ContentCopy, "Copy link text") { copy("Link text", menu.textContent) }
+                    BrowserContextAction(Icons.Default.Download, "Download link", onDownloadLink)
+                    BrowserContextAction(Icons.Default.Share, "Share link") { share("Share link", link) }
+                }
+                if (media != null) {
+                    if (link != null) HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    ContextMenuSectionLabel(if (mediaType == "Image") "IMAGE" else "MEDIA")
+                    BrowserContextAction(Icons.Default.OpenInNew, "Open ${mediaType.lowercase()} in new tab", onOpenMediaInNewTab)
+                    BrowserContextAction(if (mediaType == "Image") Icons.Default.ImageIcon else Icons.Default.PlayArrow, if (mediaType == "Image") "Preview image" else "Open media", onOpenMediaCurrent)
+                    BrowserContextAction(Icons.Default.Link, if (mediaType == "Image") "Copy image address" else "Copy media address") { copy("Media address", media) }
+                    BrowserContextAction(Icons.Default.Download, "Download ${mediaType.lowercase()}", onDownloadMedia)
+                    BrowserContextAction(Icons.Default.Share, if (mediaType == "Image") "Share image link" else "Share media link") { share("Share media link", media) }
+                    if (mediaType == "Image") BrowserContextAction(Icons.Default.Search, "Search this image") { searchImage(media) }
+                }
+                if (primaryUrl != null) {
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                    BrowserContextAction(Icons.Default.OpenInNew, "Open externally…") { openWith(primaryUrl) }
+                }
+                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).padding(top = 4.dp)) { Text("Close") }
             }
-            if (media != null) {
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Open image in new tab" else "Open media in new tab", onOpenMediaInNewTab)
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Preview image" else "Play media", onOpenMediaCurrent)
-                if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Copy image") { copyImage(media) }
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Copy image address" else "Copy media address") { copy("Media address", media) }
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Download image" else "Download media", onDownload)
-                BrowserContextAction(if (menu.kind == BrowserContextKind.IMAGE) "Share image" else "Share media") { share("Share media", media) }
-                if (menu.kind == BrowserContextKind.IMAGE) BrowserContextAction("Search this image") { searchImage(media) }
-            }
-            BrowserContextAction("Open with…") { openWith(primaryUrl) }
-            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).padding(top = 8.dp)) { Text("Cancel") }
         }
     }
 }
 
+@Composable
+private fun ContextMenuSectionLabel(label: String) {
+    Text(label, modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 2.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
 }
 
 @Composable
-private fun BrowserContextAction(label: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 10.dp)) {
-        Text(label, modifier = Modifier.fillMaxWidth(), style = MaterialTheme.typography.bodyLarge)
+private fun BrowserContextAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+private fun contextResourceType(kind: BrowserContextKind, url: String?): String {
+    val path = url?.let { Uri.parse(it).lastPathSegment.orEmpty().lowercase() }.orEmpty()
+    val extension = path.substringAfterLast('.', "")
+    return when {
+        kind == BrowserContextKind.IMAGE || extension in setOf("png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg") -> "Image"
+        kind == BrowserContextKind.VIDEO || extension in setOf("mp4", "webm", "mkv", "mov", "m4v", "avi") -> "Video"
+        kind == BrowserContextKind.AUDIO || extension in setOf("mp3", "m4a", "wav", "ogg", "opus", "flac") -> "Audio"
+        kind == BrowserContextKind.LINKED_MEDIA -> "Media"
+        kind == BrowserContextKind.LINK -> if (extension in setOf("pdf", "zip", "gz", "apk", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv")) "File" else "Link"
+        else -> "File"
+    }
+}
+
+private fun contextResourceIcon(type: String) = when (type) {
+    "Image" -> Icons.Default.ImageIcon
+    "Video" -> Icons.Default.VideoLibrary
+    "Audio" -> Icons.Default.MusicNote
+    "Link" -> Icons.Default.Link
+    else -> Icons.Default.InsertDriveFile
+}
+
+private suspend fun loadContextPreview(url: String, maxBytes: Int): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+    val uri = Uri.parse(url)
+    if (uri.scheme !in setOf("http", "https")) return@withContext null
+    val connection = runCatching { URL(url).openConnection() as? HttpURLConnection }.getOrNull() ?: return@withContext null
+    try {
+        connection.connectTimeout = 2_500
+        connection.readTimeout = 2_500
+        connection.instanceFollowRedirects = true
+        connection.setRequestProperty("Accept", "image/*")
+        connection.connect()
+        if (!connection.contentType.orEmpty().startsWith("image/", ignoreCase = true)) return@withContext null
+        if (connection.contentLengthLong > maxBytes) return@withContext null
+        val bytes = connection.inputStream.use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8 * 1024)
+            var total = 0
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > maxBytes) return@withContext null
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        }
+        if (bytes.isEmpty()) return@withContext null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+        val options = BitmapFactory.Options()
+        var sampleSize = 1
+        while (bounds.outWidth / sampleSize > 512 || bounds.outHeight / sampleSize > 512) sampleSize *= 2
+        options.inSampleSize = sampleSize
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+    } catch (_: Throwable) {
+        null
+    } finally {
+        connection.disconnect()
     }
 }
 
@@ -690,53 +1161,145 @@ private fun TabThumbnailCard(tab: BrowserTabUi, selected: Boolean, onSelect: () 
 }
 
 @Composable
-private fun DownloadsDialog(downloads: List<BrowserDownload>, browser: BrowserViewModel, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text("Downloads", style = MaterialTheme.typography.titleLarge)
-            if (downloads.isEmpty()) {
-                Text("No downloads have been recorded.", modifier = Modifier.padding(vertical = 24.dp))
-            } else {
-                downloads.asReversed().take(50).forEach { item ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier.width(56.dp).height(56.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(Icons.Default.Download, contentDescription = "Downloaded file")
-                            }
-                            Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(item.name, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
-                                Text(if (item.available) "Available" else "Unavailable", style = MaterialTheme.typography.labelMedium, color = if (item.available) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                                Text(item.mimeType, maxLines = 1, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (item.available) {
-                                        TextButton(onClick = {
-                                            val intent = browser.openDownload(item.id)
-                                            if (intent == null) browser.reportError("The downloaded file is no longer available")
-                                            else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
-                                        }) { Text("Open") }
-                                        TextButton(onClick = {
-                                            val intent = browser.shareDownload(item.id)
-                                            if (intent == null) browser.reportError("The downloaded file is no longer available")
-                                            else context.startActivity(Intent.createChooser(intent, "Share download"))
-                                        }) { Text("Share") }
-                                        TextButton(onClick = { browser.deleteDownload(item.id) }) { Text("Delete") }
-                                    } else {
-                                        TextButton(onClick = { browser.removeUnavailableDownload(item.id) }) { Text("Remove") }
-                                    }
-                                }
-                            }
-                        }
+private fun DownloadsScreen(
+    downloads: List<BrowserDownload>,
+    browser: BrowserViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val active = downloads.filter { it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED }
+        .sortedByDescending { it.timestamp }
+    val completed = downloads.filter { it.status == BrowserDownloadStatus.COMPLETED && it.available }
+        .sortedByDescending { it.timestamp }
+    val attention = downloads.filterNot { it in active || it in completed }
+        .sortedByDescending { it.timestamp }
+
+    LazyColumn(
+        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (downloads.isEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.primary)
+                        Text("No downloads yet", style = MaterialTheme.typography.titleMedium)
+                        Text("Files you download will appear here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
-            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("Done") }
         }
+        if (active.isNotEmpty()) {
+            item { DownloadSectionTitle("In progress", active.size) }
+            items(active, key = { it.id }) { item -> DownloadRow(item, browser) }
+        }
+        if (attention.isNotEmpty()) {
+            item { DownloadSectionTitle("Needs attention", attention.size) }
+            items(attention, key = { it.id }) { item -> DownloadRow(item, browser) }
+        }
+        if (completed.isNotEmpty()) {
+            item { DownloadSectionTitle("Completed", completed.size) }
+            items(completed, key = { it.id }) { item -> DownloadRow(item, browser) }
+        }
+    }
+}
+
+@Composable
+private fun DownloadSectionTitle(title: String, count: Int) {
+    Text("$title · $count", modifier = Modifier.padding(top = 8.dp, bottom = 2.dp), style = MaterialTheme.typography.titleSmall)
+}
+
+@Composable
+private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {
+    val context = LocalContext.current
+    val icon = when {
+        download.mimeType.startsWith("image/") -> Icons.Default.ImageIcon
+        download.mimeType.startsWith("video/") -> Icons.Default.VideoLibrary
+        download.mimeType.startsWith("audio/") -> Icons.Default.MusicNote
+        else -> Icons.Default.InsertDriveFile
+    }
+    val statusLabel = when (download.status) {
+        BrowserDownloadStatus.DOWNLOADING -> "Downloading"
+        BrowserDownloadStatus.PAUSED -> "Paused · this session only"
+        BrowserDownloadStatus.COMPLETED -> if (download.available) "Completed" else "File unavailable"
+        BrowserDownloadStatus.FAILED -> "Failed${download.error?.let { " · $it" }.orEmpty()}"
+        BrowserDownloadStatus.INTERRUPTED -> "Interrupted · retry starts over"
+        BrowserDownloadStatus.CANCELED -> "Canceled"
+    }
+    val progress = if (download.totalBytes > 0L) (download.downloadedBytes.toFloat() / download.totalBytes.toFloat()).coerceIn(0f, 1f) else null
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = download.mimeType, tint = MaterialTheme.colorScheme.primary)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(download.name, maxLines = 2, style = MaterialTheme.typography.titleSmall)
+                    Text(statusLabel, maxLines = 2, style = MaterialTheme.typography.bodySmall, color = if (download.status == BrowserDownloadStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                    val host = Uri.parse(download.sourceUrl).host
+                    if (!host.isNullOrBlank()) Text(host, maxLines = 1, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (download.status == BrowserDownloadStatus.DOWNLOADING || download.status == BrowserDownloadStatus.PAUSED) {
+                if (progress != null) LinearProgressIndicator(progress = progress, modifier = Modifier.fillMaxWidth())
+                else LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                val sizeLabel = if (download.totalBytes > 0L) "${formatDownloadBytes(download.downloadedBytes)} of ${formatDownloadBytes(download.totalBytes)}" else "${formatDownloadBytes(download.downloadedBytes)} downloaded"
+                Text(sizeLabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else if (download.status == BrowserDownloadStatus.COMPLETED && download.available) {
+                Text("${formatDownloadBytes(download.size)} · ${download.mimeType}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                when (download.status) {
+                    BrowserDownloadStatus.DOWNLOADING -> {
+                        DownloadAction(Icons.Default.Pause, "Pause") { browser.pauseDownload(download.id) }
+                        DownloadAction(Icons.Default.Cancel, "Cancel") { browser.cancelDownload(download.id) }
+                    }
+                    BrowserDownloadStatus.PAUSED -> {
+                        DownloadAction(Icons.Default.PlayArrow, "Resume") { browser.resumeDownload(download.id) }
+                        DownloadAction(Icons.Default.Cancel, "Cancel") { browser.cancelDownload(download.id) }
+                    }
+                    BrowserDownloadStatus.COMPLETED -> if (download.available) {
+                        DownloadAction(Icons.Default.OpenInNew, "Open") {
+                            val intent = browser.openDownload(download.id)
+                            if (intent == null) browser.reportError("The downloaded file is no longer available")
+                            else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
+                        }
+                        DownloadAction(Icons.Default.Share, "Share") {
+                            val intent = browser.shareDownload(download.id)
+                            if (intent == null) browser.reportError("The downloaded file is no longer available")
+                            else runCatching { context.startActivity(Intent.createChooser(intent, "Share download")) }
+                        }
+                        DownloadAction(Icons.Default.Delete, "Delete") { browser.deleteDownload(download.id) }
+                    } else {
+                        if (download.sourceUrl.isNotBlank()) DownloadAction(Icons.Default.Replay, "Retry") { browser.retryDownload(download.id) }
+                        DownloadAction(Icons.Default.Delete, "Remove") { browser.removeUnavailableDownload(download.id) }
+                    }
+                    BrowserDownloadStatus.FAILED, BrowserDownloadStatus.INTERRUPTED, BrowserDownloadStatus.CANCELED -> {
+                        if (download.sourceUrl.isNotBlank()) DownloadAction(Icons.Default.Replay, "Retry") { browser.retryDownload(download.id) }
+                        DownloadAction(Icons.Default.Delete, "Delete") { browser.removeUnavailableDownload(download.id) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 4.dp)) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+private fun formatDownloadBytes(value: Long): String {
+    val amount = value.coerceAtLeast(0L).toDouble()
+    return when {
+        amount >= 1024.0 * 1024 * 1024 -> "%.1f GB".format(amount / (1024.0 * 1024 * 1024))
+        amount >= 1024.0 * 1024 -> "%.1f MB".format(amount / (1024.0 * 1024))
+        amount >= 1024.0 -> "%.0f KB".format(amount / 1024.0)
+        else -> "${value.coerceAtLeast(0L)} B"
     }
 }

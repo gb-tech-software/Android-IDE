@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.view.View
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,8 +14,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URLDecoder
 
 data class BrowserTabUi(
@@ -38,10 +42,12 @@ data class BrowserUiState(
     val downloads: List<BrowserDownload> = emptyList(),
     val settings: BrowserSettings = BrowserSettings(),
     val history: List<String> = emptyList(),
+    val downloadsPageOpen: Boolean = false,
     val developerToolsOpen: Boolean = false,
     val permissionPrompt: BrowserPermissionPrompt? = null,
+    val websitePrompt: BrowserWebsitePromptRequest? = null,
+    val navigationFailure: BrowserNavigationFailure? = null,
     val duplicateDownload: DuplicateDownloadPrompt? = null,
-    val downloadProgress: BrowserDownloadProgress? = null,
     val contextMenu: BrowserContextMenu? = null,
     val error: String? = null,
     val clearingBrowserData: Boolean = false,
@@ -49,16 +55,21 @@ data class BrowserUiState(
 )
 
 data class BrowserPermissionPrompt(val origin: String, val permission: String)
-data class DuplicateDownloadPrompt(val name: String, val sourceUrl: String, val existingUri: String)
-data class BrowserDownloadProgress(val name: String, val bytes: Long, val totalBytes: Long)
-
+data class DuplicateDownloadPrompt(
+    val name: String,
+    val sourceUrl: String,
+    val validationError: String? = null,
+)
 data class BrowserContextMenu(
+    val tabId: String,
     val kind: BrowserContextKind,
     val linkUri: String? = null,
     val mediaUri: String? = null,
     val title: String? = null,
     val altText: String? = null,
     val textContent: String? = null,
+    val pageUrl: String? = null,
+    val pageTitle: String? = null,
 )
 
 internal data class BrowserTabRuntime(
@@ -78,6 +89,7 @@ internal data class BrowserTabRuntime(
     var scrollListener: ((Int) -> Unit)? = null,
     var visualRevision: Int = 0,
     var thumbnailRevision: Int = -1,
+    var navigationFailure: BrowserNavigationFailure? = null,
 )
 
 /** Application-owned browser domain. It survives navigation away from the Browser surface. */
@@ -102,7 +114,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             settings = settingsService.settings.value,
             history = historyService.entries.value,
             developerToolsOpen = storageService.developerToolsOpen() && settingsService.settings.value.developerToolsEnabled,
-            downloadProgress = downloadService.progress.value,
             duplicateDownload = downloadService.duplicatePrompt.value,
         ),
     )
@@ -122,7 +133,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         viewModelScope.launch { downloadService.downloads.collect { _uiState.value = _uiState.value.copy(downloads = it) } }
-        viewModelScope.launch { downloadService.progress.collect { _uiState.value = _uiState.value.copy(downloadProgress = it) } }
         viewModelScope.launch { downloadService.duplicatePrompt.collect { _uiState.value = _uiState.value.copy(duplicateDownload = it) } }
         viewModelScope.launch { downloadService.error.collect { error -> if (error != null) setError(error) } }
     }
@@ -224,11 +234,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val wasLoading = tab.loading
             tab.loadProgress = progress
             tab.loading = event.progress < 100
+            if (event.progress == 0) tab.navigationFailure = null
             val current = _uiState.value
             val milestone = progress == 100 || progress == 0 || progress < previousProgress ||
                 progress - previousProgress >= 5
             if (current.selectedTabId == event.tabId && (milestone || wasLoading != tab.loading)) {
-                _uiState.value = current.copy(loading = tab.loading, loadProgress = progress)
+                _uiState.value = current.copy(
+                    loading = tab.loading,
+                    loadProgress = progress,
+                    navigationFailure = tab.navigationFailure,
+                )
             }
         }
 
@@ -248,22 +263,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             persistTabs()
         }
 
+        override fun onNavigationFailure(event: BrowserNavigationFailure) {
+            tab.loading = false
+            tab.loadProgress = 100
+            tab.navigationFailure = event
+            publish()
+        }
+
         override fun onDownloadRequested(event: BrowserDownloadRequest) = beginDownload(event)
 
         override fun onPermissionRequested(event: BrowserPermissionRequest) {
             permissionService.request(event)
         }
 
+        override fun onWebsitePromptRequested(event: BrowserWebsitePromptRequest) {
+            _uiState.value.websitePrompt?.decision?.complete(BrowserWebsitePromptAnswer(accepted = false))
+            _uiState.value = _uiState.value.copy(websitePrompt = event)
+        }
+
         override fun onContextMenuRequested(event: BrowserContextMenuRequest) {
             _uiState.value = _uiState.value.copy(
                 contextMenu = BrowserContextMenu(
-                    event.kind, event.linkUri, event.mediaUri, event.title, event.altText, event.textContent,
+                    tabId = event.tabId,
+                    kind = event.kind,
+                    linkUri = event.linkUri,
+                    mediaUri = event.mediaUri,
+                    title = event.title,
+                    altText = event.altText,
+                    textContent = event.textContent,
+                    pageUrl = sessions[event.tabId]?.url,
+                    pageTitle = sessions[event.tabId]?.title,
                 ),
             )
         }
-
-        override fun onConsoleEvent(event: BrowserConsoleEvent) = Unit
-        override fun onNetworkEvent(event: BrowserNetworkEvent) = Unit
 
         override fun onScrollChanged(event: BrowserScrollChanged) {
             val scrollY = event.scrollY.coerceAtLeast(0)
@@ -289,15 +321,98 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!allow) setError("The site permission was denied")
     }
 
+    fun answerWebsitePrompt(id: String, answer: BrowserWebsitePromptAnswer) {
+        val prompt = _uiState.value.websitePrompt ?: return
+        if (prompt.id != id) return
+        if (prompt.kind == BrowserWebsitePromptKind.FILE && answer.accepted) {
+            viewModelScope.launch {
+                val stagedUris = withContext(Dispatchers.IO) {
+                    answer.selectedFileUris.mapNotNull(::stageWebsiteUpload)
+                }
+                if (_uiState.value.websitePrompt?.id != id) return@launch
+                val stagedAnswer = answer.copy(
+                    accepted = stagedUris.isNotEmpty() && stagedUris.size == answer.selectedFileUris.size,
+                    selectedFileUris = stagedUris,
+                )
+                if (!stagedAnswer.accepted) {
+                    stagedUris.forEach { staged -> Uri.parse(staged).path?.let(::File)?.delete() }
+                    setError("The selected file could not be read by the browser. Choose another file and try again.")
+                }
+                prompt.decision.complete(stagedAnswer)
+                _uiState.value = _uiState.value.copy(websitePrompt = null)
+            }
+        } else {
+            prompt.decision.complete(answer)
+            _uiState.value = _uiState.value.copy(websitePrompt = null)
+        }
+    }
+
+    private fun stageWebsiteUpload(uriValue: String): String? = runCatching {
+        val source = Uri.parse(uriValue)
+        val displayName = context.contentResolver.query(
+            source,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
+        }.orEmpty()
+        val extension = displayName.substringAfterLast('.', "").takeIf {
+            it.isNotBlank() && it.length <= 16 && it.all { character -> character.isLetterOrDigit() }
+        }
+            ?.let { ".$it" } ?: ".upload"
+        val directory = File(context.cacheDir, "browser_form_uploads").apply { mkdirs() }
+        val staged = File.createTempFile("web-upload-", extension, directory)
+        val input = context.contentResolver.openInputStream(source) ?: run {
+            staged.delete()
+            return null
+        }
+        input.use { from -> FileOutputStream(staged).use { to -> from.copyTo(to) } }
+        Uri.fromFile(staged).toString()
+    }.getOrNull()
+
+    fun dismissNavigationFailure() {
+        val tab = sessions[_uiState.value.selectedTabId] ?: return
+        tab.navigationFailure = null
+        publish()
+    }
+
+    fun retryNavigationFailure() {
+        val tab = sessions[_uiState.value.selectedTabId] ?: return
+        tab.navigationFailure = null
+        publish()
+        sessionFor(tab).reload()
+    }
+
     private fun beginDownload(request: BrowserDownloadRequest) {
         downloadService.accept(request)
     }
 
-    fun confirmDuplicateDownload(replace: Boolean) {
-        downloadService.resolveDuplicate(replace)
+    fun confirmDuplicateDownload(name: String?, autoRenameFutureConflicts: Boolean = false) {
+        downloadService.resolveDuplicate(name, autoRenameFutureConflicts)
     }
 
     fun reconcileDownloads() = downloadService.reconcile()
+
+    fun showDownloadsPage() {
+        downloadService.reconcile()
+        _uiState.value = _uiState.value.copy(downloadsPageOpen = true)
+    }
+
+    fun hideDownloadsPage() {
+        _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
+    }
+
+    fun pauseDownload(downloadId: String): Boolean = downloadService.pause(downloadId)
+    fun resumeDownload(downloadId: String): Boolean = downloadService.resume(downloadId)
+    fun cancelDownload(downloadId: String): Boolean = downloadService.cancel(downloadId)
+
+    /** Retry starts a fresh request in a new tab; an interrupted body is never resumed. */
+    fun retryDownload(downloadId: String) {
+        val source = downloadService.prepareRetry(downloadId) ?: return
+        openUrlInNewTab(source)
+    }
 
     /** Returns an ACTION_VIEW intent only for a file that is currently present. */
     fun openDownload(downloadId: String): Intent? = downloadService.open(downloadId)
@@ -332,14 +447,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         navigationService.navigate(BrowserNavigation(url))
     }
     /** Starts a resource request; Gecko routes downloadable responses to beginDownload. */
-    fun downloadContextResource() {
-        val url = _uiState.value.contextMenu?.mediaUri ?: _uiState.value.contextMenu?.linkUri ?: return
+    fun downloadContextResource(url: String?) {
+        if (url.isNullOrBlank()) return
         dismissContextMenu()
         navigationService.navigate(BrowserNavigation(url))
     }
 
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
+        _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
         sessionFor(sessions.getValue(tabId))
         tabService.select(tabId)
         storageService.saveSelectedTab(tabId)
@@ -350,6 +466,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun closeTab(tabId: String): Boolean {
         if (tabId !in sessions) return false
         persistence.flush()
+        _uiState.value.websitePrompt?.takeIf { it.tabId == tabId }?.let { prompt ->
+            prompt.decision.complete(BrowserWebsitePromptAnswer(accepted = false))
+            _uiState.value = _uiState.value.copy(websitePrompt = null)
+        }
         val closedTab = sessions.remove(tabId)
         sessionService.closeSession(tabId)
         val replacement = tabService.close(tabId)
@@ -379,14 +499,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val tab = sessions[_uiState.value.selectedTabId] ?: return
         val entered = address.trim()
         if (entered.isEmpty()) return
+        _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
         val target = navigationService.resolve(entered)
         tab.url = target
+        tab.navigationFailure = null
         tabService.update(tab.id) { it.copy(url = target, scrollY = 0) }
         tab.scrollY = 0
         tab.scrollListener?.invoke(0)
         sessionFor(tab)
         navigationService.navigate(BrowserNavigation(target, historyAddress = entered))
-        _uiState.value = _uiState.value.copy(address = target, error = null)
+        _uiState.value = _uiState.value.copy(address = target, error = null, navigationFailure = null)
         persistTabs()
     }
 
@@ -529,6 +651,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistence.flush()
         _uiState.value = _uiState.value.copy(clearingBrowserData = true, browserDataClearMessage = null)
         val activeTabId = tabService.selectedTabId.value
+        _uiState.value.websitePrompt?.let { prompt ->
+            prompt.decision.complete(BrowserWebsitePromptAnswer(accepted = false))
+        }
+        _uiState.value = _uiState.value.copy(websitePrompt = null)
         sessionService.closeAll()
         sessions.values.forEach { tab ->
             tab.session = null
@@ -620,6 +746,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             loadProgress = selected?.loadProgress ?: 0,
             viewportWidth = selected?.viewportWidth,
             history = historyService.entries.value,
+            navigationFailure = selected?.navigationFailure,
         )
     }
 
@@ -640,6 +767,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun setError(message: String) { _uiState.value = _uiState.value.copy(error = message) }
 
     override fun onCleared() {
+        _uiState.value.websitePrompt?.decision?.complete(BrowserWebsitePromptAnswer(accepted = false))
         persistence.flush()
         persistTabsNow()
         sessionService.closeAll()

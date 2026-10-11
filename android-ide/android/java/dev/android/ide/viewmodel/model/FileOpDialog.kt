@@ -28,6 +28,9 @@ sealed class FileOpDialog {
         val resultMessage: String? = null,
         val isSubmitting: Boolean = false,
         val createdDocumentUri: String? = null,
+        val suggestedName: String = "",
+        /** When set, the new file is written from this editor tab instead of being empty. */
+        val sourceTabId: String? = null,
     ) : FileOpDialog()
 
     /** "Create folder" dialog; new folder will be created inside [parentNode]. [errorMessage] is shown inline when non-null. */
@@ -76,23 +79,4 @@ sealed class FileOpDialog {
         val resultMessage: String? = null,
     ) : FileOpDialog()
 
-    /**
-     * for saving the active file's content.  The [suggestedName] pre-fills the
-     * text field with the current tab's display name.
-     */
-    data class SaveAs(
-        val suggestedName: String,
-        val errorMessage: String? = null,
-        val resultMessage: String? = null,
-        val isSubmitting: Boolean = false,
-    ) : FileOpDialog()
-
-    /** Focused name-only save flow for a new, unsaved editor tab. */
-    data class SaveBlank(
-        val tabId: String,
-        val suggestedName: String = "untitled",
-        val errorMessage: String? = null,
-        val resultMessage: String? = null,
-        val isSubmitting: Boolean = false,
-    ) : FileOpDialog()
 }

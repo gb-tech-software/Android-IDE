@@ -104,6 +104,7 @@ var CONTENT_CHANGE_DEBOUNCE_MS = 150;   // faster dirty-marking (was 300)
 var lspRequestId = 1;
 var lspPending = Object.create(null);
 var lspProviderDisposables = [];
+var lspDiagnosticsByPath = Object.create(null);
 
 // ---------------------------------------------------------------------------
 // Monaco loader
@@ -151,6 +152,33 @@ function lspRange(range) {
     monacoPosition(range.end).lineNumber,
     monacoPosition(range.end).column
   );
+}
+
+function modelUriForDocument(path) {
+  return monaco.Uri.parse('androidide:///files/' + encodeURIComponent(path));
+}
+
+function lspDiagnosticsToMarkers(diagnostics) {
+  return diagnostics.map(function (diagnostic) {
+    var range = diagnostic.range || { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+    return {
+      severity: diagnostic.severity === 1 ? monaco.MarkerSeverity.Error
+        : diagnostic.severity === 2 ? monaco.MarkerSeverity.Warning
+        : diagnostic.severity === 3 ? monaco.MarkerSeverity.Info
+        : monaco.MarkerSeverity.Hint,
+      message: diagnostic.message || '',
+      source: diagnostic.source,
+      startLineNumber: monacoPosition(range.start).lineNumber,
+      startColumn: monacoPosition(range.start).column,
+      endLineNumber: monacoPosition(range.end).lineNumber,
+      endColumn: monacoPosition(range.end).column,
+    };
+  });
+}
+
+function applyLspDiagnostics(path) {
+  var model = monaco.editor.getModel(modelUriForDocument(path));
+  if (model) monaco.editor.setModelMarkers(model, 'androidide-lsp', lspDiagnosticsToMarkers(lspDiagnosticsByPath[path] || []));
 }
 
 function normalizeCompletionItems(result) {
@@ -225,6 +253,13 @@ function localSnippetItems(language) {
       ['element', '<${1:element}>\n\t$0\n</$1>', 'Element'],
       ['attribute', '${1:name}="${2:value}"', 'Attribute'],
     ],
+    sql: [
+      ['select', 'SELECT ${1:*}\nFROM ${2:table}\nWHERE ${3:condition};', 'SELECT query'],
+      ['join', 'SELECT ${1:columns}\nFROM ${2:table_a}\nJOIN ${3:table_b} ON ${4:condition};', 'JOIN query'],
+      ['insert', 'INSERT INTO ${1:table} (${2:columns})\nVALUES (${3:values});', 'INSERT statement'],
+      ['create', 'CREATE TABLE ${1:table} (\n\t${2:id} INTEGER PRIMARY KEY\n);', 'CREATE TABLE statement'],
+      ['update', 'UPDATE ${1:table}\nSET ${2:column} = ${3:value}\nWHERE ${4:condition};', 'UPDATE statement'],
+    ],
     shell: [
       ['if', 'if [ ${1:condition} ]; then\n\t$0\nfi', 'If statement'],
       ['for', 'for ${1:item} in ${2:items}; do\n\t$0\ndone', 'For loop'],
@@ -262,29 +297,36 @@ function handleLanguageServerMessage(raw) {
     return;
   }
   if (message.method === 'textDocument/publishDiagnostics') {
-    var model = editor && editor.getModel();
-    var diagnostics = (message.params && message.params.diagnostics) || [];
-    if (model) {
-      monaco.editor.setModelMarkers(model, 'androidide-lsp', diagnostics.map(function (diagnostic) {
-        return {
-          severity: diagnostic.severity === 1 ? monaco.MarkerSeverity.Error
-            : diagnostic.severity === 2 ? monaco.MarkerSeverity.Warning
-            : diagnostic.severity === 3 ? monaco.MarkerSeverity.Info
-            : monaco.MarkerSeverity.Hint,
-          message: diagnostic.message || '',
-          source: diagnostic.source,
-          startLineNumber: monacoPosition(diagnostic.range.start).lineNumber,
-          startColumn: monacoPosition(diagnostic.range.start).column,
-          endLineNumber: monacoPosition(diagnostic.range.end).lineNumber,
-          endColumn: monacoPosition(diagnostic.range.end).column,
-        };
-      }));
+    var params = message.params || {};
+    var documentUri = params.uri || currentPath;
+    var diagnostics = params.diagnostics || [];
+    if (documentUri) {
+      lspDiagnosticsByPath[documentUri] = diagnostics;
+      applyLspDiagnostics(documentUri);
+      postToNative({
+        type: 'diagnosticsChanged',
+        documentUri: documentUri,
+        diagnostics: diagnostics.map(function (diagnostic) {
+          var range = diagnostic.range || { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+          var start = monacoPosition(range.start);
+          var end = monacoPosition(range.end);
+          return {
+            startLine: start.lineNumber,
+            startColumn: start.column,
+            endLine: end.lineNumber,
+            endColumn: end.column,
+            severity: diagnostic.severity || 4,
+            message: diagnostic.message || '',
+            source: diagnostic.source || '',
+          };
+        }),
+      });
     }
   }
 }
 
 function registerLanguageProviders() {
-  var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'markdown', 'shell', 'groovy'];
+  var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'sql', 'markdown', 'shell', 'groovy'];
   var lspCompletionLanguages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc'];
   var localCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
   languages.forEach(function (language) {
@@ -311,6 +353,47 @@ function registerLanguageProviders() {
         }).catch(function () {
           return { suggestions: [] };
         });
+        },
+      }));
+      lspProviderDisposables.push(monaco.languages.registerSignatureHelpProvider(language, {
+        signatureHelpTriggerCharacters: ['(', ','],
+        signatureHelpRetriggerCharacters: [','],
+        provideSignatureHelp: function (model, position, token, context) {
+          return requestLsp('textDocument/signatureHelp', {
+            textDocument: { uri: model.uri.toString() },
+            position: lspPosition(position),
+            context: {
+              triggerKind: context && context.triggerKind || 1,
+              triggerCharacter: context && context.triggerCharacter,
+              isRetrigger: !!(context && context.isRetrigger),
+            },
+          }, 600).then(function (result) {
+            if (!result || !Array.isArray(result.signatures) || !result.signatures.length) return null;
+            function documentation(value) {
+              if (!value) return undefined;
+              if (typeof value === 'string') return value;
+              return { value: value.value || '' };
+            }
+            return {
+              value: {
+                signatures: result.signatures.map(function (signature) {
+                  return {
+                    label: signature.label || '',
+                    documentation: documentation(signature.documentation),
+                    parameters: (signature.parameters || []).map(function (parameter) {
+                      return {
+                        label: parameter.label || '',
+                        documentation: documentation(parameter.documentation),
+                      };
+                    }),
+                  };
+                }),
+                activeSignature: Math.max(0, result.activeSignature || 0),
+                activeParameter: Math.max(0, result.activeParameter || 0),
+              },
+              dispose: function () {},
+            };
+          }).catch(function () { return null; });
         },
       }));
     }
@@ -400,7 +483,11 @@ function registerLanguageProviders() {
 
 require.config({ paths: { vs: 'vs' } });
 
-require(['vs/editor/editor.main'], function () {
+require([
+  'vs/editor/editor.main',
+  'vs/basic-languages/sql/sql.contribution',
+  'vs/basic-languages/xml/xml.contribution',
+], function () {
 
   // Define AndroidIDE dark theme
   monaco.editor.defineTheme('androidide-dark', {
@@ -715,6 +802,7 @@ window.androidIDE = {
       case 'closeTab':
         if (msg.path) {
           if (msg.path === currentPath) flushPendingContentChange();
+          delete lspDiagnosticsByPath[msg.path];
           var safeSegment = encodeURIComponent(msg.path);
           var modelUri    = monaco.Uri.parse('androidide:///files/' + safeSegment);
           var model       = monaco.editor.getModel(modelUri);
@@ -735,6 +823,7 @@ window.androidIDE = {
       case 'closeAllModels':
         flushPendingContentChange();
         lspPending = Object.create(null);
+        lspDiagnosticsByPath = Object.create(null);
         monaco.editor.getModels().forEach(function (m) { m.dispose(); });
         if (editor) editor.setModel(null);
         currentPath = null;
@@ -981,6 +1070,7 @@ function loadFile(path, content, language, readOnly) {
   }
 
   editor.setModel(model);
+  applyLspDiagnostics(path);
   editorReadOnly = readOnly === true;
   editor.updateOptions({ readOnly: readOnly === true });
   editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });

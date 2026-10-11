@@ -80,6 +80,7 @@ class BrowserStateStore(
         desktopSiteDefault = preferences.getBoolean(DESKTOP_SITE_KEY, false),
         defaultViewportWidthPx = preferences.getInt(DEFAULT_VIEWPORT_WIDTH_KEY, 0)
             .takeIf { it in MIN_BROWSER_VIEWPORT_WIDTH_PX..MAX_BROWSER_VIEWPORT_WIDTH_PX },
+        autoRenameDuplicateDownloads = preferences.getBoolean(AUTO_RENAME_DUPLICATE_DOWNLOADS_KEY, false),
     )
 
     override fun saveSettings(settings: BrowserSettings) {
@@ -91,6 +92,7 @@ class BrowserStateStore(
             .putBoolean(DEVTOOLS_KEY, settings.developerToolsEnabled)
             .putBoolean(DESKTOP_SITE_KEY, settings.desktopSiteDefault)
             .putInt(DEFAULT_VIEWPORT_WIDTH_KEY, settings.defaultViewportWidthPx ?: 0)
+            .putBoolean(AUTO_RENAME_DUPLICATE_DOWNLOADS_KEY, settings.autoRenameDuplicateDownloads)
             .apply()
         if (settings.downloadFolder == null) {
             preferences.edit().remove(DOWNLOAD_FOLDER_KEY).apply()
@@ -104,7 +106,15 @@ class BrowserStateStore(
         buildList {
             for (index in 0 until array.length()) {
                 val item = array.optJSONObject(index) ?: continue
-                val uri = item.optString("uri").takeIf(String::isNotBlank) ?: continue
+                val storedStatus = runCatching {
+                    BrowserDownloadStatus.valueOf(item.optString("status", BrowserDownloadStatus.COMPLETED.name))
+                }.getOrDefault(BrowserDownloadStatus.COMPLETED)
+                val status = when (storedStatus) {
+                    BrowserDownloadStatus.DOWNLOADING, BrowserDownloadStatus.PAUSED -> BrowserDownloadStatus.INTERRUPTED
+                    else -> storedStatus
+                }
+                val uri = item.optString("uri")
+                if (uri.isBlank() && status == BrowserDownloadStatus.COMPLETED) continue
                 add(
                     BrowserDownload(
                         id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
@@ -114,6 +124,14 @@ class BrowserStateStore(
                         mimeType = item.optString("mimeType", "application/octet-stream"),
                         size = item.optLong("size").coerceAtLeast(0L),
                         timestamp = item.optLong("timestamp").coerceAtLeast(0L),
+                        available = item.optBoolean("available", status == BrowserDownloadStatus.COMPLETED) &&
+                            status == BrowserDownloadStatus.COMPLETED,
+                        status = status,
+                        downloadedBytes = item.optLong("downloadedBytes").coerceAtLeast(0L),
+                        totalBytes = item.optLong("totalBytes", -1L),
+                        folderUri = item.optString("folderUri").takeIf(String::isNotBlank),
+                        error = item.optString("error").takeIf(String::isNotBlank)
+                            ?: if (status == BrowserDownloadStatus.INTERRUPTED) "The app stopped before this download finished" else null,
                     ),
                 )
             }
@@ -131,6 +149,12 @@ class BrowserStateStore(
                 put("mimeType", download.mimeType)
                 put("size", download.size)
                 put("timestamp", download.timestamp)
+                put("available", download.available)
+                put("status", download.status.name)
+                put("downloadedBytes", download.downloadedBytes)
+                put("totalBytes", download.totalBytes)
+                download.folderUri?.let { put("folderUri", it) }
+                download.error?.let { put("error", it) }
             })
         }
         preferences.edit().putString(DOWNLOADS_KEY, array.toString()).apply()
@@ -164,6 +188,7 @@ class BrowserStateStore(
         private const val DEVTOOLS_OPEN_KEY = "developer_tools_open"
         private const val DESKTOP_SITE_KEY = "desktop_site_default"
         private const val DEFAULT_VIEWPORT_WIDTH_KEY = "default_viewport_width"
+        private const val AUTO_RENAME_DUPLICATE_DOWNLOADS_KEY = "auto_rename_duplicate_downloads"
         private const val HISTORY_KEY = "navigation_history"
     }
 }

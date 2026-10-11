@@ -86,6 +86,7 @@ import dev.android.ide.viewmodel.model.ancestorsOf
 import dev.android.ide.viewmodel.model.pathTo
 import compose.icons.SimpleIcons
 import compose.icons.simpleicons.*
+import java.util.ArrayDeque
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -226,11 +227,15 @@ fun FileTreePanel(
 
         // ── File tree ──────────────────────────────────────────────────────
         else -> {
-            val filteredNodes = if (hideGitFolder) nodes.filterNot { it.displayName == ".git" } else nodes
-            val flatNodes = flattenTree(filteredNodes)
-            val activeAncestorUris = activeTabDocumentUri
-                ?.let { nodes.ancestorsOf(it).orEmpty().map(FileNode::documentUri).toSet() }
-                .orEmpty()
+            val filteredNodes = remember(nodes, hideGitFolder) {
+                if (hideGitFolder) nodes.filterNot { it.displayName == ".git" } else nodes
+            }
+            val flatNodes = remember(filteredNodes) { flattenTree(filteredNodes) }
+            val activeAncestorUris = remember(nodes, activeTabDocumentUri) {
+                activeTabDocumentUri
+                    ?.let { nodes.ancestorsOf(it).orEmpty().map(FileNode::documentUri).toSet() }
+                    .orEmpty()
+            }
             LaunchedEffect(locateRequestToken, locateTargetUri, flatNodes) {
                 val targetIndex = locateTargetUri?.let { uri ->
                     flatNodes.indexOfFirst { it.first.documentUri == uri }
@@ -1288,12 +1293,15 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
 
 // ── Tree flattening ────────────────────────────────────────────────────────────
 
-private fun flattenTree(nodes: List<FileNode>, depth: Int = 0): List<Pair<FileNode, Int>> {
-    val result = mutableListOf<Pair<FileNode, Int>>()
-    for (node in nodes) {
+private fun flattenTree(nodes: List<FileNode>): List<Pair<FileNode, Int>> {
+    val result = ArrayList<Pair<FileNode, Int>>()
+    val pending = ArrayDeque<Pair<FileNode, Int>>()
+    for (index in nodes.indices.reversed()) pending.addLast(nodes[index] to 0)
+    while (pending.isNotEmpty()) {
+        val (node, depth) = pending.removeLast()
         result += node to depth
         if (node.isDirectory && node.isExpanded) {
-            result += flattenTree(node.children, depth + 1)
+            for (index in node.children.indices.reversed()) pending.addLast(node.children[index] to depth + 1)
         }
     }
     return result

@@ -597,23 +597,24 @@ class SafRepository(private val context: Context) {
 
     // ── File reading ───────────────────────────────────────────────────────
 
-    /**
-     * Read the full content of a SAF document URI or file:// URI as a byte array.
-     *
-     * @param documentUriString  SAF document URI or file:// URI
-     * @return                   File bytes, or null on failure.
-     */
-    suspend fun readFile(documentUriString: String): ByteArray? = withContext(Dispatchers.IO) {
+    /** Read a SAF/file URI; when [maxBytes] is set, read at most one byte beyond it. */
+    suspend fun readFile(documentUriString: String, maxBytes: Int? = null): ByteArray? = withContext(Dispatchers.IO) {
         try {
+            val boundedMax = maxBytes?.coerceIn(0, Int.MAX_VALUE - 1)
+            val readLimit = boundedMax?.plus(1)
             val localFile = appOwnedLocalFile(documentUriString)
                 ?: if (isFileUri(documentUriString)) fileFromUri(documentUriString) else null
             if (localFile != null) {
-                localFile
-                    ?.takeUnless { Files.isSymbolicLink(it.toPath()) }
-                    ?.readBytes()
+                val safeFile = localFile.takeUnless { Files.isSymbolicLink(it.toPath()) }
+                when {
+                    safeFile == null -> null
+                    boundedMax != null && safeFile.length() > boundedMax.toLong() -> ByteArray(readLimit!!)
+                    readLimit != null -> safeFile.inputStream().use { it.readBytesAtMost(readLimit) }
+                    else -> safeFile.readBytes()
+                }
             } else {
-                resolver.openInputStream(Uri.parse(documentUriString))?.use { stream ->
-                    stream.readAllBytesCompat()
+                resolver.openInputStream(Uri.parse(documentUriString))?.use { input ->
+                    if (readLimit != null) input.readBytesAtMost(readLimit) else input.readAllBytesCompat()
                 } ?: run {
                     Log.e(TAG, "readFile: openInputStream returned null for $documentUriString")
                     null
@@ -623,6 +624,19 @@ class SafRepository(private val context: Context) {
             Log.e(TAG, "readFile failed for $documentUriString: ${e.message}", e)
             null
         }
+    }
+
+    private fun InputStream.readBytesAtMost(limit: Int): ByteArray {
+        val output = ByteArrayOutputStream(minOf(limit, 8 * 1024))
+        val buffer = ByteArray(8 * 1024)
+        var remaining = limit
+        while (remaining > 0) {
+            val count = read(buffer, 0, minOf(buffer.size, remaining))
+            if (count < 0) break
+            output.write(buffer, 0, count)
+            remaining -= count
+        }
+        return output.toByteArray()
     }
 
     /** Stream content line-by-line; file extensions are never used as an allow-list. */

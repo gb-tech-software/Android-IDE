@@ -26,6 +26,8 @@
 package dev.android.ide.editor
 
 import org.json.JSONObject
+import org.json.JSONArray
+import dev.android.ide.viewmodel.model.EditorDiagnostic
 
 // ── Inbound (Monaco → Kotlin) ─────────────────────────────────────────────────
 
@@ -47,6 +49,9 @@ sealed class EditorInbound {
 
     /** A JSON-RPC request or notification from Monaco to the active server. */
     data class LanguageServerMessage(val message: String) : EditorInbound()
+
+    /** Current LSP diagnostics for one project document, including an empty list to clear them. */
+    data class DiagnosticsChanged(val documentUri: String, val diagnostics: List<EditorDiagnostic>) : EditorInbound()
 
     /**
      * [text] on the Android clipboard.  [isCut] is true when Monaco has already
@@ -83,6 +88,29 @@ sealed class EditorInbound {
                 )
                 "fileSaved"            -> FileSaved(path = obj.getString("path"))
                 "languageServerMessage" -> LanguageServerMessage(message = obj.getString("message"))
+                "diagnosticsChanged"   -> {
+                    val entries = obj.optJSONArray("diagnostics") ?: JSONArray()
+                    DiagnosticsChanged(
+                        documentUri = obj.getString("documentUri"),
+                        diagnostics = buildList {
+                            for (index in 0 until entries.length()) {
+                                val entry = entries.optJSONObject(index) ?: continue
+                                add(
+                                    EditorDiagnostic(
+                                        documentUri = obj.getString("documentUri"),
+                                        startLine = entry.optInt("startLine", 1).coerceAtLeast(1),
+                                        startColumn = entry.optInt("startColumn", 1).coerceAtLeast(1),
+                                        endLine = entry.optInt("endLine", 1).coerceAtLeast(1),
+                                        endColumn = entry.optInt("endColumn", 1).coerceAtLeast(1),
+                                        severity = entry.optInt("severity", 4).coerceIn(1, 4),
+                                        message = entry.optString("message"),
+                                        source = entry.optString("source").takeIf(String::isNotBlank),
+                                    ),
+                                )
+                            }
+                        },
+                    )
+                }
                 "textCopied"           -> TextCopied(
                     text  = obj.getString("text"),
                     isCut = obj.optBoolean("isCut", false),

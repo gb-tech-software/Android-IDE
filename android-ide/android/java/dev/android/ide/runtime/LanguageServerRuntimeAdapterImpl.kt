@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
@@ -39,28 +40,28 @@ class LanguageServerRuntimeAdapterImpl(
     private val nextRequestId = AtomicInteger(1)
     private val processes = ConcurrentHashMap<Key, LiveServer>()
 
-    override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus {
+    override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus = withContext(Dispatchers.IO) {
         val definition = LanguageServerRegistry.forLanguage(languageId)
-            ?: return unavailable(project, languageId, "No language server is registered for $languageId")
+            ?: return@withContext unavailable(project, languageId, "No language server is registered for $languageId")
         if (!packageInstaller.arePackagesInstalled()) {
-            return unavailable(project, languageId, "Pinned language-server packages are not installed yet")
+            return@withContext unavailable(project, languageId, "Pinned language-server packages are not installed yet")
         }
         val resolution = workspace.resolve(project)
         val cwd = resolution.terminalPath
             ?.let(::File)
             ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
-            ?: return unavailable(
+            ?: return@withContext unavailable(
                 project,
                 languageId,
                 resolution.explanation ?: "This project is on a storage path that language servers cannot access. Move it to Android IDE storage or Android external storage for full access.",
             )
         val key = Key(project.id, definition.id)
         processes[key]?.let { live ->
-            return if (live.initialized.isCompleted) live.status.copy(initialized = true)
+            return@withContext if (live.initialized.isCompleted) live.status.copy(initialized = true)
             else unavailable(project, languageId, "${definition.id} is still starting")
         }
 
-        return runCatching {
+        runCatching {
             val executable = packageInstaller.executablePath(definition.requiredExecutable)
             if (!executable.canExecute()) throw IOException("Pinned language-server command is missing: ${executable.name}")
             val command = listOf(executable.absolutePath) + definition.command.drop(1)
@@ -184,6 +185,13 @@ class LanguageServerRuntimeAdapterImpl(
                 put("textDocument", JSONObject().apply {
                     put("completion", JSONObject().apply { put("completionItem", JSONObject().apply { put("snippetSupport", true) }) })
                     put("publishDiagnostics", JSONObject())
+                    put("signatureHelp", JSONObject().apply {
+                        put("signatureInformation", JSONObject().apply {
+                            put("documentationFormat", org.json.JSONArray().put("markdown").put("plaintext"))
+                            put("parameterInformation", JSONObject().put("labelOffsetSupport", true))
+                        })
+                        put("contextSupport", true)
+                    })
                     put("hover", JSONObject())
                     put("definition", JSONObject())
                     put("references", JSONObject())

@@ -15,6 +15,7 @@ import dev.android.ide.browser.BrowserEngine
 import dev.android.ide.browser.GeckoViewBrowserEngine
 import dev.android.ide.browser.GeckoBrowserDeveloperToolsService
 import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
 import dev.android.ide.filesystem.AndroidIdeFileSystem
 import dev.android.ide.lifecycle.LifecycleCoordinatorImpl
 import dev.android.ide.lifecycle.LifecycleStateStore
@@ -52,8 +53,14 @@ class ApplicationServices private constructor(application: Application) {
     val lifecycleStateStore = LifecycleStateStore(context)
     val themeResolver = ThemeResolver(context)
     val browserStateStore by lazy { BrowserStateStore(context, browserEngine) }
-    val browserRuntime by lazy { GeckoRuntime.create(context) }
-    val browserEngine: BrowserEngine by lazy { GeckoViewBrowserEngine(browserRuntime) }
+    val browserRuntime by lazy {
+        val settings = GeckoRuntimeSettings.Builder()
+            .forceUserScalableEnabled(true)
+            .doubleTapZoomingEnabled(true)
+            .build()
+        GeckoRuntime.create(context, settings)
+    }
+    val browserEngine: BrowserEngine by lazy { GeckoViewBrowserEngine(browserRuntime, context) }
     val browserDeveloperTools by lazy { GeckoBrowserDeveloperToolsService(browserRuntime) }
     private val browserApplicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val projectStaticPreviewServer by lazy { ProjectStaticPreviewServer() }

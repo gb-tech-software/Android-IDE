@@ -25,6 +25,7 @@ data class BrowserSettings(
     val developerToolsEnabled: Boolean = true,
     val desktopSiteDefault: Boolean = false,
     val defaultViewportWidthPx: Int? = null,
+    val autoRenameDuplicateDownloads: Boolean = false,
 )
 
 /** Browser-domain navigation request. The origin workflow is intentionally absent. */
@@ -59,6 +60,49 @@ data class BrowserNavigationCapabilitiesChanged(val tabId: String, val canGoBack
 data class BrowserTitleChanged(val tabId: String, val title: String)
 data class BrowserProgressChanged(val tabId: String, val progress: Int)
 data class BrowserPageLoadCompleted(val tabId: String, val successful: Boolean, val historyAddress: String?)
+data class BrowserNavigationFailure(
+    val tabId: String,
+    val address: String,
+    val title: String,
+    val message: String,
+)
+enum class BrowserWebsitePromptKind {
+    ALERT, CONFIRM, TEXT, BEFORE_UNLOAD, REPOST, AUTH, POPUP, CHOICE, COLOR, DATE_TIME, FILE,
+}
+data class BrowserWebsitePromptChoice(
+    val id: String,
+    val label: String,
+    val selected: Boolean,
+    val disabled: Boolean,
+)
+data class BrowserWebsitePromptAnswer(
+    val accepted: Boolean,
+    val value: String? = null,
+    val username: String? = null,
+    val password: String? = null,
+    val selectedIds: List<String> = emptyList(),
+    val selectedFileUris: List<String> = emptyList(),
+)
+data class BrowserWebsitePromptRequest(
+    val id: String,
+    val tabId: String,
+    val kind: BrowserWebsitePromptKind,
+    val origin: String,
+    val title: String? = null,
+    val message: String? = null,
+    val defaultValue: String? = null,
+    val defaultUsername: String? = null,
+    val defaultPassword: String? = null,
+    val passwordOnly: Boolean = false,
+    val targetUri: String? = null,
+    val choices: List<BrowserWebsitePromptChoice> = emptyList(),
+    val multiple: Boolean = false,
+    val mimeTypes: List<String> = emptyList(),
+    val inputType: String? = null,
+    val decision: CompletableDeferred<BrowserWebsitePromptAnswer>,
+)
+enum class BrowserDownloadStatus { DOWNLOADING, PAUSED, COMPLETED, FAILED, INTERRUPTED, CANCELED }
+
 data class BrowserDownload(
     val id: String,
     val name: String,
@@ -68,6 +112,11 @@ data class BrowserDownload(
     val size: Long,
     val timestamp: Long,
     val available: Boolean = true,
+    val status: BrowserDownloadStatus = BrowserDownloadStatus.COMPLETED,
+    val downloadedBytes: Long = size,
+    val totalBytes: Long = -1L,
+    val folderUri: String? = null,
+    val error: String? = null,
 )
 data class BrowserDownloadRequest(
     val tabId: String,
@@ -93,8 +142,6 @@ data class BrowserContextMenuRequest(
     val altText: String? = null,
     val textContent: String? = null,
 )
-data class BrowserConsoleEvent(val tabId: String, val level: String, val message: String)
-data class BrowserNetworkEvent(val tabId: String, val url: String, val method: String, val status: Int?)
 data class BrowserScrollChanged(val tabId: String, val scrollY: Int)
 
 interface BrowserEngineEventSink {
@@ -104,11 +151,11 @@ interface BrowserEngineEventSink {
     fun onTitleChanged(event: BrowserTitleChanged)
     fun onProgressChanged(event: BrowserProgressChanged)
     fun onPageLoadCompleted(event: BrowserPageLoadCompleted)
+    fun onNavigationFailure(event: BrowserNavigationFailure)
     fun onDownloadRequested(event: BrowserDownloadRequest)
     fun onPermissionRequested(event: BrowserPermissionRequest)
+    fun onWebsitePromptRequested(event: BrowserWebsitePromptRequest)
     fun onContextMenuRequested(event: BrowserContextMenuRequest)
-    fun onConsoleEvent(event: BrowserConsoleEvent)
-    fun onNetworkEvent(event: BrowserNetworkEvent)
     fun onScrollChanged(event: BrowserScrollChanged)
     fun onNewTabRequested(url: String): BrowserEngineSession?
 }
@@ -138,7 +185,7 @@ interface BrowserEngine {
     fun clearSiteData(onComplete: (Result<Unit>) -> Unit)
 }
 
-enum class BrowserEngineCapability { HTTP, HTTPS, LOCAL_FILE, CONTENT_URI, DESKTOP_USER_AGENT, VIEWPORT_WIDTH, DOWNLOADS, PERMISSIONS, DEVTOOLS, SITE_DATA_CLEARING }
+enum class BrowserEngineCapability { HTTP, HTTPS, LOCAL_FILE, CONTENT_URI, DESKTOP_USER_AGENT, VIEWPORT_WIDTH, DOWNLOADS, PERMISSIONS, SITE_DATA_CLEARING }
 
 interface BrowserNavigationService {
     fun navigate(request: BrowserNavigation)
@@ -179,11 +226,14 @@ interface BrowserSessionService {
 
 interface BrowserDownloadService {
     val downloads: StateFlow<List<BrowserDownload>>
-    val progress: StateFlow<BrowserDownloadProgress?>
     val duplicatePrompt: StateFlow<DuplicateDownloadPrompt?>
     val error: StateFlow<String?>
     fun accept(request: BrowserDownloadRequest)
-    fun resolveDuplicate(replace: Boolean)
+    fun resolveDuplicate(name: String?, autoRenameFutureConflicts: Boolean)
+    fun pause(downloadId: String): Boolean
+    fun resume(downloadId: String): Boolean
+    fun cancel(downloadId: String): Boolean
+    fun prepareRetry(downloadId: String): String?
     fun reconcile()
     fun open(downloadId: String): android.content.Intent?
     fun share(downloadId: String): android.content.Intent?
@@ -241,27 +291,8 @@ interface BrowserPermissionService {
     fun cancel()
 }
 
-enum class DeveloperToolCapability { CONSOLE, DOM, NETWORK, STORAGE, CACHE, DEBUGGER }
-
-sealed interface DeveloperToolCommand {
-    data object Open : DeveloperToolCommand
-    data object Close : DeveloperToolCommand
-    data class ExecuteConsole(val source: String) : DeveloperToolCommand
-}
-
-sealed interface DeveloperToolEvent {
-    data class Console(val tabId: String, val level: String, val message: String) : DeveloperToolEvent
-    data class Inspection(val tabId: String, val kind: String, val payload: String) : DeveloperToolEvent
-}
-
-interface BrowserDeveloperTools {
-    val capabilities: Set<DeveloperToolCapability>
+interface BrowserDeveloperToolsService {
     fun open()
     fun close()
-    fun send(command: DeveloperToolCommand): Boolean
-    fun observe(listener: (DeveloperToolEvent) -> Unit)
-}
-
-interface BrowserDeveloperToolsService : BrowserDeveloperTools {
     fun setEnabled(enabled: Boolean)
 }

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -51,6 +52,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.termux.terminal.KeyHandler
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.android.ide.app.AppShellState
@@ -140,26 +142,30 @@ fun TerminalSurface(
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Terminal settings") },
+                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                         onClick = { appearanceMenuOpen = false; onOpenSettings() },
                     )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Zoom out (${terminalTextSize}sp)") },
-                        leadingIcon = { Icon(Icons.Default.ZoomOut, null) },
-                        onClick = {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        IconButton(
+                            onClick = {
                             terminalTextSize = (terminalTextSize - 1).coerceAtLeast(8)
                             onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize))
-                            appearanceMenuOpen = false
-                        },
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Zoom in (${terminalTextSize}sp)") },
-                        leadingIcon = { Icon(Icons.Default.ZoomIn, null) },
-                        onClick = {
+                            },
+                            enabled = terminalTextSize > 8,
+                        ) { Icon(Icons.Default.ZoomOut, contentDescription = "Zoom out") }
+                        Text("Zoom", style = MaterialTheme.typography.bodyMedium)
+                        IconButton(
+                            onClick = {
                             terminalTextSize = (terminalTextSize + 1).coerceAtMost(32)
                             onSettingsChanged(terminalSettings.copy(textSize = terminalTextSize))
-                            appearanceMenuOpen = false
-                        },
-                    )
+                            },
+                            enabled = terminalTextSize < 32,
+                        ) { Icon(Icons.Default.ZoomIn, contentDescription = "Zoom in") }
+                    }
                 }
             }
         }
@@ -202,7 +208,9 @@ fun TerminalSurface(
                             IdeTerminalViewClient(
                                 readControl = { ctrlLatched },
                                 readAlt = { altLatched },
+                                readEscape = { escapeLatched },
                                 clearModifiers = ::clearLatchedKeys,
+                                handleNavigationKey = { keyCode, keyMod -> terminalView.handleKeyCode(keyCode, keyMod) },
                                 onScaleChanged = {
                                     terminalView.post {
                                         terminalTextSize = terminalView.textSize
@@ -257,10 +265,7 @@ fun TerminalSurface(
                 onEscapeToggle = { escapeLatched = !escapeLatched },
                 onSend = { key ->
                     if (key.keyCode != null) {
-                        activeTerminalView?.let { terminalView ->
-                            terminalView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, key.keyCode))
-                            terminalView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, key.keyCode))
-                        }
+                        activeTerminalView?.handleKeyCode(key.keyCode, terminalKeyModifiers(ctrlLatched, altLatched, escapeLatched))
                     } else {
                         viewModel.sendTerminalInput(encodeTerminalShortcut(key, ctrlLatched, altLatched, escapeLatched))
                     }
@@ -310,12 +315,14 @@ private val TERMINAL_NAVIGATION_SHORTCUTS = listOf(
     TerminalShortcut("Tab", "\t"),
     TerminalShortcut("Enter", "\r"),
     TerminalShortcut("Backspace", "\u007F"),
-    TerminalShortcut("↑", "\u0010"),
-    TerminalShortcut("↓", "\u000E"),
-    TerminalShortcut("←", "\u0002"),
-    TerminalShortcut("→", "\u0006"),
-    TerminalShortcut("Home", "\u0001"),
-    TerminalShortcut("End", "\u0005"),
+    TerminalShortcut("↑", "", keyCode = KeyEvent.KEYCODE_DPAD_UP),
+    TerminalShortcut("↓", "", keyCode = KeyEvent.KEYCODE_DPAD_DOWN),
+    TerminalShortcut("←", "", keyCode = KeyEvent.KEYCODE_DPAD_LEFT),
+    TerminalShortcut("→", "", keyCode = KeyEvent.KEYCODE_DPAD_RIGHT),
+    TerminalShortcut("Home", "", keyCode = KeyEvent.KEYCODE_MOVE_HOME),
+    TerminalShortcut("End", "", keyCode = KeyEvent.KEYCODE_MOVE_END),
+    TerminalShortcut("Ins", "", keyCode = KeyEvent.KEYCODE_INSERT),
+    TerminalShortcut("Del", "", keyCode = KeyEvent.KEYCODE_FORWARD_DEL),
     TerminalShortcut("PgUp", "", keyCode = KeyEvent.KEYCODE_PAGE_UP),
     TerminalShortcut("PgDn", "", keyCode = KeyEvent.KEYCODE_PAGE_DOWN),
 )
@@ -394,27 +401,25 @@ private fun encodeTerminalShortcut(
     val raw = shortcut.sequence
     val payload = when {
         ctrl && raw.length == 1 && raw[0].code in 0x20..0x7E -> byteArrayOf((raw[0].code and 0x1F).toByte())
-        ctrl && raw.startsWith("\u001B[") -> ctrlModifiedCsi(raw).toByteArray(Charsets.UTF_8)
         else -> raw.toByteArray(Charsets.UTF_8)
     }
     val prefix = if (altLatched || escapeLatched) byteArrayOf(0x1B) else byteArrayOf()
     return prefix + payload
 }
 
-private fun ctrlModifiedCsi(sequence: String): String {
-    val final = sequence.lastOrNull() ?: return sequence
-    val parameter = when (final) {
-        'A', 'B', 'C', 'D', 'H', 'F' -> "1;5"
-        '~' -> sequence.substringAfter('[').substringBefore('~').ifBlank { "1" } + ";5"
-        else -> return sequence
-    }
-    return "\u001B[${parameter}${final}"
+private fun terminalKeyModifiers(ctrl: Boolean, alt: Boolean, escape: Boolean): Int {
+    var modifiers = 0
+    if (ctrl) modifiers = modifiers or KeyHandler.KEYMOD_CTRL
+    if (alt || escape) modifiers = modifiers or KeyHandler.KEYMOD_ALT
+    return modifiers
 }
 
 private class IdeTerminalViewClient(
     private val readControl: () -> Boolean,
     private val readAlt: () -> Boolean,
+    private val readEscape: () -> Boolean,
     private val clearModifiers: () -> Unit,
+    private val handleNavigationKey: (Int, Int) -> Boolean,
     private val onScaleChanged: () -> Unit,
 ) : TerminalViewClient {
     override fun onScale(scale: Float): Float {
@@ -428,7 +433,14 @@ private class IdeTerminalViewClient(
     override fun shouldUseCtrlSpaceWorkaround() = false
     override fun isTerminalViewSelected() = true
     override fun copyModeChanged(copyMode: Boolean) = Unit
-    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: com.termux.terminal.TerminalSession) = false
+    override fun onKeyDown(keyCode: Int, e: KeyEvent, session: com.termux.terminal.TerminalSession): Boolean {
+        if (keyCode !in TERMINAL_KEYBOARD_NAVIGATION_KEYS) return false
+        var modifiers = 0
+        if (e.isCtrlPressed() || readControl()) modifiers = modifiers or KeyHandler.KEYMOD_CTRL
+        if (e.isAltPressed() || readAlt() || readEscape()) modifiers = modifiers or KeyHandler.KEYMOD_ALT
+        if (e.isShiftPressed()) modifiers = modifiers or KeyHandler.KEYMOD_SHIFT
+        return handleNavigationKey(keyCode, modifiers)
+    }
     override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean {
         clearModifiers()
         return false
@@ -451,3 +463,16 @@ private class IdeTerminalViewClient(
     override fun logStackTraceWithMessage(tag: String, message: String, e: Exception) = Unit
     override fun logStackTrace(tag: String, e: Exception) = Unit
 }
+
+private val TERMINAL_KEYBOARD_NAVIGATION_KEYS = setOf(
+    KeyEvent.KEYCODE_DPAD_UP,
+    KeyEvent.KEYCODE_DPAD_DOWN,
+    KeyEvent.KEYCODE_DPAD_LEFT,
+    KeyEvent.KEYCODE_DPAD_RIGHT,
+    KeyEvent.KEYCODE_MOVE_HOME,
+    KeyEvent.KEYCODE_MOVE_END,
+    KeyEvent.KEYCODE_PAGE_UP,
+    KeyEvent.KEYCODE_PAGE_DOWN,
+    KeyEvent.KEYCODE_INSERT,
+    KeyEvent.KEYCODE_FORWARD_DEL,
+)

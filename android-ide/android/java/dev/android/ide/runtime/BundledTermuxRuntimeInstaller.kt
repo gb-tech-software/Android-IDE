@@ -110,28 +110,24 @@ cd() {
     return 1
 }
 _android_ide_prompt_path() {
-    _android_ide_physical_path=${'$'}(command pwd -P 2>/dev/null)
+    _android_ide_physical_path=${'$'}(command pwd -P 2>/dev/null) || _android_ide_physical_path=${'$'}PWD
     case "${'$'}_android_ide_physical_path" in
         "${'$'}HOME") _android_ide_shown='~' ;;
         "${'$'}HOME"/*)
-            _android_ide_tail=${'$'}{PWD#"${'$'}HOME"/}
-            if [ ${'$'}{#_android_ide_tail} -gt 23 ]; then
-                while [ ${'$'}{#_android_ide_tail} -gt 23 ] && [ "${'$'}{_android_ide_tail#*/}" != "${'$'}_android_ide_tail" ]; do
-                    _android_ide_tail=${'$'}{_android_ide_tail#*/}
-                done
-                while [ ${'$'}{#_android_ide_tail} -gt 23 ]; do _android_ide_tail=${'$'}{_android_ide_tail#?}; done
-                _android_ide_shown="~/.../${'$'}_android_ide_tail"
-            else
-                _android_ide_shown="~/${'$'}_android_ide_tail"
-            fi
+            _android_ide_shown="~/${'$'}{_android_ide_physical_path#"${'$'}HOME"/}"
             ;;
-        "${'$'}{HOME%/*}") _android_ide_shown='..' ;;
-        "${'$'}{HOME%/*}"/*) _android_ide_shown="../${'$'}{_android_ide_physical_path#"${'$'}{HOME%/*}"/}" ;;
-        *)
-            _android_ide_tail=${'$'}{_android_ide_physical_path##*/}
-            if [ -z "${'$'}_android_ide_tail" ]; then _android_ide_shown='/'; else _android_ide_shown="…/${'$'}_android_ide_tail"; fi
-            ;;
+        *) _android_ide_shown=${'$'}_android_ide_physical_path ;;
     esac
+    if [ ${'$'}{#_android_ide_shown} -gt 42 ]; then
+        _android_ide_tail=${'$'}{_android_ide_physical_path##*/}
+        if [ -z "${'$'}_android_ide_tail" ]; then _android_ide_shown='/'; else
+            while [ ${'$'}{#_android_ide_tail} -gt 35 ]; do _android_ide_tail=${'$'}{_android_ide_tail#?}; done
+            case "${'$'}_android_ide_physical_path" in
+                "${'$'}HOME"/*) _android_ide_shown="~/.../${'$'}_android_ide_tail" ;;
+                *) _android_ide_shown=".../${'$'}_android_ide_tail" ;;
+            esac
+        fi
+    fi
     printf '%s' "${'$'}_android_ide_shown"
 }
 PS1='\[\033[1;32m\]${'$'}(_android_ide_prompt_path)\${'$'} \[\033[0m\]'

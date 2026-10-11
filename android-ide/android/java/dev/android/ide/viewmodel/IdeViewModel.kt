@@ -36,6 +36,7 @@ import dev.android.ide.saf.TextDocumentCodec
 import dev.android.ide.app.ApplicationServices
 import dev.android.ide.runtime.LanguageServerPackageInstaller
 import dev.android.ide.viewmodel.model.AppScreen
+import dev.android.ide.viewmodel.model.EditorDiagnostic
 import dev.android.ide.viewmodel.model.EditorTab
 import dev.android.ide.viewmodel.model.FileNode
 import dev.android.ide.viewmodel.model.FileOpDialog
@@ -86,6 +87,7 @@ private val EDITOR_IMAGE_PREVIEW_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif",
 private val BROWSER_ONLY_PREVIEW_EXTENSIONS = setOf(
     "pdf", "mp4", "webm", "ogv", "mkv", "mov", "m4v", "avi", "mp3", "wav", "ogg", "flac", "m4a", "aac",
 )
+private const val MAX_EDITOR_DOCUMENT_BYTES = 5 * 1024 * 1024
 
 class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -410,6 +412,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         languageIntelligenceAvailable = false,
                         languageServerFeatures = emptySet(),
+                        languageServerDiagnostics = emptyMap(),
                         languageServerPackageSetupMessage = null,
                         languageServerPackageSetupCanRetry = false,
                         statusMessage = it.statusMessage.takeUnless { message ->
@@ -1112,9 +1115,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             if (markActive) selectTab(existing.id)
             _uiState.update { it.copy(editorFileLoading = false) }
             if (!existing.isDirty && pendingContent[existing.id] == null && existing.content != null) {
-                val bytes = fileMutations.read(documentUri)
-                if (bytes != null && bytes.size <= 5 * 1024 * 1024) {
-                    val diskContent = TextDocumentCodec.decode(bytes)?.text
+                val bytes = fileMutations.read(documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
+                if (bytes != null && bytes.size <= MAX_EDITOR_DOCUMENT_BYTES) {
+                    val diskContent = withContext(Dispatchers.Default) { TextDocumentCodec.decode(bytes)?.text }
                     val current = _uiState.value.openTabs.firstOrNull { it.id == existing.id }
                     if (diskContent != null && current != null && !current.isDirty && pendingContent[current.id] == null && diskContent != current.content) {
                         _uiState.update { state ->
@@ -1226,16 +1229,16 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             if (_uiState.value.activeTabId == restoreId && restoreId != null) selectTab(restoreId)
         }
 
-        val bytes = fileMutations.read(documentUri)
+        val bytes = fileMutations.read(documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
         if (bytes == null) {
             failLoading("Could not open file")
             return
         }
-        if (bytes.size > 5 * 1024 * 1024) {
+        if (bytes.size > MAX_EDITOR_DOCUMENT_BYTES) {
             failLoading("Cannot open: file is ${bytes.size / 1_048_576} MB (5 MB limit)")
             return
         }
-        val decodedFile = TextDocumentCodec.decode(bytes)
+        val decodedFile = withContext(Dispatchers.Default) { TextDocumentCodec.decode(bytes) }
         if (decodedFile == null) {
             failLoading("This file is not a supported text document", binaryFile = true)
             return
@@ -1270,7 +1273,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         projectRootAtOpen: String?,
     ) {
         if (!_uiState.value.editorSettings.languageServerEnabled) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             val languageServer = startLanguageServerForActiveProject(language, projectRootAtOpen) ?: return@launch
             val currentTab = _uiState.value.openTabs.firstOrNull { it.id == tabId } ?: return@launch
@@ -1378,7 +1381,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         params: JSONObject,
     ) {
         if (!_uiState.value.editorSettings.languageServerEnabled) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             languageServers.send(
                 context.projectId,
@@ -1405,7 +1408,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 languageServerFeatures = emptySet(),
             )
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val languageServer = startLanguageServerForActiveProject(selectedTab.language, projectRootUri)
             _uiState.update { state ->
                 if (state.activeTabId == tabId && state.projectRootUri == projectRootUri) {
@@ -1451,6 +1454,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             state.copy(
                 openTabs    = remaining.map { it.copy(isActive = it.id == newActiveId) },
                 activeTabId = newActiveId,
+                languageServerDiagnostics = if (tab != null) {
+                    state.languageServerDiagnostics - tab.documentUri
+                } else state.languageServerDiagnostics,
             )
         }
         if (wasActive) {
@@ -1603,12 +1609,32 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun editorContentForTab(tabId: String, fallback: String?): String =
         pendingContent[tabId] ?: fallback.orEmpty()
 
+    fun revealDiagnostic(diagnostic: EditorDiagnostic) {
+        val state = _uiState.value
+        val tab = state.openTabs.firstOrNull { it.documentUri == diagnostic.documentUri } ?: return
+        val line = diagnostic.startLine.coerceAtLeast(1)
+        val column = diagnostic.startColumn.coerceAtLeast(1)
+        _uiState.update { current ->
+            current.copy(
+                tabCursorPositions = current.tabCursorPositions + (diagnostic.documentUri to (line to column)),
+                cursorLine = if (current.activeTabId == tab.id) line else current.cursorLine,
+                cursorColumn = if (current.activeTabId == tab.id) column else current.cursorColumn,
+            )
+        }
+        if (state.activeTabId == tab.id) {
+            sendEditorCommand(EditorOutbound.SetCursorPosition(line, column))
+        } else {
+            selectTab(tab.id)
+        }
+    }
+
     fun onEditorMessage(message: EditorInbound) {
         when (message) {
             is EditorInbound.Ready -> onEditorReady()
 
             is EditorInbound.ContentChanged -> {
                 val tab = _uiState.value.openTabs.find { it.documentUri == message.path } ?: return
+                if (tab.content == null && !tab.isBlank) return
                 pendingContent[tab.id] = message.content
                 _uiState.update { state ->
                     state.copy(openTabs = state.openTabs.map {
@@ -1661,6 +1687,18 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
             is EditorInbound.LanguageServerMessage -> onLanguageServerMessage(message.message)
 
+            is EditorInbound.DiagnosticsChanged -> {
+                _uiState.update { state ->
+                    if (!state.editorSettings.languageServerEnabled ||
+                        state.openTabs.none { it.documentUri == message.documentUri }
+                    ) return@update state
+                    val diagnostics = state.languageServerDiagnostics.toMutableMap()
+                    if (message.diagnostics.isEmpty()) diagnostics.remove(message.documentUri)
+                    else diagnostics[message.documentUri] = message.diagnostics
+                    state.copy(languageServerDiagnostics = diagnostics)
+                }
+            }
+
             // isCut=true means Monaco has already deleted the selection — nothing else
             // to do on the Kotlin side after placing the text in the clipboard.
             is EditorInbound.TextCopied -> {
@@ -1704,7 +1742,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         message.optJSONObject("params")
             ?.optJSONObject("textDocument")
             ?.put("uri", languageServerDocumentUri(tab.documentUri))
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             val report = languageServers.send(
                 project.id,
@@ -1732,24 +1770,24 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveActiveFile() {
         val active = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
-        if (active.isBlank) return
+        if (active.isBlank || active.content == null) return
         saveFile(active.documentUri)
     }
 
     fun saveTabById(tabId: String) {
         val tab = _uiState.value.openTabs.find { it.id == tabId } ?: return
-        if (tab.isBlank) return
+        if (tab.isBlank || tab.content == null) return
         saveFile(tab.documentUri)
     }
 
     private fun saveFile(documentUri: String) {
         val tab     = _uiState.value.openTabs.find { it.documentUri == documentUri } ?: return
-        if (tab.isBlank) return
+        if (tab.isBlank || tab.content == null) return
         viewModelScope.launch {
             val mutex = tabSaveMutexes.computeIfAbsent(tab.id) { Mutex() }
             mutex.withLock {
                 val currentTab = _uiState.value.openTabs.find { it.id == tab.id } ?: return@withLock
-                if (currentTab.isBlank) return@withLock
+                if (currentTab.isBlank || currentTab.content == null) return@withLock
                 val content = pendingContent[tab.id] ?: return@withLock
                 _uiState.update { state ->
                     state.copy(
@@ -1797,32 +1835,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
-            }
-        }
-    }
-
-    fun saveActiveFileAs(newUri: String) {
-        val active  = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
-        val content = pendingContent[active.id] ?: active.content ?: return
-        viewModelScope.launch {
-            val ok = fileMutations.write(newUri, content.toByteArray(Charsets.UTF_8))
-            if (!ok) { _uiState.update { it.copy(statusMessage = "Save As failed") }; return@launch }
-            val newName = fileMutations.displayName(newUri) ?: displayNameFromUri(newUri)
-            val newLang = EditorLanguageRegistry.languageForFileName(newName)
-            pendingContent.remove(active.id)
-            _uiState.value.projectRootUri?.let { projectRootUri ->
-                crashRecovery.clearUnsavedContent(projectRootUri, active.id)
-            }
-            _uiState.update { state ->
-                state.copy(
-                    openTabs      = state.openTabs.map {
-                        if (it.id == active.id) it.copy(
-                            documentUri = newUri, displayName = newName,
-                            language = newLang, content = content, isDirty = false, isBlank = false,
-                        ) else it
-                    },
-                    statusMessage = "Saved as $newName",
-                )
             }
         }
     }
@@ -3172,123 +3184,38 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Open the inline Save-As dialog pre-filled with the active tab name. */
     fun showSaveAsDialog() {
-        if (!requireConfirmedLocalStorageForMutation()) return
-        val name = _uiState.value.openTabs.firstOrNull { it.isActive }?.displayName ?: "untitled"
-        _uiState.update { it.copy(fileOpDialog = FileOpDialog.SaveAs(name)) }
+        showSaveFileCreateDialog()
     }
 
     fun showBlankTabSaveDialog(tabId: String? = null) {
-        if (!requireConfirmedLocalStorageForMutation()) return
-        val active = if (tabId != null) {
-            _uiState.value.openTabs.firstOrNull { it.id == tabId }
-        } else {
-            _uiState.value.openTabs.firstOrNull { it.isActive }
-        } ?: return
-        if (!active.isBlank) return
-        _uiState.update {
-            it.copy(fileOpDialog = FileOpDialog.SaveBlank(tabId = active.id, suggestedName = active.displayName))
-        }
+        val active = if (tabId == null) _uiState.value.openTabs.firstOrNull { it.isActive }
+            else _uiState.value.openTabs.firstOrNull { it.id == tabId }
+        if (active?.isBlank != true) return
+        showSaveFileCreateDialog(active.id)
     }
 
-    /** Create a new project-root file for the specified unsaved tab. */
-    fun saveBlankTab(tabId: String, rawName: String) {
+    private fun showSaveFileCreateDialog(tabId: String? = null) {
         if (!requireConfirmedLocalStorageForMutation()) return
-        val name = rawName.trim()
-        if (name.isEmpty() || name == "." || name == ".." ||
-            name.any { it == '/' || it == '\\' || it == '\u0000' || it.isISOControl() }
-        ) {
-            _uiState.update { state ->
-                state.copy(fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = "Enter a valid file name without path separators"))
-            }
-            return
-        }
-        val rootUri = _uiState.value.projectRootUri ?: run {
+        val state = _uiState.value
+        if (state.editorFileLoading) return
+        val active = if (tabId == null) state.openTabs.firstOrNull { it.isActive }
+            else state.openTabs.firstOrNull { it.id == tabId }
+        if (active == null || active.isImagePreview ||
+            (active.content == null && pendingContent[active.id] == null && !active.isBlank)
+        ) return
+        val rootUri = state.projectRootUri ?: run {
             _uiState.update { it.copy(statusMessage = "No project open") }
             return
         }
-        viewModelScope.launch {
-            val mutex = tabSaveMutexes.computeIfAbsent(tabId) { Mutex() }
-            mutex.withLock {
-                val tab = _uiState.value.openTabs.firstOrNull { it.id == tabId && it.isBlank } ?: return@withLock
-                val content = pendingContent[tabId] ?: tab.content.orEmpty()
-                _uiState.update { state ->
-                    state.copy(
-                        fileMutationLoading = true,
-                        fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = null, isSubmitting = true),
-                    )
-                }
-                val created = fileMutations.createFile(rootUri, name, EditorLanguageRegistry.mimeTypeForFileName(name))
-                val newUri = when (created) {
-                    is ExactCreateResult.Created -> created.documentUri
-                    is ExactCreateResult.Partial -> {
-                        fileMutations.delete(created.documentUri)
-                        val absent = fileMutations.presence(created.documentUri) == DocumentPresence.ABSENT
-                        val message = if (absent) "Could not create the file; the partial entry was removed" else "File creation was partial; inspect ${created.documentUri}. ${created.recoveryHint}"
-                        _uiState.update { state ->
-                            state.copy(
-                                fileMutationLoading = false,
-                                fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = message, isSubmitting = false),
-                                statusMessage = message,
-                            )
-                        }
-                        return@withLock
-                    }
-                    ExactCreateResult.Duplicate -> {
-                        _uiState.update { state -> state.copy(fileMutationLoading = false, fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = "A file named ‘$name’ already exists", isSubmitting = false)) }
-                        return@withLock
-                    }
-                    ExactCreateResult.InspectionFailed,
-                    ExactCreateResult.Failed -> {
-                        _uiState.update { state -> state.copy(fileMutationLoading = false, fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = "Could not create the file in this project", isSubmitting = false)) }
-                        return@withLock
-                    }
-                }
-                if (!fileMutations.write(newUri, content.toByteArray(Charsets.UTF_8))) {
-                    fileMutations.delete(newUri)
-                    val absent = fileMutations.presence(newUri) == DocumentPresence.ABSENT
-                    val message = if (absent) "The file could not be saved; the empty file was removed" else "Save was incomplete; inspect the created file before retrying"
-                    _uiState.update { state ->
-                        state.copy(
-                            fileMutationLoading = false,
-                            fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(errorMessage = message, isSubmitting = false),
-                            statusMessage = message,
-                        )
-                    }
-                    return@withLock
-                }
-                val draftIsCurrent = pendingContent[tabId]?.let { it == content } ?: true
-                if (draftIsCurrent) {
-                    pendingContent.remove(tabId)
-                    crashRecovery.clearUnsavedContent(rootUri, tabId)
-                }
-                val language = EditorLanguageRegistry.languageForFileName(name)
-                sendEditorCommand(EditorOutbound.CloseTab(tab.documentUri))
-                _uiState.update { state ->
-                    state.copy(
-                        openTabs = state.openTabs.map { current ->
-                            if (current.id == tabId) current.copy(
-                                documentUri = newUri,
-                                displayName = name,
-                                language = language,
-                                content = content,
-                                isBlank = false,
-                                isDirty = !draftIsCurrent,
-                                isSaving = false,
-                            ) else current
-                        },
-                        fileMutationLoading = false,
-                        fileOpDialog = (state.fileOpDialog as? FileOpDialog.SaveBlank)?.copy(
-                            errorMessage = null,
-                            resultMessage = "Saved $name in the project root",
-                            isSubmitting = false,
-                        ),
-                        statusMessage = "Saved $name",
-                    )
-                }
-                initializeLanguageServerDocument(tabId, newUri, language, content, rootUri)
-                refreshProjectNow()
-                scheduleWorkspaceSave()
-            }
+        val rootNode = FileNode(rootUri, state.projectName.ifBlank { "Project" }, "vnd.android.document/directory")
+        _uiState.update {
+            it.copy(
+                fileOpDialog = FileOpDialog.CreateFile(
+                    parentNode = rootNode,
+                    suggestedName = active.displayName,
+                    sourceTabId = active.id,
+                ),
+            )
         }
     }
 
@@ -3297,29 +3224,33 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
      * Supports "newname.kt" (creates in root) or "src/utils/Foo.kt" (creates
      * intermediate dirs if needed).
      */
-    fun saveAsAtPath(relativePath: String) {
+    fun saveAsAtPath(relativePath: String, tabId: String? = null) {
         if (!requireConfirmedLocalStorageForMutation()) return
-        val rootUri = _uiState.value.projectRootUri ?: run {
+        val initialState = _uiState.value
+        val rootUri = initialState.projectRootUri ?: run {
             _uiState.update { it.copy(statusMessage = "No project open") }
             return
         }
-        val active  = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
-        val content = pendingContent[active.id] ?: active.content ?: return
+        val active = if (tabId == null) initialState.openTabs.firstOrNull { it.isActive }
+            else initialState.openTabs.firstOrNull { it.id == tabId }
+        active ?: return
+        if (active.isImagePreview || (active.content == null && pendingContent[active.id] == null && !active.isBlank)) return
+        val content = pendingContent[active.id] ?: active.content ?: if (active.isBlank) "" else return
         val normalized = resourcePaths.resolve(relativePath, emptyList())
         val segments = when (normalized) {
             is ResourcePathResolution.Success -> normalized.segments
             ResourcePathResolution.OutsideBoundary -> {
-                _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(errorMessage = "The path cannot go above the project root"), statusMessage = "The path cannot go above the project root") }
+                _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(errorMessage = "The path cannot go above the project root"), statusMessage = "The path cannot go above the project root") }
                 return
             }
             ResourcePathResolution.MissingFinalName,
             ResourcePathResolution.InvalidComponent -> {
-                _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(errorMessage = "Enter a valid project-relative file path"), statusMessage = "Invalid path") }
+                _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(errorMessage = "Enter a valid project-relative file path"), statusMessage = "Invalid path") }
                 return
             }
         }
         viewModelScope.launch {
-            _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(errorMessage = null, isSubmitting = true), fileMutationLoading = true) }
+            _uiState.update { it.copy(fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(errorMessage = null, isSubmitting = true), fileMutationLoading = true) }
             val resolved = fileMutations.resolvePath(PathResolutionScope(startUri = rootUri, boundaryUri = rootUri), segments)
             val path = resolved as? PathResolutionResult.Resolved ?: run {
                 val created = when (resolved) {
@@ -3331,7 +3262,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 val parentsRemoved = fileMutations.rollbackCreatedDirectories(created)
                 _uiState.update {
                     it.copy(
-                        fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(
+                        fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(
                             errorMessage = if (parentsRemoved) "Could not resolve the destination path" else "Save As partially completed; inspect newly created parent folders",
                             isSubmitting = false,
                         ),
@@ -3356,7 +3287,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     val parentsRemoved = fileMutations.rollbackCreatedDirectories(path.createdIntermediateUris)
                     _uiState.update {
                         it.copy(
-                            fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(
+                            fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(
                                 errorMessage = if (absent && parentsRemoved) "Save As failed; the created file was removed" else "Save As may have left a partially created file",
                                 isSubmitting = false,
                             ),
@@ -3376,7 +3307,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 }
                     _uiState.update {
                         it.copy(
-                            fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(
+                            fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(
                                 errorMessage = message,
                                 isSubmitting = false,
                             ),
@@ -3394,7 +3325,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 val parentsRemoved = fileMutations.rollbackCreatedDirectories(path.createdIntermediateUris)
                 _uiState.update {
                     it.copy(
-                        fileOpDialog = (it.fileOpDialog as? FileOpDialog.SaveAs)?.copy(
+                        fileOpDialog = (it.fileOpDialog as? FileOpDialog.CreateFile)?.copy(
                             errorMessage = if (itemAbsent && parentsRemoved) "Save As failed; the created file was removed" else "Save As partially completed; inspect the created file and parent folders",
                             isSubmitting = false,
                         ),
@@ -3408,6 +3339,11 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             val newLang = EditorLanguageRegistry.languageForFileName(leafName)
             pendingContent.remove(active.id)
             crashRecovery.clearUnsavedContent(rootUri, active.id)
+            sendLanguageServerNotificationForTab(
+                active,
+                "textDocument/didClose",
+                JSONObject().put("textDocument", JSONObject().put("uri", languageServerDocumentUri(active.documentUri))),
+            )
             refreshProjectNow()
             _uiState.update { state ->
                 state.copy(
@@ -3417,11 +3353,18 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                             language = newLang, content = content, isDirty = false, isBlank = false,
                         ) else it
                     },
-                    fileOpDialog  = (state.fileOpDialog as? FileOpDialog.SaveAs)?.copy(isSubmitting = false, errorMessage = null, resultMessage = "Saved as $leafName"),
+                    fileOpDialog  = (state.fileOpDialog as? FileOpDialog.CreateFile)?.copy(
+                        isSubmitting = false,
+                        errorMessage = null,
+                        resultMessage = "Saved as $leafName",
+                        createdDocumentUri = newUri,
+                    ),
+                    languageServerDiagnostics = state.languageServerDiagnostics - active.documentUri,
                     fileMutationLoading = false,
                     statusMessage = "Saved as $leafName",
                 )
             }
+            initializeLanguageServerDocument(active.id, newUri, newLang, content, rootUri)
         }
     }
 

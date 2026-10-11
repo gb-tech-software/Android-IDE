@@ -18,9 +18,15 @@ package dev.android.ide.editor
 
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 class EditorBridge {
-
+    private val serializer: ExecutorService = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "editor-bridge-serializer").apply { isDaemon = true }
+    }
+    @Volatile private var closed = false
 
     /**
      * Callback invoked when Monaco sends a message to the native layer.
@@ -48,11 +54,28 @@ class EditorBridge {
     // ── Outbound (Kotlin → Monaco) ─────────────────────────────────────────
 
     /**
-     * Send a message to Monaco by evaluating a JS expression in [webView].
-     * Safe to call from any thread — posts the evaluation to the WebView's UI thread.
+     * Serialize payloads off the UI thread, in order, then evaluate them on WebView's UI thread.
      */
-    fun send(webView: WebView, message: EditorOutbound) {
-        val js = message.toJs()
-        webView.post { webView.evaluateJavascript(js, null) }
+    fun send(webView: WebView, message: EditorOutbound, onEvaluated: (() -> Unit)? = null) {
+        if (closed) return
+        try {
+            serializer.execute {
+                val js = message.toJs()
+                if (!closed) webView.post {
+                    if (!closed) {
+                        if (onEvaluated == null) webView.evaluateJavascript(js, null)
+                        else webView.evaluateJavascript(js) { onEvaluated() }
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // A queued message can race with disposal of the owning editor surface.
+        }
+    }
+
+    fun close() {
+        closed = true
+        serializer.shutdownNow()
+        messageListener = null
     }
 }

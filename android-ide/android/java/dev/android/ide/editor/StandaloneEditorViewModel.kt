@@ -321,6 +321,7 @@ class StandaloneEditorViewModel(application: Application) : AndroidViewModel(app
                 val path = mutableState.value.activeTab?.documentUri ?: return
                 mutableState.update { it.copy(tabScrollPositions = it.tabScrollPositions + (path to message.scrollTop.coerceAtLeast(0))) }
             }
+            is EditorInbound.DiagnosticsChanged -> Unit
             is EditorInbound.LanguageServerMessage -> Unit
         }
     }

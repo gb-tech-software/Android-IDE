@@ -39,12 +39,15 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -65,6 +68,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -75,6 +79,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.browser.BrowserDownloadStatus
+import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.CrashReportSummary
 import dev.android.ide.contracts.Surface
 import dev.android.ide.CrashReporter
@@ -112,6 +118,8 @@ fun AppShell(
 ) {
     val state by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
+    val browserViewModel: BrowserViewModel = composeViewModel()
+    val browserState by browserViewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val crashReporter = androidx.compose.runtime.remember { CrashReporter(context) }
     var crashReports by remember { mutableStateOf(crashReporter.reports()) }
@@ -244,6 +252,7 @@ fun AppShell(
             state = state,
             viewModel = viewModel,
             ideViewModel = ideViewModel,
+            browserViewModel = browserViewModel,
             standaloneEditorViewModel = standaloneEditorViewModel,
             onNavigate = navigateAndCloseSidebar,
             onCreateProject = onCreateProject,
@@ -294,6 +303,8 @@ fun AppShell(
                             section = sidebarSection,
                             appViewModel = viewModel,
                             ideViewModel = ideViewModel,
+                            browserViewModel = browserViewModel,
+                            browserState = browserState,
                             moreOpen = moreOpen,
                             onMore = { moreOpen = !moreOpen },
                             onNavigate = { surface, closeSidebar -> navigate(surface, closeSidebar) },
@@ -443,6 +454,8 @@ private fun ContextualNavigation(
     section: SidebarSection,
     appViewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
+    browserViewModel: BrowserViewModel,
+    browserState: dev.android.ide.browser.BrowserUiState,
     moreOpen: Boolean,
     onMore: () -> Unit,
     onNavigate: (Surface, Boolean) -> Unit,
@@ -614,17 +627,47 @@ private fun ContextualNavigation(
                     }
                 }
                 SidebarSection.BROWSER -> {
-                    Column(
-                        Modifier.fillMaxSize().padding(12.dp),
-                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Text("No browser sidebar", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "Browser controls are on the Browser screen.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    val activeDownloads = browserState.downloads.count {
+                        it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED
+                    }
+                    LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        item { Text("Browser", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) }
+                        item {
+                            NavigationItem(Icons.Default.Add, "New tab", false, onClick = {
+                                browserViewModel.hideDownloadsPage()
+                                browserViewModel.createTab()
+                                onNavigate(Surface.BROWSER, true)
+                            })
+                        }
+                        item {
+                            NavigationItem(Icons.Default.Download, if (activeDownloads > 0) "Downloads · $activeDownloads active" else "Downloads", false, onClick = {
+                                browserViewModel.showDownloadsPage()
+                                onNavigate(Surface.BROWSER, true)
+                            })
+                        }
+                        item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
+                        item { Text("Open tabs (${browserState.tabs.size})", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) }
+                        items(browserState.tabs, key = { "browser-tab-${it.id}" }) { tab ->
+                            NavigationItem(
+                                Icons.Default.Language,
+                                tab.title.ifBlank { tab.host.ifBlank { "New tab" } },
+                                tab.id == browserState.selectedTabId,
+                                onClick = {
+                                    browserViewModel.hideDownloadsPage()
+                                    browserViewModel.selectTab(tab.id)
+                                    onNavigate(Surface.BROWSER, true)
+                                },
+                            )
+                        }
+                        item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
+                        item { Text("Recent pages", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) }
+                        items(browserState.history.take(12), key = { "browser-history-$it" }) { address ->
+                            NavigationItem(Icons.Default.History, address, false, onClick = {
+                                browserViewModel.hideDownloadsPage()
+                                browserViewModel.navigate(address)
+                                onNavigate(Surface.BROWSER, true)
+                            })
+                        }
                     }
                 }
             }
@@ -693,7 +736,13 @@ private fun NavigationItem(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Icon(icon, contentDescription = label, tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(label, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                label,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -826,6 +875,7 @@ private fun SurfaceHost(
     state: AppShellState,
     viewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
+    browserViewModel: BrowserViewModel,
     standaloneEditorViewModel: StandaloneEditorViewModel,
     onNavigate: (Surface) -> Unit,
     onCreateProject: (String?) -> Unit,
@@ -899,6 +949,7 @@ private fun SurfaceHost(
             modifier = modifier,
         )
         Surface.BROWSER -> BrowserSurface(
+            browser = browserViewModel,
             onOpenNavigation = onOpenNavigation,
             onOpenSettings = { onSettingsSection("Browser"); onNavigate(Surface.SETTINGS) },
             onApplicationBack = { if (!viewModel.back()) viewModel.requestExitConfirmation() },

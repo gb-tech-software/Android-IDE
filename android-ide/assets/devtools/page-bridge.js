@@ -19,13 +19,12 @@
           container: document.body || document.documentElement,
           tool: ["console", "elements", "network", "resources", "sources", "info", "snippets"],
           useShadowDom: true,
-          inline: true,
+          inline: false,
           defaults: { displaySize: 50, transparency: 1 }
         });
         initialized = true;
-      } else {
-        window.eruda.show();
       }
+      window.eruda.show();
     } catch (error) {
       post("error", { message: String(error && error.message || error) });
     }
@@ -33,12 +32,11 @@
 
   function closeTools() {
     if (!initialized || !window.eruda) return;
-    try {
-      window.eruda.hide();
-      window.eruda.destroy();
-    } finally {
-      initialized = false;
-    }
+    let closeError = null;
+    try { window.eruda.hide(); } catch (error) { closeError = error; }
+    try { window.eruda.destroy(); } catch (error) { closeError = closeError || error; }
+    initialized = false;
+    if (closeError) post("error", { message: String(closeError.message || closeError) });
   }
 
   window.addEventListener("message", event => {

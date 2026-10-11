@@ -88,7 +88,7 @@ object EditorLanguageRegistry {
         Definition(PLAIN_TEXT, extensions = setOf("php", "php3", "php4", "php5", "phtml"), mimeType = "text/x-php", iconKind = FileIconKind.PHP),
         Definition(PLAIN_TEXT, extensions = setOf("toml"), mimeType = "text/x-toml", iconKind = FileIconKind.TOML),
         Definition("yaml", extensions = setOf("yaml", "yml"), mimeType = "text/x-yaml", iconKind = FileIconKind.YAML),
-        Definition(PLAIN_TEXT, extensions = setOf("sql"), mimeType = "text/x-sql", iconKind = FileIconKind.SQL),
+        Definition("sql", extensions = setOf("sql"), mimeType = "text/x-sql", iconKind = FileIconKind.SQL),
         Definition(PLAIN_TEXT, extensions = setOf("proto"), mimeType = "text/plain", iconKind = FileIconKind.PROTO),
         Definition(PLAIN_TEXT, extensions = setOf("graphql", "gql"), mimeType = "text/plain", iconKind = FileIconKind.GRAPHQL),
         Definition(PLAIN_TEXT, extensions = setOf("ini", "properties", "conf", "cfg", "env"), fileNames = setOf(".env", ".env.local", ".env.example", ".env.examples", ".env.development", ".env.production", ".env.test", ".env.development.local", ".env.production.local", "env.example", "env.examples", ".editorconfig"), mimeType = "text/plain", iconKind = FileIconKind.ENV),

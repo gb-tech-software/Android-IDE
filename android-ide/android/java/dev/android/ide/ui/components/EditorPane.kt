@@ -71,6 +71,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 // SetJavaScriptEnabled: Monaco requires JS.
 // JavascriptInterface: EditorBridge.onMessage IS annotated @JavascriptInterface; lint produces a
@@ -106,18 +107,27 @@ fun EditorPane(
 
     // ── EditorBridge — survives recompositions ─────────────────────────────
     val editorBridge: EditorBridge = remember { EditorBridge() }
+    var editorCrashed by remember { mutableStateOf(false) }
+    val activeDocumentContent = when {
+        activeTab == null -> null
+        activeTab.content == null && !activeTab.isBlank -> null
+        else -> activeTabContent ?: activeTab.content ?: ""
+    }
+    val latestActiveTabId by rememberUpdatedState(activeTab?.id)
+    val loadGeneration = remember { AtomicInteger(0) }
+    var loadedModelDocumentUri by remember { mutableStateOf<String?>(null) }
+    val modelIsLoading = activeTab != null && !activeTab.isImagePreview && (
+        activeDocumentContent == null || (!isEditorReady && !editorCrashed) || loadedModelDocumentUri != activeTab.documentUri
+    )
 
     DisposableEffect(onEditorMessage) {
         editorBridge.messageListener = onEditorMessage
         onDispose { editorBridge.messageListener = null }
     }
 
-    // ── Editor crash state ─────────────────────────────────────────────────
-    // True when the Monaco render process terminates unexpectedly.
-    // onRenderProcessGone sets this flag (returning true prevents app termination).
-    // The EditorCrashedBox shown when true has a Reload button that calls
-    // loadUrl() to start a fresh renderer — the WebView object itself stays valid.
-    var editorCrashed by remember { mutableStateOf(false) }
+    DisposableEffect(editorBridge) {
+        onDispose { editorBridge.close() }
+    }
 
     // ── Monaco WebView — created once, never recreated ─────────────────────
     val editorWebView = remember {
@@ -206,6 +216,19 @@ fun EditorPane(
         }
     }
 
+    SideEffect {
+        editorWebView.isEnabled = !modelIsLoading
+        editorWebView.isFocusable = !modelIsLoading
+        editorWebView.isFocusableInTouchMode = !modelIsLoading
+    }
+    LaunchedEffect(modelIsLoading) {
+        if (modelIsLoading) {
+            editorWebView.clearFocus()
+            val inputMethodManager = context.getSystemService(InputMethodManager::class.java)
+            inputMethodManager?.hideSoftInputFromWindow(editorWebView.windowToken, 0)
+        }
+    }
+
     // ── Editor view helper — shows editor WebView or crash placeholder ──────
     //
     // When editorCrashed is true, the Monaco renderer has terminated. The app
@@ -243,12 +266,16 @@ fun EditorPane(
     val configuration = LocalConfiguration.current
     val layoutKey = "${configuration.screenWidthDp}x${configuration.screenHeightDp}"
 
-    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeTab?.content == null, activeTab?.isReadOnly, isEditorReady, editorBindRevision) {
-        val content = if (activeTab?.content == null && activeTabContent == null) {
-            null
-        } else {
-            activeTabContent ?: activeTab?.content
+    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeDocumentContent == null, activeTab?.isReadOnly, isEditorReady, editorBindRevision) {
+        val content = activeDocumentContent
+        if (!isEditorReady || activeTab == null || content == null || activeTab.isImagePreview) {
+            loadedModelDocumentUri = null
+            return@LaunchedEffect
         }
+        loadedModelDocumentUri = null
+        val requestGeneration = loadGeneration.incrementAndGet()
+        val requestedTabId = activeTab.id
+        val requestedDocumentUri = activeTab.documentUri
         if (isEditorReady && activeTab != null && content != null) {
             editorBridge.send(
                 editorWebView,
@@ -258,7 +285,11 @@ fun EditorPane(
                     language = activeTab.language,
                     readOnly = activeTab.isReadOnly,
                 ),
-            )
+            ) {
+                if (loadGeneration.get() == requestGeneration && latestActiveTabId == requestedTabId) {
+                    loadedModelDocumentUri = requestedDocumentUri
+                }
+            }
             // Restore cursor position for this tab (if previously saved).
             val cursor = tabCursorPositions[activeTab.documentUri]
             if (cursor != null && (cursor.first > 1 || cursor.second > 1)) {
@@ -285,21 +316,28 @@ fun EditorPane(
             } else {
                 editorView(Modifier.fillMaxSize())
             }
-            if (activeTab != null && !activeTab.isImagePreview && activeTab.content == null) {
-                Column(
-                    Modifier.fillMaxSize().background(colors.background),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
+            if (modelIsLoading && activeTab != null) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .background(colors.background)
+                        .pointerInput(activeTab.id) {
+                            awaitPointerEventScope {
+                                while (true) awaitPointerEvent().changes.forEach { it.consume() }
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(10.dp))
-                    Text("Opening ${activeTab.displayName}…", color = colors.textSecondary)
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        CircularProgressIndicator()
+                        Spacer(Modifier.height(10.dp))
+                        Text("Loading ${activeTab.displayName}…", color = colors.textSecondary)
+                    }
                 }
             }
         }
 
         // Symbol shortcut bar — shown above keyboard toolbar when a tab is active
-        if (activeTab != null && activeTab.content != null && showSymbolBar) {
+        if (activeTab != null && activeTab.content != null && !modelIsLoading && showSymbolBar) {
             HorizontalDivider(thickness = 1.dp, color = colors.separator)
             val cursor = tabCursorPositions[activeTab.documentUri] ?: (1 to 1)
             val content = activeTabContent ?: activeTab.content.orEmpty()
@@ -325,7 +363,7 @@ fun EditorPane(
         }
 
         // Keyboard toolbar — fixed five-item pages, no horizontal scrolling
-        if (activeTab != null && activeTab.content != null && showKeyboardToolbar) {
+        if (activeTab != null && activeTab.content != null && !modelIsLoading && showKeyboardToolbar) {
             HorizontalDivider(thickness = 1.dp, color = colors.separator)
             KeyboardToolbar(
                 onExecuteCommand     = onExecuteCommand,
