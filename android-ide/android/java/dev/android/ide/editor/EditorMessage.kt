@@ -35,6 +35,15 @@ sealed class EditorInbound {
     /** Monaco has finished initialising and is ready to receive loadFile messages. */
     object Ready : EditorInbound()
 
+    /** Monaco has attached the requested model to the visible editor. */
+    data class FileLoaded(val requestId: String, val path: String) : EditorInbound()
+
+    /** Monaco could not attach the requested model. */
+    data class FileLoadFailed(val requestId: String, val path: String, val reason: String) : EditorInbound()
+
+    /** Monaco has detached the active model. */
+    data class ActiveModelCleared(val requestId: String) : EditorInbound()
+
     /** User edited the file; debounced 300 ms by monaco-init.js. */
     data class ContentChanged(val path: String, val content: String) : EditorInbound()
 
@@ -75,6 +84,9 @@ sealed class EditorInbound {
             val obj = JSONObject(json)
             when (obj.getString("type")) {
                 "ready"                -> Ready
+                "fileLoaded"           -> FileLoaded(obj.getString("requestId"), obj.getString("path"))
+                "fileLoadFailed"       -> FileLoadFailed(obj.getString("requestId"), obj.getString("path"), obj.optString("reason", "Unable to load file"))
+                "activeModelCleared"   -> ActiveModelCleared(obj.getString("requestId"))
                 "contentChanged"       -> ContentChanged(
                     path    = obj.getString("path"),
                     content = obj.getString("content"),
@@ -132,6 +144,7 @@ sealed class EditorOutbound {
 
     /** Load a file into the editor. Creates or reuses a Monaco model for [path]. */
     data class LoadFile(
+        val requestId: String,
         val path: String,
         val content: String,
         val language: String,
@@ -147,7 +160,7 @@ sealed class EditorOutbound {
     ) : EditorOutbound()
 
     /** Clear the visible model while keeping cached models for other tabs. */
-    object ClearActiveModel : EditorOutbound()
+    data class ClearActiveModel(val requestId: String) : EditorOutbound()
 
     /** Unload the model for [path] from Monaco. */
     data class CloseTab(val path: String) : EditorOutbound()
@@ -290,7 +303,7 @@ sealed class EditorOutbound {
 
     private fun toJsonObject(): JSONObject = JSONObject().apply {
         when (val msg = this@EditorOutbound) {
-            is LoadFile        -> { put("type", "loadFile");    put("path", msg.path); put("content", msg.content); put("language", msg.language); put("readOnly", msg.readOnly) }
+            is LoadFile        -> { put("type", "loadFile"); put("requestId", msg.requestId); put("path", msg.path); put("content", msg.content); put("language", msg.language); put("readOnly", msg.readOnly) }
             is ReloadFile      -> {
                 put("type", "reloadFile")
                 put("path", msg.path)
@@ -298,7 +311,7 @@ sealed class EditorOutbound {
                 put("content", msg.content)
                 put("language", msg.language)
             }
-            is ClearActiveModel -> put("type", "clearActiveModel")
+            is ClearActiveModel -> { put("type", "clearActiveModel"); put("requestId", msg.requestId) }
             is CloseTab        -> { put("type", "closeTab");    put("path", msg.path) }
             is RequestSave     -> { put("type", "requestSave"); put("path", msg.path) }
             is SetTheme        -> { put("type", "setTheme");    put("theme", msg.theme) }

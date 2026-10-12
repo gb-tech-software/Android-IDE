@@ -178,11 +178,14 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     fun refreshTerminalSessions() {
         viewModelScope.launch {
             val sessions = terminalRuntime.listSessions()
+            val selectedId = _state.value.selectedTerminalSessionId
+                ?.takeIf { id -> sessions.any { session -> session.id == id && session.availability == SessionAvailability.AVAILABLE } }
+                ?: sessions.firstOrNull { it.availability == SessionAvailability.AVAILABLE }?.id
             _state.update {
                 it.copy(
                     terminalSessions = sessions,
-                    selectedTerminalSessionId = it.selectedTerminalSessionId?.takeIf { id -> sessions.any { session -> session.id == id && session.availability == SessionAvailability.AVAILABLE } }
-                        ?: sessions.firstOrNull { session -> session.availability == SessionAvailability.AVAILABLE }?.id,
+                    selectedTerminalSessionId = selectedId,
+                    terminalOutput = selectedId?.let(terminalRuntime::outputSnapshot).orEmpty(),
                     runtimeCapabilities = terminalRuntime.capabilities(),
                 )
             }
@@ -340,7 +343,10 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         val sessionId = _state.value.selectedTerminalSessionId ?: return
         viewModelScope.launch {
             terminalRuntime.readOutput(sessionId)
-            _state.update { it.copy(terminalOutput = terminalRuntime.outputSnapshot(sessionId)) }
+            val output = terminalRuntime.outputSnapshot(sessionId)
+            _state.update {
+                if (it.selectedTerminalSessionId == sessionId) it.copy(terminalOutput = output) else it
+            }
         }
     }
 
@@ -815,7 +821,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     ) {
         viewModelScope.launch {
             _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.createBlankProject(destinationParentUri, name, description, template)
+            val report = runAcquisition { projectManagement.createBlankProject(destinationParentUri, name, description, template) }
             _state.update {
                 it.copy(
                     operationInProgress = false,
@@ -831,7 +837,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     fun importExistingFolder(projectRootUri: String, name: String? = null, description: String? = null) {
         viewModelScope.launch {
             _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.importExistingFolder(projectRootUri, name, description)
+            val report = runAcquisition { projectManagement.importExistingFolder(projectRootUri, name, description) }
             _state.update {
                 it.copy(
                     operationInProgress = false,
@@ -856,7 +862,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     ) {
         viewModelScope.launch {
             _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.importZip(archiveUri, destinationParentUri, name, description)
+            val report = runAcquisition { projectManagement.importZip(archiveUri, destinationParentUri, name, description) }
             _state.update {
                 it.copy(
                     operationInProgress = false,
@@ -867,6 +873,18 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             }
             refreshProjects()
         }
+    }
+
+    private suspend fun runAcquisition(operation: suspend () -> OperationReport): OperationReport = try {
+        operation()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        OperationReport(
+            OperationOutcome.FAILED,
+            error.message?.takeIf { it.isNotBlank() } ?: "Project acquisition failed unexpectedly",
+            ErrorCategory.MALFORMED_METADATA,
+        )
     }
 
     fun removeSelectedProject() {

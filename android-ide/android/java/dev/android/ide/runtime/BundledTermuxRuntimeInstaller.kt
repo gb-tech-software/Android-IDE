@@ -69,11 +69,11 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     }
 
     /** The same environment is used by the preflight probe and the interactive PTY. */
-    fun sessionEnvironment(): Array<String> = arrayOf(
+    fun sessionEnvironment(shellPath: String = File(prefix, "bin/sh").absolutePath): Array<String> = arrayOf(
         "HOME=${home.absolutePath}",
         "PREFIX=${prefix.absolutePath}",
         "PATH=${File(prefix, "lib/android-ide/bin").absolutePath}:${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
-        "SHELL=${File(prefix, "bin/sh").absolutePath}",
+        "SHELL=$shellPath",
         "BROWSER=${File(prefix, "lib/android-ide/bin/android-ide-open-url").absolutePath}",
         "LD_LIBRARY_PATH=${File(prefix, "lib").absolutePath}",
         "TMPDIR=${File(prefix, "tmp").absolutePath}",
@@ -91,6 +91,10 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     private fun installInteractiveShellProfile() {
         val protectedRuntimeRoot = prefix.canonicalPath
         val profile = File(home, ".android-ide-termuxrc")
+        val promptGreen = "\u001B[1;32m"
+        val promptReset = "\u001B[0m"
+        val promptNonPrintingStart = if (File(prefix, "bin/bash").canExecute()) "\\[" else ""
+        val promptNonPrintingEnd = if (File(prefix, "bin/bash").canExecute()) "\\]" else ""
         profile.writeText(
             """# Android IDE terminal is global; only interactive navigation into its bundled runtime is restricted.
 _android_ide_protected_runtime_root='$protectedRuntimeRoot'
@@ -119,18 +123,16 @@ _android_ide_prompt_path() {
         *) _android_ide_shown=${'$'}_android_ide_physical_path ;;
     esac
     if [ ${'$'}{#_android_ide_shown} -gt 42 ]; then
-        _android_ide_tail=${'$'}{_android_ide_physical_path##*/}
-        if [ -z "${'$'}_android_ide_tail" ]; then _android_ide_shown='/'; else
-            while [ ${'$'}{#_android_ide_tail} -gt 35 ]; do _android_ide_tail=${'$'}{_android_ide_tail#?}; done
-            case "${'$'}_android_ide_physical_path" in
-                "${'$'}HOME"/*) _android_ide_shown="~/.../${'$'}_android_ide_tail" ;;
-                *) _android_ide_shown=".../${'$'}_android_ide_tail" ;;
-            esac
-        fi
+        _android_ide_tail=${'$'}_android_ide_shown
+        while [ ${'$'}{#_android_ide_tail} -gt 38 ]; do _android_ide_tail=${'$'}{_android_ide_tail#?}; done
+        case "${'$'}_android_ide_physical_path" in
+            "${'$'}HOME"/*) _android_ide_shown="~/${'$'}…${'$'}_android_ide_tail" ;;
+            *) _android_ide_shown="…${'$'}_android_ide_tail" ;;
+        esac
     fi
     printf '%s' "${'$'}_android_ide_shown"
 }
-PS1='\[\033[1;32m\]${'$'}(_android_ide_prompt_path)\${'$'} \[\033[0m\]'
+PS1='${promptNonPrintingStart}${promptGreen}${promptNonPrintingEnd}${'$'}(_android_ide_prompt_path)\${'$'} ${promptNonPrintingStart}${promptReset}${promptNonPrintingEnd}'
 """.trimIndent(),
         )
         setMode(profile, 0b110000000)
@@ -142,11 +144,13 @@ PS1='\[\033[1;32m\]${'$'}(_android_ide_prompt_path)\${'$'} \[\033[0m\]'
         if (!repairRuntimeExecutables()) {
             throw IOException("${File(prefix, "bin/sh").absolutePath} is not executable")
         }
-        val process = ProcessBuilder(File(prefix, "bin/sh").absolutePath, "-c", "exit 0")
+        val shellPath = File(prefix, "bin/bash").takeIf { it.canExecute() }?.absolutePath
+            ?: File(prefix, "bin/sh").absolutePath
+        val process = ProcessBuilder(shellPath, "-c", "exit 0")
             .directory(home)
             .redirectErrorStream(true)
             .apply {
-                sessionEnvironment().forEach { entry ->
+                sessionEnvironment(shellPath).forEach { entry ->
                     val separator = entry.indexOf('=')
                     environment()[entry.substring(0, separator)] = entry.substring(separator + 1)
                 }

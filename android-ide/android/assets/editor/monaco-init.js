@@ -99,6 +99,8 @@ window.addEventListener('resize', function () {
 var editor = null;          // monaco.editor.IStandaloneCodeEditor
 var currentPath = null;     // SAF URI of the currently loaded file
 var editorReadOnly = false;
+var monacoReady = false;
+var pendingNativeMessages = [];
 var contentChangeTimer = null;
 var CONTENT_CHANGE_DEBOUNCE_MS = 150;   // faster dirty-marking (was 300)
 var lspRequestId = 1;
@@ -652,7 +654,11 @@ require([
   // JavaScript click/touchend focus calls used to run after Android long-press
   // selection handles appeared and collapse the selection.
 
-  // Hide loading indicator and signal readiness to Kotlin
+  // Flush commands that arrived while Monaco was loading, then signal readiness.
+  monacoReady = true;
+  var queuedMessages = pendingNativeMessages;
+  pendingNativeMessages = [];
+  queuedMessages.forEach(function (message) { window.androidIDE.receiveMessage(message); });
   document.getElementById('loading').classList.add('hidden');
   postToNative({ type: 'ready' });
 });
@@ -737,10 +743,15 @@ window.androidIDE = {
       try { msg = JSON.parse(msg); } catch (e) { return; }
     }
 
+    if (!monacoReady || !editor) {
+      pendingNativeMessages.push(msg);
+      return;
+    }
+
     switch (msg.type) {
 
       case 'loadFile':
-        loadFile(msg.path, msg.content, msg.language, msg.readOnly === true);
+        loadFile(msg.requestId, msg.path, msg.content, msg.language, msg.readOnly === true);
         break;
 
       case 'reloadFile':
@@ -751,6 +762,7 @@ window.androidIDE = {
         flushPendingContentChange();
         if (editor) editor.setModel(null);
         currentPath = null;
+        postToNative({ type: 'activeModelCleared', requestId: msg.requestId });
         break;
 
       case 'setTheme':
@@ -1047,8 +1059,11 @@ window.androidIDE = {
  * @param {string} content  - Full file text.
  * @param {string} language - Monaco language ID (e.g. "kotlin", "java").
  */
-function loadFile(path, content, language, readOnly) {
-  if (!editor) return;
+function loadFile(requestId, path, content, language, readOnly) {
+  if (!editor) {
+    postToNative({ type: 'fileLoadFailed', requestId: requestId, path: path, reason: 'Monaco editor is not initialized' });
+    return;
+  }
   if (currentPath !== path) flushPendingContentChange();
   currentPath = path;
   if (editor.getModel()) monaco.editor.setModelMarkers(editor.getModel(), 'androidide-lsp', []);
@@ -1079,6 +1094,7 @@ function loadFile(path, content, language, readOnly) {
   // follow-up pass after Blink's next paint cycle.
   applyLayout();
   requestAnimationFrame(applyLayout);
+  postToNative({ type: 'fileLoaded', requestId: requestId, path: path });
 
   // Do not focus during file initialization. Native touch handling controls
   // focus and IME visibility; focusing here opens the keyboard while files load.

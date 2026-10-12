@@ -64,6 +64,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standalone
 
     var folderUri by remember { mutableStateOf<String?>(null) }
     var folderReviewVisible by remember { mutableStateOf(false) }
+    var folderConfirmationVisible by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
 
     var zipUri by remember { mutableStateOf<String?>(null) }
@@ -90,6 +91,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standalone
             if (persistTreePermission(context, uri)) {
                 folderUri = uri.toString()
                 folderName = uri.lastPathSegment?.substringAfterLast(':')?.substringAfterLast('/') ?: ""
+                folderConfirmationVisible = false
                 viewModel.inspectExistingFolder(uri.toString())
                 folderReviewVisible = true
             } else pickerFeedback = "Android did not grant durable read and write access to this folder. Choose a location that supports persistent access, then try again."
@@ -299,8 +301,10 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standalone
                 viewModel = viewModel,
                 folderUri = folderUri,
                 folderName = folderName,
-                onCancel = { folderReviewVisible = false; viewModel.dismissAcquisitionPrompt() },
-                onOpenProject = { folderReviewVisible = false; viewModel.openProject(it) },
+                confirmationVisible = folderConfirmationVisible,
+                onConfirmationVisibleChange = { folderConfirmationVisible = it },
+                onCancel = { folderReviewVisible = false; folderConfirmationVisible = false; viewModel.dismissAcquisitionPrompt() },
+                onOpenProject = { folderReviewVisible = false; folderConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
             )

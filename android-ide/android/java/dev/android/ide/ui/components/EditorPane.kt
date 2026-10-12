@@ -29,6 +29,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.inputmethod.InputMethodManager
+import android.os.Handler
+import android.os.Looper
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -72,6 +74,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.UUID
 
 // SetJavaScriptEnabled: Monaco requires JS.
 // JavascriptInterface: EditorBridge.onMessage IS annotated @JavascriptInterface; lint produces a
@@ -116,12 +119,36 @@ fun EditorPane(
     val latestActiveTabId by rememberUpdatedState(activeTab?.id)
     val loadGeneration = remember { AtomicInteger(0) }
     var loadedModelDocumentUri by remember { mutableStateOf<String?>(null) }
+    var pendingLoadRequestId by remember { mutableStateOf<String?>(null) }
+    var modelLoadError by remember { mutableStateOf<String?>(null) }
+    var loadRetryNonce by remember { mutableIntStateOf(0) }
+    val latestLoadRequestId by rememberUpdatedState(pendingLoadRequestId)
+    val latestActiveDocumentUri by rememberUpdatedState(activeTab?.documentUri)
     val modelIsLoading = activeTab != null && !activeTab.isImagePreview && (
         activeDocumentContent == null || (!isEditorReady && !editorCrashed) || loadedModelDocumentUri != activeTab.documentUri
     )
 
     DisposableEffect(onEditorMessage) {
-        editorBridge.messageListener = onEditorMessage
+        val mainHandler = Handler(Looper.getMainLooper())
+        editorBridge.messageListener = { message ->
+            mainHandler.post {
+                when (message) {
+                    is EditorInbound.FileLoaded -> {
+                        if (message.requestId == latestLoadRequestId && message.path == latestActiveDocumentUri) {
+                            loadedModelDocumentUri = message.path
+                            modelLoadError = null
+                        }
+                    }
+                    is EditorInbound.FileLoadFailed -> {
+                        if (message.requestId == latestLoadRequestId) {
+                            modelLoadError = message.reason
+                        }
+                    }
+                    else -> Unit
+                }
+                onEditorMessage(message)
+            }
+        }
         onDispose { editorBridge.messageListener = null }
     }
 
@@ -229,6 +256,20 @@ fun EditorPane(
         }
     }
 
+    // A renderer that never emits Ready previously left the workspace behind an
+    // indefinite spinner. Give the user the same recovery path as a failed model
+    // load instead of requiring an app restart.
+    LaunchedEffect(isEditorReady, editorCrashed, loadRetryNonce) {
+        if (!isEditorReady && !editorCrashed) {
+            delay(8_000)
+            if (!isEditorReady && !editorCrashed) {
+                modelLoadError = "The editor renderer did not become ready."
+            }
+        } else if (isEditorReady) {
+            if (modelLoadError == "The editor renderer did not become ready.") modelLoadError = null
+        }
+    }
+
     // ── Editor view helper — shows editor WebView or crash placeholder ──────
     //
     // When editorCrashed is true, the Monaco renderer has terminated. The app
@@ -266,30 +307,32 @@ fun EditorPane(
     val configuration = LocalConfiguration.current
     val layoutKey = "${configuration.screenWidthDp}x${configuration.screenHeightDp}"
 
-    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeDocumentContent == null, activeTab?.isReadOnly, isEditorReady, editorBindRevision) {
+    LaunchedEffect(activeTab?.id, activeTab?.documentUri, activeDocumentContent == null, activeTab?.isReadOnly, isEditorReady, editorBindRevision, loadRetryNonce) {
         val content = activeDocumentContent
         if (!isEditorReady || activeTab == null || content == null || activeTab.isImagePreview) {
             loadedModelDocumentUri = null
+            pendingLoadRequestId = null
+            modelLoadError = null
             return@LaunchedEffect
         }
         loadedModelDocumentUri = null
+        modelLoadError = null
         val requestGeneration = loadGeneration.incrementAndGet()
         val requestedTabId = activeTab.id
         val requestedDocumentUri = activeTab.documentUri
+        val requestId = UUID.randomUUID().toString()
+        pendingLoadRequestId = requestId
         if (isEditorReady && activeTab != null && content != null) {
             editorBridge.send(
                 editorWebView,
                 EditorOutbound.LoadFile(
+                    requestId = requestId,
                     path     = activeTab.documentUri,
                     content  = content,
                     language = activeTab.language,
                     readOnly = activeTab.isReadOnly,
                 ),
-            ) {
-                if (loadGeneration.get() == requestGeneration && latestActiveTabId == requestedTabId) {
-                    loadedModelDocumentUri = requestedDocumentUri
-                }
-            }
+            )
             // Restore cursor position for this tab (if previously saved).
             val cursor = tabCursorPositions[activeTab.documentUri]
             if (cursor != null && (cursor.first > 1 || cursor.second > 1)) {
@@ -299,6 +342,13 @@ fun EditorPane(
             val scroll = tabScrollPositions[activeTab.documentUri]
             if (scroll != null && scroll > 0) {
                 editorBridge.send(editorWebView, EditorOutbound.SetScrollPosition(scroll))
+            }
+            delay(8_000)
+            if (loadGeneration.get() == requestGeneration &&
+                latestActiveTabId == requestedTabId &&
+                loadedModelDocumentUri != requestedDocumentUri
+            ) {
+                modelLoadError = "The editor did not finish loading this file."
             }
         }
     }
@@ -328,9 +378,24 @@ fun EditorPane(
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                        CircularProgressIndicator()
+                        if (modelLoadError == null) CircularProgressIndicator()
                         Spacer(Modifier.height(10.dp))
-                        Text("Loading ${activeTab.displayName}…", color = colors.textSecondary)
+                        Text(modelLoadError ?: "Loading ${activeTab.displayName}…", color = if (modelLoadError == null) colors.textSecondary else MaterialTheme.colorScheme.error)
+                        if (modelLoadError != null) {
+                            Spacer(Modifier.height(10.dp))
+                            TextButton(onClick = {
+                                if (!isEditorReady) {
+                                    onEditorRendererGone()
+                                    editorCrashed = false
+                                    modelLoadError = null
+                                    loadRetryNonce++
+                                    editorWebView.stopLoading()
+                                    editorWebView.loadUrl("file:///android_asset/editor/index.html")
+                                } else {
+                                    loadRetryNonce++
+                                }
+                            }) { Text("Retry") }
+                        }
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package dev.android.ide.project
 
+import android.content.Context
 import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectIdentity
 import dev.android.ide.contracts.ProjectLocation
@@ -15,6 +16,7 @@ import dev.android.ide.saf.FileManagementService
  * remain implementation details; surfaces do not select one independently.
  */
 class ProjectManagementService(
+    context: Context,
     registry: ProjectRegistryStore,
     storage: ProjectStorageAdapterImpl,
     files: FileManagementService,
@@ -24,7 +26,7 @@ class ProjectManagementService(
     private val registryStore = registry
     private val storageAdapter = storage
     private val state = ProjectStateWorkflow(registry, storage, metadata)
-    private val acquisition = ProjectAcquisitionWorkflow(registry, storage, metadata, files)
+    private val acquisition = ProjectAcquisitionWorkflow(registry, storage, metadata, files, ProjectTemplateCatalog(context.assets))
     private val mutations = ProjectMutationWorkflow(registry, storage, metadata, files)
     private val details = ProjectDetailsWorkflow(registry, files, gitMetadata)
 

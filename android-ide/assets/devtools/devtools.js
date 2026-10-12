@@ -26,6 +26,29 @@
   });
 
   const contentPort = browser.runtime.connect({ name: CONTENT_PORT });
+  let interactionActive = false;
+
+  function isDevtoolsTarget(event) {
+    return event.composedPath().some(node => {
+      if (!node || !node.classList) return false;
+      const name = `${node.id || ""} ${node.className || ""}`.toLowerCase();
+      return name.includes("eruda") || name.includes("devtools");
+    });
+  }
+
+  function reportInteraction(active) {
+    if (interactionActive === active) return;
+    interactionActive = active;
+    contentPort.postMessage({ type: "developer-tools-interaction", active });
+  }
+
+  document.addEventListener("touchstart", event => reportInteraction(isDevtoolsTarget(event)), true);
+  document.addEventListener("touchmove", event => {
+    if (interactionActive) event.stopPropagation();
+  }, true);
+  document.addEventListener("touchend", () => reportInteraction(false), true);
+  document.addEventListener("touchcancel", () => reportInteraction(false), true);
+
   contentPort.onMessage.addListener(message => {
     if (!message || message.type !== "developer-tools") return;
     visibilityOpen = message.open === true;

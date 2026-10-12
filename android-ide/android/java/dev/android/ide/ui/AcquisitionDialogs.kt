@@ -47,6 +47,10 @@ internal fun CreateNewProjectDialog(
     validName: (String) -> Boolean,
 ) {
     val acquiredId = state.acquiredProjectId
+    val acquiredProject = acquiredId?.let { id -> state.projects.firstOrNull { it.id == id } }
+    val acquiredLocation = acquiredProject?.location?.userVisiblePath?.let(onLocation)
+        ?: acquiredProject?.location?.displayLabel?.let(onLocation)
+        ?: destination?.let { appendProjectName(onLocation(it), name) }
     if (!reviewVisible) {
         AlertDialog(
             onDismissRequest = { if (!state.operationInProgress) onDismiss() },
@@ -80,6 +84,11 @@ internal fun CreateNewProjectDialog(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (acquiredId != null) {
                         Text(state.operationReport?.message ?: "Project created successfully.", color = LocalIdeColors.current.success)
+                        AcquisitionSuccessDetails(
+                            name = acquiredProject?.name ?: name,
+                            location = acquiredLocation ?: "Location unavailable",
+                            kind = template.title,
+                        )
                     } else if (confirmationVisible) {
                         Text("Check the project details before creating it.", style = MaterialTheme.typography.bodyMedium)
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -105,7 +114,7 @@ internal fun CreateNewProjectDialog(
                                 name.isBlank() -> "Enter a project name"
                                 !validName(name) -> "Use a valid project name"
                                 destination == null -> "Choose a storage location"
-                                else -> "Ready"
+                                else -> null
                             },
                             busy = state.operationInProgress,
                             outcome = state.operationReport?.outcome,
@@ -154,6 +163,8 @@ internal fun LoadExistingProjectDialog(
     viewModel: AppShellViewModel,
     folderUri: String?,
     folderName: String,
+    confirmationVisible: Boolean,
+    onConfirmationVisibleChange: (Boolean) -> Unit,
     onCancel: () -> Unit,
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
@@ -162,21 +173,61 @@ internal fun LoadExistingProjectDialog(
     val inspection = state.folderInspection
     val ready = inspection?.let { it.readable && it.writable && !it.alreadyRegistered && it.containmentVerified && !it.overlapsRegisteredProject } == true
     val acquiredId = state.acquiredProjectId
+    val acquiredProject = acquiredId?.let { id -> state.projects.firstOrNull { it.id == id } }
+    val acquiredLocation = acquiredProject?.location?.userVisiblePath?.let(onLocation)
+        ?: acquiredProject?.location?.displayLabel?.let(onLocation)
+        ?: folderUri?.let(onLocation)
     AlertDialog(
-        onDismissRequest = { if (!state.operationInProgress) onCancel() },
-        title = { Text(if (acquiredId != null) "Project ready" else "Load an existing project") },
+        onDismissRequest = {
+            if (!state.operationInProgress) {
+                when {
+                    acquiredId != null -> onCancel()
+                    confirmationVisible -> onConfirmationVisibleChange(false)
+                    else -> onCancel()
+                }
+            }
+        },
+        title = { Text(when {
+            acquiredId != null -> "Project ready"
+            confirmationVisible -> "Review existing project"
+            else -> "Load an existing project"
+        }) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (acquiredId != null) {
                     Text(state.operationReport?.message ?: "Project loaded successfully.", color = LocalIdeColors.current.success)
+                    AcquisitionSuccessDetails(
+                        name = acquiredProject?.name ?: folderName,
+                        location = acquiredLocation ?: "Location unavailable",
+                        kind = "Existing folder",
+                    )
+                } else if (confirmationVisible) {
+                    Text("Review the selected folder before registering it as a project.", style = MaterialTheme.typography.bodyMedium)
+                    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AcquisitionReviewLine("Project folder", folderUri?.let(onLocation) ?: "Unavailable")
+                            AcquisitionReviewLine("Project name", folderName)
+                            AcquisitionReviewLine("Action", "Register this existing folder without copying its files")
+                        }
+                    }
+                    state.operationReport?.takeIf { it.outcome != OperationOutcome.COMPLETE }?.let {
+                        Text(it.message, color = operationStatusColor(it.outcome))
+                    }
+                    if (state.operationInProgress) AcquisitionStatus("Loading project…", true)
                 } else {
                     folderUri?.let { Text(onLocation(it), style = MaterialTheme.typography.bodySmall) }
                     AcquisitionStatus(
-                        message = state.operationReport?.message ?: when {
-                            state.operationInProgress -> "Loading project…"
+                        message = state.operationReport?.takeIf { it.outcome != OperationOutcome.COMPLETE }?.message ?: when {
+                            state.operationInProgress -> "Inspecting project location…"
                             inspection == null -> "Inspecting project location…"
-                            !ready -> "Choose another folder"
-                            else -> "Ready"
+                            inspection.alreadyRegistered -> "This folder is already registered as a project."
+                            !inspection.readable -> inspection.explanation ?: "This folder cannot be read."
+                            !inspection.writable -> inspection.explanation ?: "This folder cannot be written to."
+                            !inspection.containmentVerified -> "The folder could not be safely compared with registered projects. Choose another folder."
+                            inspection.overlapsRegisteredProject -> "This folder overlaps another registered project. Choose a non-overlapping folder."
+                            inspection.capabilityState != dev.android.ide.contracts.CapabilityState.SUPPORTED -> inspection.explanation ?: "This folder is not supported for project acquisition."
+                            !ready -> "This folder is not ready to import."
+                            else -> null
                         },
                         busy = state.operationInProgress || inspection == null,
                         outcome = state.operationReport?.outcome,
@@ -189,14 +240,23 @@ internal fun LoadExistingProjectDialog(
                 if (acquiredId != null) {
                     viewModel.dismissAcquisitionPrompt()
                     onOpenProject(acquiredId)
-                } else if (folderUri != null) {
+                } else if (confirmationVisible && folderUri != null) {
                     viewModel.importExistingFolder(folderUri, folderName)
+                } else if (ready) {
+                    onConfirmationVisibleChange(true)
                 }
-            }, enabled = !state.operationInProgress && (acquiredId != null || (folderUri != null && validName(folderName) && ready))) {
-                Text(if (acquiredId != null) "Open project" else "Load project")
+            }, enabled = !state.operationInProgress && (acquiredId != null || (folderUri != null && validName(folderName) && (ready || confirmationVisible)))) {
+                Text(when {
+                    acquiredId != null -> "Open project"
+                    confirmationVisible -> "Load project"
+                    else -> "Review"
+                })
             }
         },
-        dismissButton = { TextButton(onClick = onCancel, enabled = !state.operationInProgress) { Text(if (acquiredId != null) "Close" else "Cancel") } },
+        dismissButton = { TextButton(
+            onClick = { if (confirmationVisible && acquiredId == null) onConfirmationVisibleChange(false) else onCancel() },
+            enabled = !state.operationInProgress,
+        ) { Text(if (acquiredId != null) "Close" else if (confirmationVisible) "Back to inspect" else "Cancel") } },
     )
 }
 
@@ -220,6 +280,10 @@ internal fun ImportZipProjectDialog(
 ) {
     val ready = archiveUri != null && validName(name) && destination != null
     val acquiredId = state.acquiredProjectId
+    val acquiredProject = acquiredId?.let { id -> state.projects.firstOrNull { it.id == id } }
+    val acquiredLocation = acquiredProject?.location?.userVisiblePath?.let(onLocation)
+        ?: acquiredProject?.location?.displayLabel?.let(onLocation)
+        ?: destination?.let { appendProjectName(onLocation(it), name) }
     AlertDialog(
         onDismissRequest = {
             if (!state.operationInProgress) {
@@ -239,6 +303,11 @@ internal fun ImportZipProjectDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (acquiredId != null) {
                         Text(state.operationReport?.message ?: "Project imported successfully.", color = LocalIdeColors.current.success)
+                        AcquisitionSuccessDetails(
+                            name = acquiredProject?.name ?: name,
+                            location = acquiredLocation ?: "Location unavailable",
+                            kind = "ZIP archive import",
+                        )
                     } else if (confirmationVisible) {
                         Text("Review the archive and where its project will be created.", style = MaterialTheme.typography.bodyMedium)
                         Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
@@ -264,7 +333,7 @@ internal fun ImportZipProjectDialog(
                             archiveUri == null -> "Choose a ZIP archive"
                             !validName(name) -> "Enter a valid project name"
                             destination == null -> "Choose a storage location"
-                            else -> "Ready"
+                            else -> null
                         },
                         state.operationInProgress,
                         outcome = state.operationReport?.outcome,
@@ -307,11 +376,27 @@ private fun AcquisitionPicker(
 }
 
 @Composable
-private fun AcquisitionStatus(message: String, busy: Boolean, outcome: OperationOutcome? = null) {
+private fun AcquisitionStatus(message: String?, busy: Boolean, outcome: OperationOutcome? = null) {
+    if (message == null) return
     val statusColor = outcome?.let { operationStatusColor(it) } ?: MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically) {
         if (busy) CircularProgressIndicator(Modifier.padding(end = 8.dp), strokeWidth = 2.dp)
         Text(message, style = MaterialTheme.typography.bodySmall, color = statusColor)
+    }
+}
+
+@Composable
+private fun AcquisitionSuccessDetails(name: String, location: String, kind: String) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Registered project", style = MaterialTheme.typography.titleSmall)
+            AcquisitionReviewLine("Project name", name)
+            AcquisitionReviewLine("Location", location)
+            AcquisitionReviewLine("Acquisition", kind)
+        }
     }
 }
 

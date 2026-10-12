@@ -660,11 +660,9 @@ private fun ContextualNavigation(
                             )
                         }
                         item { HorizontalDivider(Modifier.padding(vertical = 6.dp)) }
-                        item { Text("Recent pages", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) }
-                        items(browserState.history.take(12), key = { "browser-history-$it" }) { address ->
-                            NavigationItem(Icons.Default.History, address, false, onClick = {
-                                browserViewModel.hideDownloadsPage()
-                                browserViewModel.navigate(address)
+                        item {
+                            NavigationItem(Icons.Default.History, "History", false, onClick = {
+                                browserViewModel.showHistoryPage()
                                 onNavigate(Surface.BROWSER, true)
                             })
                         }

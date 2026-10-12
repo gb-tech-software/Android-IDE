@@ -171,7 +171,7 @@ class StandaloneEditorViewModel(application: Application) : AndroidViewModel(app
                 tabScrollPositions = it.tabScrollPositions - closing.documentUri,
             )
         }
-        if (nextActive == null) mutableEditorCommands.tryEmit(EditorOutbound.ClearActiveModel)
+        if (nextActive == null) mutableEditorCommands.tryEmit(EditorOutbound.ClearActiveModel(UUID.randomUUID().toString()))
     }
 
     fun saveTab(tabId: String) {
@@ -323,6 +323,9 @@ class StandaloneEditorViewModel(application: Application) : AndroidViewModel(app
             }
             is EditorInbound.DiagnosticsChanged -> Unit
             is EditorInbound.LanguageServerMessage -> Unit
+            is EditorInbound.FileLoaded -> Unit
+            is EditorInbound.FileLoadFailed -> Unit
+            is EditorInbound.ActiveModelCleared -> Unit
         }
     }
 

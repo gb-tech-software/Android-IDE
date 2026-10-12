@@ -26,6 +26,7 @@ class ProjectAcquisitionWorkflow(
     private val storage: ProjectStorageAdapterImpl,
     private val metadata: ProjectMetadataAdapter,
     private val files: FileManagementService,
+    private val templateCatalog: ProjectTemplateCatalog,
 ) {
     private data class ArchiveEntry(
         val archivePath: String,
@@ -95,278 +96,20 @@ class ProjectAcquisitionWorkflow(
                 message = "The project identity could not be written; no project was registered",
             ))
         }
-        val packageName = cleanName.lowercase().replace(Regex("[^a-z0-9-]"), "-")
-        val productIntro = """Android IDE is a mobile development environment for creating, editing, organizing, and running software projects directly from an Android device. It gives you a project workspace with a file tree, code editor, terminal, terminal-managed Git, and project management features so you can continue working without needing a desktop computer."""
-        val continuation = """## Continue with Android IDE
-
-Open this project in Android IDE to browse and edit its files, use the terminal to install dependencies and run development commands, manage the project through the Projects screen, and use Git when repository tooling is available. When this project provides browser-ready output or a development server, use the Android IDE browser to inspect it.
-
-The project files remain in the storage location you selected. Android IDE works with that project location rather than creating an unrelated hidden copy."""
-        val about = description.trim().ifEmpty { "A ${template.title.lowercase()} created with Android IDE." }
-        val readme = when (template) {
-            CreateProjectTemplate.FROM_SCRATCH -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Start by adding the files and tools this project needs. Use Android IDE's file tree and editor to build the project, and its terminal when you need packages, scripts, Git, or other development commands.
-
-## Continue building
-
-Use Android IDE to add files, edit source code, manage dependencies, run commands, inspect project files, and shape this starter into your own application, package, service, or experiment.
-
-## Created with Android IDE
-
-This project was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Continue developing it from Android IDE on your Android device.
-"""
-            CreateProjectTemplate.NODE_APP -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Open this project in Android IDE, then run:
-
-```bash
-npm install
-npm start
-```
-
-Use the terminal for dependency management and development commands. Use the editor and file tree to continue shaping the application.
-
-## Project structure
-
-- `src/index.js` — application entry point
-- `package.json` — scripts and dependencies
-
-## Created with Android IDE
-
-This project was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Continue building the application from its mobile editor and terminal.
-"""
-            CreateProjectTemplate.NPM_PACKAGE -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Open this project in Android IDE, then run:
-
-```bash
-npm install
-npm run build
-npm test
-```
-
-Review the package name, version, public entry point, scripts, README, and license before publishing.
-
-## Project structure
-
-- `src/index.js` — public package entry point
-- `package.json` — package metadata and scripts
-
-## Created with Android IDE
-
-This package was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Use Android IDE to edit the package, run npm workflows, and prepare it for distribution.
-"""
-            CreateProjectTemplate.PNPM_PACKAGE -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Open this project in Android IDE, then run:
-
-```bash
-pnpm install
-pnpm build
-pnpm test
-```
-
-Use Android IDE to edit the package, manage its files, run pnpm commands in the terminal, and prepare the package for distribution.
-
-## Project structure
-
-- `src/index.js` — public package entry point
-- `package.json` — package metadata and scripts
-- `pnpm-lock.yaml` — created after dependency installation
-
-## Created with Android IDE
-
-This package was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Continue building it from the Android IDE editor and terminal.
-"""
-            CreateProjectTemplate.NODE_SERVER -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Open this project in Android IDE, then run:
-
-```bash
-npm install
-npm start
-```
-
-Add routes, server behavior, integrations, and deployment instructions as the project develops. Use the Android IDE browser when you need to inspect browser-accessible output.
-
-## Project structure
-
-- `src/server.js` — HTTP server entry point
-- `package.json` — scripts and dependencies
-
-## Created with Android IDE
-
-This server was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Continue developing it from the Android IDE editor, terminal, and browser workflow.
-"""
-            CreateProjectTemplate.STATIC_WEB -> """# $cleanName
-
-$about
-
-$productIntro
-
-$continuation
-
-## Getting started
-
-Open this project in Android IDE, then run:
-
-```bash
-npm install
-npm run dev
-```
-
-Use the editor for HTML, CSS, and JavaScript, the terminal for package commands, and the Android IDE browser for browser-based project output when available.
-
-## Project structure
-
-- `index.html` — browser entry point
-- `src/main.js` — application JavaScript
-- `styles/main.css` — visual styles
-- `package.json` — scripts and dependencies
-
-## Created with Android IDE
-
-This project was created with [Android IDE](https://github.com/godlovetikum/Android-IDE). Continue building the web project from your Android device.
-"""
-        }
-        val safeDescription = description.trim().replace("\"", "\\\"")
-        val packageJson = when (template) {
-            CreateProjectTemplate.FROM_SCRATCH -> null
-            CreateProjectTemplate.NODE_APP -> """{
-  "name": "$packageName",
-  "version": "1.0.0",
-  "description": "$safeDescription",
-  "main": "src/index.js",
-  "scripts": { "start": "node src/index.js", "dev": "node --watch src/index.js" },
-  "license": "ISC"
-}
-"""
-            CreateProjectTemplate.NPM_PACKAGE -> """{
-  "name": "$packageName",
-  "version": "1.0.0",
-  "description": "$safeDescription",
-  "type": "module",
-  "main": "src/index.js",
-  "scripts": { "build": "node src/index.js", "test": "node --test" },
-  "license": "ISC"
-}
-"""
-            CreateProjectTemplate.PNPM_PACKAGE -> """{
-  "name": "$packageName",
-  "version": "1.0.0",
-  "description": "$safeDescription",
-  "type": "module",
-  "main": "src/index.js",
-  "scripts": { "build": "node src/index.js", "test": "node --test" },
-  "packageManager": "pnpm@9",
-  "license": "ISC"
-}
-"""
-            CreateProjectTemplate.NODE_SERVER -> """{
-  "name": "$packageName",
-  "version": "1.0.0",
-  "description": "$safeDescription",
-  "main": "src/server.js",
-  "scripts": { "start": "node src/server.js", "dev": "node --watch src/server.js" },
-  "license": "ISC"
-}
-"""
-            CreateProjectTemplate.STATIC_WEB -> """{
-  "name": "$packageName",
-  "version": "1.0.0",
-  "description": "$safeDescription",
-  "scripts": { "dev": "python3 -m http.server 5173" },
-  "license": "ISC"
-}
-"""
-        }
-        val starterFiles = buildList {
-            add("README.md" to readme)
-            add(".gitignore" to """node_modules/
-dist/
-build/
-.DS_Store
-""")
-            packageJson?.let { add("package.json" to it) }
-            when (template) {
-                CreateProjectTemplate.NODE_APP -> add("src/index.js" to """console.log("$cleanName is running. Continue building it in Android IDE.");
-""")
-                CreateProjectTemplate.NPM_PACKAGE, CreateProjectTemplate.PNPM_PACKAGE -> add("src/index.js" to """export function describe() {
-  return "$cleanName created with Android IDE";
-}
-""")
-                CreateProjectTemplate.NODE_SERVER -> add("src/server.js" to """import { createServer } from "node:http";
-
-createServer((request, response) => {
-  response.writeHead(200, { "Content-Type": "text/plain" });
-  response.end("$cleanName is running. Continue building it in Android IDE.");
-}).listen(3000, () => console.log("Server running on port 3000"));
-""")
-                CreateProjectTemplate.STATIC_WEB -> {
-                    add("index.html" to """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>$cleanName</title>
-    <link rel="stylesheet" href="styles/main.css">
-  </head>
-  <body>
-    <main><h1>$cleanName</h1><p>Continue building this project with Android IDE.</p></main>
-    <script type="module" src="src/main.js"></script>
-  </body>
-</html>
-""")
-                    add("src/main.js" to """document.querySelector("main").dataset.ready = "true";
-""")
-                    add("styles/main.css" to """:root { font-family: system-ui, sans-serif; }
-body { margin: 0; padding: 2rem; }
-""")
-                }
-                CreateProjectTemplate.FROM_SCRATCH -> Unit
+        val starterFiles = runCatching { templateCatalog.filesFor(template, cleanName, description) }
+            .getOrElse {
+                return cleanupCreatedRoot(
+                    rootUri,
+                    blocked("The selected project template could not be read; no project was registered", ErrorCategory.MALFORMED_METADATA),
+                )
             }
+        if (starterFiles.isEmpty()) {
+            return cleanupCreatedRoot(
+                rootUri,
+                blocked("The selected project template is empty; no project was registered", ErrorCategory.MALFORMED_METADATA),
+            )
         }
+
         val createdDirectories = mutableMapOf<String, String>()
         for ((relativePath, content) in starterFiles) {
             val parts = relativePath.split('/')
@@ -385,6 +128,7 @@ body { margin: 0; padding: 2rem; }
                 fileName == "package.json" -> "application/json"
                 fileName == "index.html" -> "text/html"
                 fileName.endsWith(".js") -> "text/javascript"
+                fileName.endsWith(".mjs") -> "text/javascript"
                 fileName.endsWith(".css") -> "text/css"
                 else -> "text/plain"
             })

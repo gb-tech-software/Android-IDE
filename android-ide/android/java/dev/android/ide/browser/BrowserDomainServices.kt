@@ -13,11 +13,18 @@ class StoredBrowserHistoryService(
     private val maximumEntries: Int = 30,
 ) : BrowserHistoryService {
     private val mutableEntries = MutableStateFlow(storage.readHistory())
-    override val entries: StateFlow<List<String>> = mutableEntries.asStateFlow()
+    override val entries: StateFlow<List<BrowserHistoryEntry>> = mutableEntries.asStateFlow()
 
-    override fun addOrUpdate(address: String): List<String> {
+    override fun addVisit(address: String, title: String): List<BrowserHistoryEntry> {
         val value = address.trim().takeIf(String::isNotBlank) ?: return mutableEntries.value
-        val next = (listOf(value) + mutableEntries.value.filterNot { it == value }).take(maximumEntries)
+        val next = (listOf(
+            BrowserHistoryEntry(
+                id = UUID.randomUUID().toString(),
+                url = value,
+                title = title.trim().ifBlank { value },
+                visitedAt = System.currentTimeMillis(),
+            ),
+        ) + mutableEntries.value).take(maximumEntries)
         storage.saveHistory(next)
         mutableEntries.value = next
         return next
@@ -27,14 +34,22 @@ class StoredBrowserHistoryService(
         val normalizedQuery = query.trim()
         return mutableEntries.value
             .asSequence()
-            .filterNot { it == excludedAddress }
-            .filter { normalizedQuery.isBlank() || it.contains(normalizedQuery, ignoreCase = true) }
+            .filterNot { it.url == excludedAddress }
+            .filter { normalizedQuery.isBlank() || it.url.contains(normalizedQuery, ignoreCase = true) || it.title.contains(normalizedQuery, ignoreCase = true) }
+            .map { it.url }
+            .distinct()
             .take(limit.coerceAtLeast(0))
             .toList()
     }
 
-    override fun remove(address: String) {
-        val next = mutableEntries.value.filterNot { it == address }
+    override fun remove(id: String) {
+        val next = mutableEntries.value.filterNot { it.id == id }
+        storage.saveHistory(next)
+        mutableEntries.value = next
+    }
+
+    override fun removeUrl(address: String) {
+        val next = mutableEntries.value.filterNot { it.url == address }
         storage.saveHistory(next)
         mutableEntries.value = next
     }
@@ -81,10 +96,19 @@ class BrowserSessionRegistry(
         settings: BrowserSessionSettings,
         state: BrowserSerializedState?,
         sink: BrowserEngineEventSink,
-    ): BrowserEngineSession = sessions[tabId] ?: engine.createSession(tabId, settings, sink).also { session ->
-        state?.let(session::restoreState)
-        session.open()
+    ): BrowserEngineSession {
+        sessions[tabId]?.let { return it }
+        val session = engine.createSession(tabId, settings, sink)
         sessions[tabId] = session
+        try {
+            session.open()
+            state?.let(session::restoreState)
+        } catch (error: Throwable) {
+            sessions.remove(tabId, session)
+            runCatching { session.close() }
+            throw error
+        }
+        return session
     }
 
     override fun existingSession(tabId: String): BrowserEngineSession? = sessions[tabId]

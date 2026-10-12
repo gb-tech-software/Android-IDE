@@ -24,8 +24,10 @@ class TerminalRuntimeInstallation(
 
     val prefix: File get() = installer.prefix()
     val home: File get() = installer.home()
-    val shell: File get() = File(prefix, "bin/sh")
-    val environment: Array<String> get() = installer.sessionEnvironment()
+    /** Bash supplies readline-style handling for hardware cursor and editing keys. */
+    val shell: File
+        get() = File(prefix, "bin/bash").takeIf { it.canExecute() } ?: File(prefix, "bin/sh")
+    val environment: Array<String> get() = installer.sessionEnvironment(shell.absolutePath)
 
     suspend fun initialize(persistedSessions: TerminalSessionPersistence): OperationReport = withContext(Dispatchers.IO) {
         ready = false

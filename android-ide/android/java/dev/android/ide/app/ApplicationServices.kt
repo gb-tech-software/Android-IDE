@@ -92,6 +92,7 @@ class ApplicationServices private constructor(application: Application) {
     val projectMetadata = ProjectMetadataStore(fileSystem.operations)
     val gitMetadata = GitMetadataReader(fileSystem.operations)
     val projectManagement = ProjectManagementService(
+        context,
         projectRegistry,
         projectStorage,
         fileSystem.operations,

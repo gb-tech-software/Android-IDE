@@ -614,7 +614,6 @@ private fun BrowserSettingsContent() {
     var searchSheetOpen by rememberSaveable { mutableStateOf(false) }
     var homeSheetOpen by rememberSaveable { mutableStateOf(false) }
     var themeSheetOpen by rememberSaveable { mutableStateOf(false) }
-    var viewportDefaultSheetOpen by rememberSaveable { mutableStateOf(false) }
     var searchDraft by rememberSaveable(state.settings.customSearchUrl) { mutableStateOf(state.settings.customSearchUrl) }
     var homeDraft by rememberSaveable(state.settings.homePage) { mutableStateOf(state.settings.homePage) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
@@ -662,22 +661,6 @@ private fun BrowserSettingsContent() {
             TextButton(onClick = { browser.setDownloadFolder(null); message = "Default Downloads folder restored" }) { Text("Reset") }
         }
         Text("Existing records are checked when Downloads opens. Duplicate names require confirmation.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-    }
-    SettingsCard {
-        Text("New tab viewport", style = MaterialTheme.typography.titleSmall)
-        val defaultViewport = browser.viewportPresets().firstOrNull { it.second == state.settings.defaultViewportWidthPx }
-        val viewportLabel = when {
-            state.settings.defaultViewportWidthPx == null -> "Device width"
-            defaultViewport != null -> "${defaultViewport.first} (${defaultViewport.second}px)"
-            else -> "Custom (${state.settings.defaultViewportWidthPx}px)"
-        }
-        Row(Modifier.fillMaxWidth().clickable { viewportDefaultSheetOpen = true }, verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(viewportLabel)
-                Text("Starting content width for new tabs", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-            }
-            Text("Change", color = LocalIdeColors.current.textSecondary)
-        }
     }
     SettingsCard {
         Text("Appearance and browsing", style = MaterialTheme.typography.titleSmall)
@@ -753,23 +736,6 @@ private fun BrowserSettingsContent() {
                 Row(Modifier.fillMaxWidth().clickable { browser.setTheme(id); themeSheetOpen = false }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = state.settings.theme == id, onClick = null)
                     Text(label)
-                }
-            }
-        }
-    }
-    if (viewportDefaultSheetOpen) ModalBottomSheet(onDismissRequest = { viewportDefaultSheetOpen = false }) {
-        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("New tab viewport", style = MaterialTheme.typography.titleLarge)
-            browser.viewportPresets().forEach { (label, width) ->
-                Row(
-                    Modifier.fillMaxWidth().clickable {
-                        browser.setDefaultViewportWidth(width)
-                        viewportDefaultSheetOpen = false
-                    },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = state.settings.defaultViewportWidthPx == width, onClick = null)
-                    Text(if (width == null) "Device width" else "$label (${width}px)")
                 }
             }
         }

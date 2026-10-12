@@ -1182,7 +1182,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     editorFileLoading = false,
                 )
             }
-            if (markActive) sendEditorCommand(EditorOutbound.ClearActiveModel)
+            if (markActive) sendEditorCommand(EditorOutbound.ClearActiveModel(UUID.randomUUID().toString()))
             oldTemporaryTab?.let { sendEditorCommand(EditorOutbound.CloseTab(it.documentUri)) }
             scheduleWorkspaceSave()
             return
@@ -1209,7 +1209,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 editorFileLoading = true,
             )
         }
-        if (markActive) sendEditorCommand(EditorOutbound.ClearActiveModel)
+        if (markActive) sendEditorCommand(EditorOutbound.ClearActiveModel(UUID.randomUUID().toString()))
 
         fun failLoading(message: String, binaryFile: Boolean = false) {
             val restoreId = previousActiveTabId?.takeIf { id -> _uiState.value.openTabs.any { it.id == id } }
@@ -1631,6 +1631,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun onEditorMessage(message: EditorInbound) {
         when (message) {
             is EditorInbound.Ready -> onEditorReady()
+            is EditorInbound.FileLoaded,
+            is EditorInbound.FileLoadFailed,
+            is EditorInbound.ActiveModelCleared,
+            -> Unit
 
             is EditorInbound.ContentChanged -> {
                 val tab = _uiState.value.openTabs.find { it.documentUri == message.path } ?: return

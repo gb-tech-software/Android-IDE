@@ -10,5 +10,7 @@ enum class CreateProjectTemplate(
     NPM_PACKAGE("npm package", "Build a reusable package with npm."),
     PNPM_PACKAGE("pnpm package", "Build a reusable package with pnpm."),
     NODE_SERVER("Node.js HTTP server", "Start a small HTTP server and continue from Android IDE."),
+    EXPRESS_SERVER("Express server", "Start an Express HTTP server with JSON routes and a health endpoint."),
+    VITE_WEB("Vite web application", "Start a Vite-powered web application with a standard src layout."),
     STATIC_WEB("Static web project", "Start an HTML, CSS, and JavaScript project."),
 }

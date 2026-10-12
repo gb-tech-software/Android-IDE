@@ -140,6 +140,7 @@ class TerminalPtyLifecycle(
 
     fun closeSession(sessionId: String): OperationReport {
         val live = sessions.remove(sessionId)
+        viewInvalidators.remove(sessionId)
         live?.let(::terminateOwnedProcessGroup)
         val removed = persistence.remove(sessionId)
         if (sessions.isEmpty()) appContext.stopService(Intent(appContext, TerminalForegroundService::class.java))

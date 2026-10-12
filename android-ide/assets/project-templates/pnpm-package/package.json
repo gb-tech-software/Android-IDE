@@ -1,0 +1,15 @@
+{
+  "name": "{{PACKAGE_NAME}}",
+  "version": "1.0.0",
+  "description": {{DESCRIPTION_JSON}},
+  "type": "module",
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "files": ["src"],
+  "scripts": {
+    "lint": "node --check src/index.js",
+    "test": "node --test"
+  },
+  "packageManager": "pnpm@9",
+  "license": "ISC"
+}

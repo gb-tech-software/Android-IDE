@@ -77,7 +77,6 @@ private class GeckoBrowserEngineSession(
     private var canGoForward = false
     private var pendingHistoryAddress: String? = null
     private var lastKnownUrl: String? = null
-    private var viewportWidthPx: Int? = null
     private val promptHandler = Handler(Looper.getMainLooper())
 
     init {
@@ -392,12 +391,6 @@ private class GeckoBrowserEngineSession(
     override fun reload() = geckoSession.reload()
     override fun stop() = geckoSession.stop()
     override fun clearHistory() = geckoSession.purgeHistory()
-    override fun setViewport(widthPx: Int?) {
-        if (viewportWidthPx == widthPx) return
-        viewportWidthPx = widthPx
-        if (lastKnownUrl != null) geckoSession.reload()
-    }
-
     override fun setDesktopSite(enabled: Boolean) {
         geckoSession.settings.setUserAgentMode(
             if (enabled) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE,
@@ -530,10 +523,19 @@ class GeckoBrowserDeveloperToolsService(
     private var opened = false
     private var installed = false
     private var installing = false
+    private var interactionListener: ((Boolean) -> Unit)? = null
+
+    init {
+        installIfNeeded()
+    }
 
     override fun setEnabled(enabled: Boolean) {
         this.enabled = enabled
-        if (!enabled) close()
+        if (!enabled) close() else installIfNeeded()
+    }
+
+    override fun setInteractionListener(listener: ((Boolean) -> Unit)?) {
+        interactionListener = listener
     }
 
     override fun open() {
@@ -564,8 +566,16 @@ class GeckoBrowserDeveloperToolsService(
                         if (port.name != "android-ide") return
                         ports += port
                         port.setDelegate(object : WebExtension.PortDelegate {
+                            override fun onPortMessage(message: Any, port: WebExtension.Port) {
+                                val payload = message as? JSONObject ?: return
+                                if (payload.optString("type") == "developer-tools-interaction") {
+                                    interactionListener?.invoke(payload.optBoolean("active"))
+                                }
+                            }
+
                             override fun onDisconnect(port: WebExtension.Port) {
                                 ports -= port
+                                interactionListener?.invoke(false)
                             }
                         })
                         postVisibility(opened, port)

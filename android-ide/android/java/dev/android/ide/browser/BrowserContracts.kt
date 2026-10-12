@@ -55,6 +55,14 @@ data class BrowserTabDescriptor(
 
 data class BrowserTabThumbnail(val path: String)
 
+/** A browser-wide visited-page record; Back/Forward remains owned by each tab session. */
+data class BrowserHistoryEntry(
+    val id: String,
+    val url: String,
+    val title: String,
+    val visitedAt: Long,
+)
+
 data class BrowserNavigationChanged(val tabId: String, val url: String)
 data class BrowserNavigationCapabilitiesChanged(val tabId: String, val canGoBack: Boolean, val canGoForward: Boolean)
 data class BrowserTitleChanged(val tabId: String, val title: String)
@@ -172,7 +180,6 @@ interface BrowserEngineSession {
     fun reload()
     fun stop()
     fun clearHistory()
-    fun setViewport(widthPx: Int?)
     fun setDesktopSite(enabled: Boolean)
     fun saveState(): BrowserSerializedState?
     fun restoreState(state: BrowserSerializedState)
@@ -244,10 +251,11 @@ interface BrowserDownloadService {
 }
 
 interface BrowserHistoryService {
-    val entries: StateFlow<List<String>>
-    fun addOrUpdate(address: String): List<String>
+    val entries: StateFlow<List<BrowserHistoryEntry>>
+    fun addVisit(address: String, title: String): List<BrowserHistoryEntry>
     fun suggestions(query: String, excludedAddress: String? = null, limit: Int = 8): List<String>
-    fun remove(address: String)
+    fun remove(id: String)
+    fun removeUrl(address: String)
     fun clear()
 }
 
@@ -262,8 +270,8 @@ interface BrowserStorageService {
     fun saveTabs(tabs: List<BrowserTabDescriptor>)
     fun clearTabs()
     fun saveSelectedTab(id: String)
-    fun readHistory(): List<String>
-    fun saveHistory(history: List<String>)
+    fun readHistory(): List<BrowserHistoryEntry>
+    fun saveHistory(history: List<BrowserHistoryEntry>)
     fun readSettings(): BrowserSettings
     fun saveSettings(settings: BrowserSettings)
     fun readDownloads(): List<BrowserDownload>
@@ -295,4 +303,5 @@ interface BrowserDeveloperToolsService {
     fun open()
     fun close()
     fun setEnabled(enabled: Boolean)
+    fun setInteractionListener(listener: ((Boolean) -> Unit)?) {}
 }

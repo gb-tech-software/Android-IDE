@@ -41,8 +41,9 @@ data class BrowserUiState(
     val viewportWidth: Int? = null,
     val downloads: List<BrowserDownload> = emptyList(),
     val settings: BrowserSettings = BrowserSettings(),
-    val history: List<String> = emptyList(),
+    val history: List<BrowserHistoryEntry> = emptyList(),
     val downloadsPageOpen: Boolean = false,
+    val historyPageOpen: Boolean = false,
     val developerToolsOpen: Boolean = false,
     val permissionPrompt: BrowserPermissionPrompt? = null,
     val websitePrompt: BrowserWebsitePromptRequest? = null,
@@ -100,7 +101,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val storageService = browserServices.storage
     private val historyService = browserServices.history
     private val settingsService = browserServices.settings
-    private val viewportService = browserServices.viewport
     private val navigationService = browserServices.navigation
     private val tabService = browserServices.tabs
     private val permissionService = browserServices.permissions
@@ -252,7 +252,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             tab.loadProgress = 100
             val historyAddress = event.historyAddress
             val completedHistory = if (event.successful && !historyAddress.isNullOrBlank() && !historyAddress.startsWith("about:")) {
-                historyService.addOrUpdate(historyAddress)
+                historyService.addVisit(historyAddress, tab.title)
             } else null
             val current = _uiState.value
             _uiState.value = if (current.selectedTabId == event.tabId) {
@@ -397,11 +397,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun showDownloadsPage() {
         downloadService.reconcile()
-        _uiState.value = _uiState.value.copy(downloadsPageOpen = true)
+        _uiState.value = _uiState.value.copy(downloadsPageOpen = true, historyPageOpen = false)
     }
 
     fun hideDownloadsPage() {
         _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
+    }
+
+    fun showHistoryPage() {
+        _uiState.value = _uiState.value.copy(historyPageOpen = true, downloadsPageOpen = false)
+    }
+
+    fun hideHistoryPage() {
+        _uiState.value = _uiState.value.copy(historyPageOpen = false)
     }
 
     fun pauseDownload(downloadId: String): Boolean = downloadService.pause(downloadId)
@@ -545,41 +553,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun reload() = navigationService.reload()
     fun stop() = navigationService.stop()
 
-    fun setViewportWidth(width: Int) {
-        applyViewportWidth(width)
-    }
-
-    fun setViewportPreset(widthPx: Int?) {
-        applyViewportWidth(widthPx)
-    }
-
-    fun setDefaultViewportWidth(widthPx: Int?) {
-        val validated = if (widthPx == null) null else viewportService.validate(widthPx) ?: return
-        updateSettings { it.copy(defaultViewportWidthPx = validated) }
-    }
-
-    fun viewportRange(): IntRange = viewportService.minimumWidthPx..viewportService.maximumWidthPx
-
-    fun viewportPresets(): List<Pair<String, Int?>> = buildList {
-        add("Device" to viewportService.device())
-        viewportService.mobile()?.let { width -> viewportService.validate(width)?.let { add("Mobile" to it) } }
-        viewportService.tablet()?.let { width -> viewportService.validate(width)?.let { add("Tablet" to it) } }
-        viewportService.desktop()?.let { width -> viewportService.validate(width)?.let { add("Desktop" to it) } }
-    }
-
-    private fun applyViewportWidth(requestedWidth: Int?) {
-        val width = if (requestedWidth == null) viewportService.device() else viewportService.validate(requestedWidth)
-        if (requestedWidth != null && width == null) return
-        sessions[_uiState.value.selectedTabId]?.let { tab ->
-            tab.viewportWidth = width
-            tabService.update(tab.id) { it.copy(viewportWidth = tab.viewportWidth) }
-            persistTabs()
-            publish()
-        }
-    }
-
-    fun resetViewport() = setViewportPreset(settingsService.settings.value.defaultViewportWidthPx)
-
     fun toggleDeveloperTools() {
         if (!_uiState.value.settings.developerToolsEnabled) {
             storageService.saveDeveloperToolsOpen(false)
@@ -591,6 +564,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         storageService.saveDeveloperToolsOpen(open)
         _uiState.value = _uiState.value.copy(developerToolsOpen = open)
         if (open) developerToolsService.open() else developerToolsService.close()
+    }
+
+    fun setDeveloperToolsInteractionListener(listener: ((Boolean) -> Unit)?) {
+        developerToolsService.setInteractionListener(listener)
     }
 
     fun setDeveloperToolsEnabled(enabled: Boolean) {
@@ -611,8 +588,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         navigationService.setDesktopSite(enabled)
         navigationService.reload()
     }
-    fun clearHistoryEntry(value: String) {
-        historyService.remove(value)
+    fun clearHistoryEntry(id: String) {
+        historyService.remove(id)
+        val next = historyService.entries.value
+        _uiState.value = _uiState.value.copy(history = next)
+    }
+    fun clearHistoryUrl(value: String) {
+        historyService.removeUrl(value)
         val next = historyService.entries.value
         _uiState.value = _uiState.value.copy(history = next)
     }

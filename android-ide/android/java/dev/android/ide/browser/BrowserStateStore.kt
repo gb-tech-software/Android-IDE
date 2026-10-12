@@ -60,13 +60,39 @@ class BrowserStateStore(
         preferences.edit().putString(SELECTED_TAB_KEY, id).apply()
     }
 
-    override fun readHistory(): List<String> = runCatching {
+    override fun readHistory(): List<BrowserHistoryEntry> = runCatching {
         val array = JSONArray(preferences.getString(HISTORY_KEY, "[]"))
-        List(array.length()) { array.optString(it) }.filter(String::isNotBlank)
+        List(array.length()) { index ->
+            val item = array.opt(index)
+            when (item) {
+                is JSONObject -> BrowserHistoryEntry(
+                    id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                    url = item.optString("url").trim(),
+                    title = item.optString("title").ifBlank { item.optString("url") },
+                    visitedAt = item.optLong("visitedAt", 0L),
+                )
+                is String -> BrowserHistoryEntry(
+                    id = UUID.randomUUID().toString(),
+                    url = item.trim(),
+                    title = item.trim(),
+                    visitedAt = 0L,
+                )
+                else -> null
+            }
+        }.mapNotNull { entry -> entry?.takeIf { it.url.isNotBlank() } }
     }.getOrDefault(emptyList())
 
-    override fun saveHistory(history: List<String>) {
-        preferences.edit().putString(HISTORY_KEY, JSONArray(history).toString()).apply()
+    override fun saveHistory(history: List<BrowserHistoryEntry>) {
+        val array = JSONArray()
+        history.forEach { entry ->
+            array.put(JSONObject().apply {
+                put("id", entry.id)
+                put("url", entry.url)
+                put("title", entry.title)
+                put("visitedAt", entry.visitedAt)
+            })
+        }
+        preferences.edit().putString(HISTORY_KEY, array.toString()).apply()
     }
 
     override fun readSettings(): BrowserSettings = BrowserSettings(
