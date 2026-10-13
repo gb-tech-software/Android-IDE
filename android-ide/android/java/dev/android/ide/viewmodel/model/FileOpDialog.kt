@@ -57,6 +57,13 @@ sealed class FileOpDialog {
      */
     data class UnsavedClose(val tabId: String, val displayName: String) : FileOpDialog()
 
+    /** The file changed on disk while this tab also contains unsaved editor content. */
+    data class ExternalFileConflict(
+        val tabId: String,
+        val displayName: String,
+        val diskContent: String,
+    ) : FileOpDialog()
+
     /** Preview/confirmation and progress state for a project-wide replacement. */
     data class ReplaceAll(
         val find: String,

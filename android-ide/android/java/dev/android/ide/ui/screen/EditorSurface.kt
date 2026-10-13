@@ -856,6 +856,16 @@ private fun EditorDialogHost(
             )
         }
         is FileOpDialog.UnsavedClose -> AlertDialog(onDismissRequest = ideViewModel::dismissFileOpDialog, title = { Text("Unsaved changes") }, text = { Text("${dialog.displayName} has unsaved changes. Choose how to close it.") }, confirmButton = { TextButton(onClick = { ideViewModel.saveAndCloseTab(dialog.tabId) }) { Text("Save and close") } }, dismissButton = { Row { TextButton(onClick = { ideViewModel.confirmCloseTab(dialog.tabId) }) { Text("Discard", color = MaterialTheme.colorScheme.error) }; TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("Cancel") } } })
+        is FileOpDialog.ExternalFileConflict -> AlertDialog(
+            onDismissRequest = ideViewModel::dismissFileOpDialog,
+            title = { Text("File changed outside the editor") },
+            text = { Text("${dialog.displayName} was changed on disk while this tab has unsaved edits. Choose which version to keep.") },
+            confirmButton = { TextButton(onClick = { ideViewModel.useDiskContentAfterExternalChange(dialog.tabId) }) { Text("Use disk version") } },
+            dismissButton = { Row {
+                TextButton(onClick = { ideViewModel.keepEditorContentAfterExternalChange(dialog.tabId) }) { Text("Keep editor version") }
+                TextButton(onClick = ideViewModel::dismissFileOpDialog) { Text("Cancel") }
+            } },
+        )
         is FileOpDialog.Rename -> {
             val parentUri = dialog.node.parentDocumentUri ?: state.projectRootUri.orEmpty()
             val itemType = if (dialog.node.isDirectory) "folder" else "file"

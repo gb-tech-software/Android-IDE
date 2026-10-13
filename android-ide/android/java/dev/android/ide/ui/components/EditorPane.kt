@@ -124,7 +124,7 @@ fun EditorPane(
     var loadRetryNonce by remember { mutableIntStateOf(0) }
     val latestLoadRequestId by rememberUpdatedState(pendingLoadRequestId)
     val latestActiveDocumentUri by rememberUpdatedState(activeTab?.documentUri)
-    val modelIsLoading = activeTab != null && !activeTab.isImagePreview && (
+    val modelIsLoading = modelLoadError == null && activeTab != null && !activeTab.isImagePreview && (
         activeDocumentContent == null || (!isEditorReady && !editorCrashed) || loadedModelDocumentUri != activeTab.documentUri
     )
 
@@ -366,7 +366,7 @@ fun EditorPane(
             } else {
                 editorView(Modifier.fillMaxSize())
             }
-            if (modelIsLoading && activeTab != null) {
+            if ((modelIsLoading || modelLoadError != null) && activeTab != null) {
                 Box(
                     Modifier.fillMaxSize()
                         .background(colors.background)

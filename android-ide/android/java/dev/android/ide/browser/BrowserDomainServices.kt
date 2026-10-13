@@ -226,21 +226,54 @@ class ActiveBrowserNavigationService(
     private fun selectedSession(): BrowserEngineSession? = tabs.selectedTabId.value?.let(sessions::existingSession)
 }
 
-class BrowserPermissionPromptService : BrowserPermissionService {
+class BrowserPermissionPromptService(
+    private val storage: BrowserStorageService,
+) : BrowserPermissionService {
     private val mutablePending = MutableStateFlow<BrowserPermissionRequest?>(null)
+    private val mutableSitePermissions = MutableStateFlow(storage.readSitePermissions())
     override val pending: StateFlow<BrowserPermissionRequest?> = mutablePending.asStateFlow()
+    override val sitePermissions: StateFlow<List<BrowserSitePermission>> = mutableSitePermissions.asStateFlow()
 
     override fun request(request: BrowserPermissionRequest) {
+        mutableSitePermissions.value.firstOrNull {
+            it.origin == request.origin && it.permission == request.permission
+        }?.let { stored ->
+            request.decision.complete(stored.decision == BrowserPermissionDecision.ALLOW)
+            return
+        }
         mutablePending.value?.decision?.complete(false)
         mutablePending.value = request
     }
 
-    override fun answer(allow: Boolean) {
-        mutablePending.value?.decision?.complete(allow)
+    override fun answer(answer: BrowserPermissionAnswer) {
+        val request = mutablePending.value ?: return
+        val allow = answer == BrowserPermissionAnswer.ALLOW_ONCE || answer == BrowserPermissionAnswer.ALLOW_ALWAYS
+        val persists = answer == BrowserPermissionAnswer.ALLOW_ALWAYS || answer == BrowserPermissionAnswer.DENY_ALWAYS
+        if (persists) {
+            val record = BrowserSitePermission(
+                origin = request.origin,
+                permission = request.permission,
+                decision = if (allow) BrowserPermissionDecision.ALLOW else BrowserPermissionDecision.DENY,
+            )
+            val next = (mutableSitePermissions.value.filterNot {
+                it.origin == record.origin && it.permission == record.permission
+            } + record).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.origin })
+            storage.saveSitePermissions(next)
+            mutableSitePermissions.value = next
+        }
+        request.decision.complete(allow)
         mutablePending.value = null
     }
 
-    override fun cancel() = answer(false)
+    override fun revoke(origin: String, permission: String?) {
+        val next = mutableSitePermissions.value.filterNot {
+            it.origin == origin && (permission == null || it.permission == permission)
+        }
+        storage.saveSitePermissions(next)
+        mutableSitePermissions.value = next
+    }
+
+    override fun cancel() = answer(BrowserPermissionAnswer.DENY_ONCE)
 }
 
 /** Browser composition root: shared ownership of browser-specific services and persistence. */
@@ -256,7 +289,7 @@ class BrowserApplicationService internal constructor(
     val settings: BrowserSettingsService = StoredBrowserSettingsService(storage)
     val viewport: BrowserViewportService = BoundedBrowserViewportService()
     val tabs: BrowserTabService = BrowserTabRegistry { settings.settings.value.defaultViewportWidthPx }
-    val permissions: BrowserPermissionService = BrowserPermissionPromptService()
+    val permissions: BrowserPermissionService = BrowserPermissionPromptService(storage)
     val sessions: BrowserSessionService = BrowserSessionRegistry(engine)
     val navigation: BrowserNavigationService = ActiveBrowserNavigationService(tabs, sessions, settings)
     val downloads: BrowserDownloadService = AndroidBrowserDownloadService(context, storage, settings, applicationScope)

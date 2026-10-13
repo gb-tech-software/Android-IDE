@@ -131,6 +131,7 @@ data class BrowserDownloadRequest(
     val url: String,
     val mimeType: String,
     val fileName: String?,
+    val contentDisposition: String? = null,
     val body: InputStream? = null,
     val totalBytes: Long = -1L,
 )
@@ -139,6 +140,19 @@ data class BrowserPermissionRequest(
     val origin: String,
     val permission: String,
     val decision: CompletableDeferred<Boolean>,
+)
+enum class BrowserPermissionDecision { ALLOW, DENY }
+/** The scope selected by the user for the current website permission request. */
+enum class BrowserPermissionAnswer {
+    ALLOW_ONCE,
+    ALLOW_ALWAYS,
+    DENY_ONCE,
+    DENY_ALWAYS,
+}
+data class BrowserSitePermission(
+    val origin: String,
+    val permission: String,
+    val decision: BrowserPermissionDecision,
 )
 enum class BrowserContextKind { LINK, IMAGE, VIDEO, AUDIO, LINKED_MEDIA }
 data class BrowserContextMenuRequest(
@@ -280,6 +294,8 @@ interface BrowserStorageService {
     fun clearSiteData(onComplete: (Result<Unit>) -> Unit)
     fun developerToolsOpen(): Boolean
     fun saveDeveloperToolsOpen(open: Boolean)
+    fun readSitePermissions(): List<BrowserSitePermission>
+    fun saveSitePermissions(permissions: List<BrowserSitePermission>)
 }
 
 interface BrowserViewportService {
@@ -294,8 +310,10 @@ interface BrowserViewportService {
 
 interface BrowserPermissionService {
     val pending: StateFlow<BrowserPermissionRequest?>
+    val sitePermissions: StateFlow<List<BrowserSitePermission>>
     fun request(request: BrowserPermissionRequest)
-    fun answer(allow: Boolean)
+    fun answer(answer: BrowserPermissionAnswer)
+    fun revoke(origin: String, permission: String? = null)
     fun cancel()
 }
 

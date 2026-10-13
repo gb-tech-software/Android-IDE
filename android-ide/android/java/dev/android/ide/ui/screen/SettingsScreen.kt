@@ -614,6 +614,7 @@ private fun BrowserSettingsContent() {
     var searchSheetOpen by rememberSaveable { mutableStateOf(false) }
     var homeSheetOpen by rememberSaveable { mutableStateOf(false) }
     var themeSheetOpen by rememberSaveable { mutableStateOf(false) }
+    var sitePermissionsOpen by rememberSaveable { mutableStateOf(false) }
     var searchDraft by rememberSaveable(state.settings.customSearchUrl) { mutableStateOf(state.settings.customSearchUrl) }
     var homeDraft by rememberSaveable(state.settings.homePage) { mutableStateOf(state.settings.homePage) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
@@ -631,6 +632,15 @@ private fun BrowserSettingsContent() {
     }
     val browserRoleRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         message = if (result.resultCode == Activity.RESULT_OK) "Android IDE is now the selected browser" else "Browser role was not changed"
+    }
+    if (sitePermissionsOpen) {
+        BackHandler { sitePermissionsOpen = false }
+        SitePermissionsSettingsScreen(
+            state = state,
+            onBack = { sitePermissionsOpen = false },
+            onRevoke = browser::revokeSitePermission,
+        )
+        return
     }
     val searchLabels = mapOf("google" to "Google", "bing" to "Bing", "duckduckgo" to "DuckDuckGo", "brave" to "Brave Search", "startpage" to "Startpage", "custom" to "Custom")
     SettingsCard {
@@ -694,6 +704,15 @@ private fun BrowserSettingsContent() {
         VisibilitySettingRow("Enable developer tools", "Allow the current console, elements, and network panels.", state.settings.developerToolsEnabled, browser::setDeveloperToolsEnabled)
     }
     SettingsCard {
+        Text("Site permissions", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Website requests offer one-time or saved choices. Only saved choices appear here; Android may also show its own device-level options such as while using the app or limited access.",
+            style = MaterialTheme.typography.bodySmall,
+            color = LocalIdeColors.current.textSecondary,
+        )
+        OutlinedButton(onClick = { sitePermissionsOpen = true }) { Text("Manage site permissions") }
+    }
+    SettingsCard {
         Text("Browsing data", style = MaterialTheme.typography.titleSmall)
         Text("Clear site data, browser history, and download records. Downloaded files in the selected folder are not deleted.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
         OutlinedButton(onClick = browser::clearBrowserData, enabled = !state.clearingBrowserData) {
@@ -736,6 +755,56 @@ private fun BrowserSettingsContent() {
                 Row(Modifier.fillMaxWidth().clickable { browser.setTheme(id); themeSheetOpen = false }, verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = state.settings.theme == id, onClick = null)
                     Text(label)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SitePermissionsSettingsScreen(
+    state: dev.android.ide.browser.BrowserUiState,
+    onBack: () -> Unit,
+    onRevoke: (String, String?) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+                Text("Site permissions", style = MaterialTheme.typography.headlineSmall)
+            }
+        }
+        item {
+            Text(
+                "Saved website decisions are listed here. One-time decisions are discarded after the request. Android may separately show device-level choices such as while using the app or limited access.",
+                style = MaterialTheme.typography.bodySmall,
+                color = LocalIdeColors.current.textSecondary,
+            )
+        }
+        if (state.sitePermissions.isEmpty()) {
+            item { Text("No site permissions have been saved.", style = MaterialTheme.typography.bodyMedium) }
+        } else {
+            state.sitePermissions.groupBy { it.origin }.forEach { (origin, permissions) ->
+                item(key = origin) {
+                    SettingsCard {
+                        Text(origin, style = MaterialTheme.typography.titleSmall)
+                        permissions.forEach { permission ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "${permission.permission}: ${permission.decision.name.lowercase().replaceFirstChar(Char::uppercase)}",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = LocalIdeColors.current.textSecondary,
+                                )
+                                TextButton(onClick = { onRevoke(permission.origin, permission.permission) }) { Text("Revoke") }
+                            }
+                        }
+                        TextButton(onClick = { onRevoke(origin, null) }) { Text("Revoke all for site") }
+                    }
                 }
             }
         }

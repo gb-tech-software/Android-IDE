@@ -175,7 +175,10 @@ private class GeckoBrowserEngineSession(
                         tabId = tabId,
                         url = response.uri,
                         mimeType = response.headers["Content-Type"] ?: "application/octet-stream",
-                        fileName = response.uri.substringAfterLast('/').substringBefore('?').ifBlank { null },
+                        fileName = null,
+                        contentDisposition = response.headers.entries
+                            .firstOrNull { it.key.equals("Content-Disposition", ignoreCase = true) }
+                            ?.value,
                         body = response.body,
                         totalBytes = response.headers["Content-Length"]?.toLongOrNull() ?: -1L,
                     ),
@@ -183,6 +186,14 @@ private class GeckoBrowserEngineSession(
             }
         })
         geckoSession.setPermissionDelegate(object : PermissionDelegate {
+            override fun onAndroidPermissionsRequest(
+                session: GeckoSession,
+                permissions: Array<String>?,
+                callback: PermissionDelegate.Callback,
+            ) {
+                AndroidPermissionBroker.request(context, permissions, callback)
+            }
+
             override fun onContentPermissionRequest(
                 session: GeckoSession,
                 permission: PermissionDelegate.ContentPermission,
@@ -200,6 +211,36 @@ private class GeckoBrowserEngineSession(
                     )
                 }
                 return result
+            }
+
+            override fun onMediaPermissionRequest(
+                session: GeckoSession,
+                uri: String,
+                video: Array<PermissionDelegate.MediaSource>?,
+                audio: Array<PermissionDelegate.MediaSource>?,
+                callback: PermissionDelegate.MediaCallback,
+            ) {
+                val permission = when {
+                    video != null && audio != null -> "camera and microphone"
+                    video != null -> "camera"
+                    audio != null -> "microphone"
+                    else -> {
+                        callback.reject()
+                        return
+                    }
+                }
+                val decision = CompletableDeferred<Boolean>()
+                sink.onPermissionRequested(
+                    BrowserPermissionRequest(tabId, uri, permission, decision),
+                )
+                decision.invokeOnCompletion { cause ->
+                    val allowed = cause == null && runCatching { decision.getCompleted() }.getOrDefault(false)
+                    if (allowed) {
+                        callback.grant(video?.firstOrNull(), audio?.firstOrNull())
+                    } else {
+                        callback.reject()
+                    }
+                }
             }
         })
         geckoSession.setPromptDelegate(object : GeckoSession.PromptDelegate {

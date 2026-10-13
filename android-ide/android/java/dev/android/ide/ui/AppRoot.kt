@@ -32,7 +32,6 @@ import dev.android.ide.app.ExternalContentActionKind
 import dev.android.ide.app.ExternalContentRoute
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.contracts.Surface
-import dev.android.ide.editor.StandaloneEditorViewModel
 import dev.android.ide.project.CreateProjectTemplate
 import dev.android.ide.ui.shell.AppShell
 import dev.android.ide.ui.screen.humanReadableStorageLocation
@@ -44,7 +43,7 @@ private fun projectNameIsValid(name: String): Boolean =
 
 /** Composition root: owns Android launchers and reviewed acquisition workflow state. */
 @Composable
-fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standaloneEditorViewModel: StandaloneEditorViewModel, onExit: () -> Unit) {
+fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: () -> Unit) {
     val context = LocalContext.current
     val shellState by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
@@ -151,11 +150,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standalone
                 viewModel.requestBrowserNavigation(route.request.url, route.request.openInNewTab)
                 viewModel.consumeExternalContent(route.request.requestId)
             }
-            is ExternalContentRoute.Editor -> {
-                viewModel.navigate(Surface.STANDALONE_EDITOR)
-                standaloneEditorViewModel.open(route.request)
-                viewModel.consumeExternalContent(route.request.requestId)
-            }
             is ExternalContentRoute.ImportArchive -> {
                 zipUri = route.request.uri
                 zipName = (route.request.displayName ?: "Imported project").removeSuffix(".zip").ifBlank { "Imported project" }
@@ -211,7 +205,6 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, standalone
         AppShell(
             viewModel = viewModel,
             ideViewModel = ideViewModel,
-            standaloneEditorViewModel = standaloneEditorViewModel,
             onExit = onExit,
             onCreateProject = { initialName ->
                 viewModel.clearOperationFeedback()

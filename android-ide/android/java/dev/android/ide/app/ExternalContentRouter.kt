@@ -5,8 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
-import dev.android.ide.editor.EditorLanguageRegistry
-import dev.android.ide.editor.FileIconKind
 import dev.android.ide.saf.TextDocumentCodec
 import java.io.File
 import java.util.Locale
@@ -28,7 +26,7 @@ data class OpenUrlRequest(
     val requestId: String = UUID.randomUUID().toString(),
 )
 
-enum class ExternalContentActionKind { BROWSER, EDITOR, IMPORT_ARCHIVE, EXTERNAL }
+enum class ExternalContentActionKind { BROWSER, IMPORT_ARCHIVE, EXTERNAL }
 
 data class ExternalContentAction(
     val kind: ExternalContentActionKind,
@@ -38,7 +36,6 @@ data class ExternalContentAction(
 
 sealed interface ExternalContentRoute {
     data class Browser(val request: OpenUrlRequest) : ExternalContentRoute
-    data class Editor(val request: OpenContentRequest) : ExternalContentRoute
     data class ImportArchive(val request: OpenContentRequest) : ExternalContentRoute
     data class External(val request: OpenContentRequest) : ExternalContentRoute
     data class Choose(val request: OpenContentRequest, val actions: List<ExternalContentAction>) : ExternalContentRoute
@@ -84,12 +81,10 @@ class ExternalContentRouter {
         )
         val archive = isSupportedZip(mime, displayName)
         val browser = !archive && isBrowserRenderable(uri, mime, displayName)
-        val editor = !archive && isEditorOpenable(mime, displayName)
         val external = hasExternalViewer(context, request)
 
         val actions = buildList {
             if (browser) add(ExternalContentAction(ExternalContentActionKind.BROWSER, "Open in browser"))
-            if (editor) add(ExternalContentAction(ExternalContentActionKind.EDITOR, "Open in standalone editor"))
             if (archive) add(ExternalContentAction(ExternalContentActionKind.IMPORT_ARCHIVE, "Import ZIP as project"))
             if (external) add(ExternalContentAction(ExternalContentActionKind.EXTERNAL, "Open with another app", true))
         }
@@ -113,7 +108,6 @@ class ExternalContentRouter {
 
     private fun routeFor(request: OpenContentRequest, action: ExternalContentAction): ExternalContentRoute = when (action.kind) {
         ExternalContentActionKind.BROWSER -> ExternalContentRoute.Browser(OpenUrlRequest(request.uri, requestId = request.requestId))
-        ExternalContentActionKind.EDITOR -> ExternalContentRoute.Editor(request)
         ExternalContentActionKind.IMPORT_ARCHIVE -> ExternalContentRoute.ImportArchive(request)
         ExternalContentActionKind.EXTERNAL -> ExternalContentRoute.External(request)
     }
@@ -147,20 +141,6 @@ class ExternalContentRouter {
         if (mime in ZIP_MIME_TYPES) return true
         if (mime != null && mime !in GENERIC_MIME_TYPES) return false
         return displayName?.substringAfterLast('.', "")?.equals("zip", ignoreCase = true) == true
-    }
-
-    private fun isEditorOpenable(mime: String?, displayName: String?): Boolean {
-        if (mime?.startsWith("text/") == true || mime in setOf(
-                "application/json", "application/xml", "application/xhtml+xml", "image/svg+xml",
-                "application/javascript", "application/x-javascript",
-            ) || mime?.endsWith("+json") == true || mime?.endsWith("+xml") == true
-        ) return true
-        if (mime != null && mime !in GENERIC_MIME_TYPES) return false
-        val kind = displayName?.let { EditorLanguageRegistry.iconKindForFileName(it) } ?: return false
-        return kind !in setOf(
-            FileIconKind.GENERIC, FileIconKind.IMAGE, FileIconKind.ARCHIVE, FileIconKind.FONT,
-            FileIconKind.AUDIO, FileIconKind.VIDEO, FileIconKind.PDF, FileIconKind.DATABASE,
-        )
     }
 
     private fun normalizedMime(value: String?): String? = value?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT)
@@ -248,7 +228,6 @@ class ExternalContentRouter {
 
 internal fun ExternalContentRoute.requestId(): String? = when (this) {
     is ExternalContentRoute.Browser -> request.requestId
-    is ExternalContentRoute.Editor -> request.requestId
     is ExternalContentRoute.ImportArchive -> request.requestId
     is ExternalContentRoute.External -> request.requestId
     is ExternalContentRoute.Choose -> request.requestId

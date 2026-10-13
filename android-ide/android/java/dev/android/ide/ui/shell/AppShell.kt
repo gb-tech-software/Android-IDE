@@ -98,15 +98,12 @@ import dev.android.ide.ui.screen.EditorPanel
 import dev.android.ide.ui.screen.EditorSidebar
 import dev.android.ide.viewmodel.model.FileNode
 import dev.android.ide.viewmodel.IdeViewModel
-import dev.android.ide.editor.StandaloneEditorViewModel
-import dev.android.ide.ui.screen.StandaloneEditorSurface
 import kotlinx.coroutines.launch
 
 @Composable
 fun AppShell(
     viewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
-    standaloneEditorViewModel: StandaloneEditorViewModel,
     onExit: () -> Unit,
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
@@ -253,7 +250,6 @@ fun AppShell(
             viewModel = viewModel,
             ideViewModel = ideViewModel,
             browserViewModel = browserViewModel,
-            standaloneEditorViewModel = standaloneEditorViewModel,
             onNavigate = navigateAndCloseSidebar,
             onCreateProject = onCreateProject,
             onImportFolder = onImportFolder,
@@ -874,7 +870,6 @@ private fun SurfaceHost(
     viewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
     browserViewModel: BrowserViewModel,
-    standaloneEditorViewModel: StandaloneEditorViewModel,
     onNavigate: (Surface) -> Unit,
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
@@ -918,12 +913,6 @@ private fun SurfaceHost(
         )
         Surface.PROJECTS -> ProjectsSurface(state, viewModel, onCreateProject, onImportFolder, onImportZip, onExportProject, onExportProjects, onDuplicateProject, onRelocateProject, viewModel::openTerminalForProject, onFeedback, onOpenNavigation, modifier)
         Surface.PROJECT_DETAILS -> ProjectDetailsSurface(state, viewModel, onExportProject, onDuplicateProject, onRelocateProject, onOpenNavigation, modifier)
-        Surface.STANDALONE_EDITOR -> StandaloneEditorSurface(
-            viewModel = standaloneEditorViewModel,
-            editorSettings = ideState.editorSettings,
-            onBack = { if (!viewModel.back()) viewModel.requestExitConfirmation() },
-            modifier = modifier,
-        )
         Surface.EDITOR -> EditorSurface(
             shellState = state,
             shellViewModel = viewModel,
@@ -1004,7 +993,6 @@ private fun surfaceTitle(surface: Surface): String = when (surface) {
     Surface.PROJECTS -> "Projects"
     Surface.PROJECT_DETAILS -> "Project Details"
     Surface.EDITOR -> "Editor"
-    Surface.STANDALONE_EDITOR -> "Standalone editor"
     Surface.TERMINAL -> "Terminal"
     Surface.BROWSER -> "Browser"
     Surface.SETTINGS -> "Settings"

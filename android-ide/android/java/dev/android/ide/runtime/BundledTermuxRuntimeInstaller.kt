@@ -44,6 +44,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
             installInteractiveShellProfile()
             installStorageSetupCommand()
             installUrlNavigationCommand()
+            installIdeToolsPackage()
             shellStartupFailure()?.let { throw IOException(it) }
             OperationReport(OperationOutcome.COMPLETE, "Default Termux bootstrap is ready")
         }.getOrElse { error ->
@@ -66,6 +67,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
             "live-server", "pyright-langserver", "tsc", "tsserver", "typescript-language-server",
             "vscode-css-language-server", "vscode-html-language-server", "vscode-json-language-server",
         ).forEach { File(prefix, "lib/android-ide/bin/$it").delete() }
+        File(prefix, "lib/android-ide/tools/android-ide-tools").deleteRecursively()
     }
 
     /** The same environment is used by the preflight probe and the interactive PTY. */
@@ -74,7 +76,7 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         "PREFIX=${prefix.absolutePath}",
         "PATH=${File(prefix, "lib/android-ide/bin").absolutePath}:${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
         "SHELL=$shellPath",
-        "BROWSER=${File(prefix, "lib/android-ide/bin/android-ide-open-url").absolutePath}",
+        "BROWSER=${File(prefix, "lib/android-ide/bin/ide").absolutePath}",
         "LD_LIBRARY_PATH=${File(prefix, "lib").absolutePath}",
         "TMPDIR=${File(prefix, "tmp").absolutePath}",
         "TMP=${File(prefix, "tmp").absolutePath}",
@@ -298,12 +300,15 @@ fi
 printf 'Waiting for Android IDE storage setup to finish…\n'
 wait_seconds=0
 while [ ! -f "${'$'}result_file" ]; do
-    if [ "${'$'}wait_seconds" -ge 600 ]; then
+    if [ "${'$'}wait_seconds" -ge 300 ]; then
         printf 'Timed out waiting for Android IDE to finish storage setup. Run the command again.\n' >&2
         exit 1
     fi
     sleep 1
     wait_seconds=${'$'}((wait_seconds + 1))
+    if [ "${'$'}((wait_seconds % 10))" -eq 0 ]; then
+        printf 'Still waiting for Android IDE storage access… (%ss)\n' "${'$'}wait_seconds" >&2
+    fi
 done
 exec 3<"${'$'}result_file"
 IFS= read -r result_code <&3
@@ -320,6 +325,98 @@ if [ "${'$'}result_code" != "0" ]; then exit 1; fi
         setMode(command, EXECUTABLE_FILE_MODE)
     }
 
+    /** Install the structured, app-aware CLI package used by terminal workflows and diagnostics. */
+    private fun installIdeToolsPackage() {
+        val packageRoot = File(prefix, "lib/android-ide/tools/android-ide-tools")
+        ensureDirectory(packageRoot, PREFIX_DIRECTORY_MODE, "android-ide-tools package")
+        File(packageRoot, "package.conf").writeText(
+            """name=android-ide-tools
+version=1.0.0
+command=ide
+description=Android IDE inspection, testing, and app-control tools
+""".trimIndent() + "\n",
+        )
+        val commandDirectory = File(prefix, "lib/android-ide/bin")
+        val ide = File(commandDirectory, "ide")
+        ide.writeText(
+            """#!/system/bin/sh
+set -f
+IDE_TOOLS_VERSION=1.0.0
+URL_COMMAND="${'$'}{PREFIX:-$prefix}/lib/android-ide/bin/android-ide-open-url"
+usage() {
+    cat <<'USAGE'
+Usage: ide COMMAND [SUBCOMMAND] [OPTIONS]
+Android IDE inspection, testing, and app-control tools.
+Commands:
+  open [--current|--new-tab] URL   Open a URL in Android IDE Browser
+  browser open URL [OPTIONS]      Open a URL in Android IDE Browser
+  browser status                   Show browser bridge status
+  terminal status                  Show terminal runtime status
+  app status                       Show app-control capabilities
+  test browser-navigation          Check the browser command bridge
+  --help                          Show this help message
+  --version                       Show the package version
+Examples:
+  ide open localhost:3000
+  ide browser open --new-tab http://localhost:3000
+  ide browser open --current example.com
+  ide app status
+USAGE
+}
+error() { printf 'ide: error: %s\n\n' "${'$'}*" >&2; usage >&2; exit 2; }
+browser_status() {
+    printf 'Android IDE Browser\n  bridge: available\n  URL command: %s\n  navigation: intent + receipt confirmation\n' "${'$'}URL_COMMAND"
+}
+terminal_status() {
+    printf 'Android IDE Terminal\n  prefix: %s\n  home: %s\n' "${'$'}{PREFIX:-unavailable}" "${'$'}{HOME:-unavailable}"
+    if [ -x "${'$'}{PREFIX:-}/bin/sh" ]; then printf '  shell: ready\n'; else printf '  shell: unavailable\n'; fi
+}
+app_status() {
+    printf 'Android IDE tools\n  package: android-ide-tools\n  version: %s\n  browser: available\n' "${'$'}IDE_TOOLS_VERSION"
+    if [ -x "${'$'}{PREFIX:-}/bin/sh" ]; then printf '  terminal: available\n'; else printf '  terminal: unavailable\n'; fi
+    printf '  editor: app-owned; use the Editor workspace for file state\n'
+}
+if [ "${'$'}#" -eq 0 ]; then usage; exit 0; fi
+# BROWSER-compatible direct invocation: BROWSER URL
+case "${'$'}1" in
+    http://*|https://*|localhost:*|127.0.0.1:*|www.*|*.*)
+        exec "${'$'}URL_COMMAND" --new-tab "${'$'}@"
+        ;;
+esac
+case "${'$'}1" in
+    -h|--help) usage; exit 0 ;;
+    -v|-V|--version) printf 'android-ide-tools %s\n' "${'$'}IDE_TOOLS_VERSION"; exit 0 ;;
+    open) shift; [ "${'$'}#" -gt 0 ] || error 'missing URL for open'; exec "${'$'}URL_COMMAND" "${'$'}@" ;;
+    browser)
+        shift
+        case "${'$'}1" in
+            open) shift; [ "${'$'}#" -gt 0 ] || error 'missing URL for browser open'; exec "${'$'}URL_COMMAND" "${'$'}@" ;;
+            status) [ "${'$'}#" -eq 1 ] || error 'browser status does not accept arguments'; browser_status; exit 0 ;;
+            *) error "unknown browser command: ${'$'}1" ;;
+        esac
+        ;;
+    terminal) shift; [ "${'$'}1" = status ] && [ "${'$'}#" -eq 1 ] || error 'usage: ide terminal status'; terminal_status ;;
+    app) shift; [ "${'$'}1" = status ] && [ "${'$'}#" -eq 1 ] || error 'usage: ide app status'; app_status ;;
+    test)
+        shift
+        [ "${'$'}1" = browser-navigation ] && [ "${'$'}#" -eq 1 ] || error 'only browser-navigation is currently supported'
+        [ -x "${'$'}URL_COMMAND" ] || { printf 'FAIL browser-navigation: URL command is unavailable\n' >&2; exit 3; }
+        printf 'PASS browser-navigation: URL command and receipt bridge are installed\n'
+        ;;
+    *) error "unknown command: ${'$'}1" ;;
+esac
+""".trimIndent() + "\n",
+        )
+        setMode(ide, EXECUTABLE_FILE_MODE)
+        val packageCommand = File(commandDirectory, "android-ide-tools")
+        packageCommand.writeText(
+            """#!/system/bin/sh
+exec "${'$'}{PREFIX:-${prefix.absolutePath}}/lib/android-ide/bin/ide" "${'$'}@"
+""".trimIndent() + "\n",
+        )
+        setMode(packageCommand, EXECUTABLE_FILE_MODE)
+    }
+
     /** Publish ordinary URL navigation requests to the application; no external intent fallback is allowed. */
     private fun installUrlNavigationCommand() {
         val commandDirectory = File(prefix, "lib/android-ide/bin")
@@ -331,31 +428,77 @@ if [ "${'$'}result_code" != "0" ]; then exit 1; fi
         val packageName = context.packageName
         val receiptDirectory = File(context.filesDir, "browser-navigation-receipts").absolutePath
         val opener = File(commandDirectory, "android-ide-open-url")
-        opener.writeText(
+opener.writeText(
             """#!/system/bin/sh
 new_tab=true
+usage() {
+    cat >&2 <<'USAGE'
+Usage: android-ide-open-url [OPTIONS] URL
+
+Open an HTTP(S) URL in Android IDE Browser.
+
+Options:
+  --new-tab     Open the URL in a new browser tab (default)
+  --current     Reuse the current browser tab
+  -h, --help    Show this help message
+
+Examples:
+  android-ide-open-url --new-tab http://localhost:3000
+  android-ide-open-url --current https://example.com
+  android-ide-open-url localhost:3000
+USAGE
+}
 while [ "${'$'}#" -gt 0 ]; do
     case "${'$'}1" in
         --current) new_tab=false; shift ;;
         --new-tab) new_tab=true; shift ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --*)
+            printf 'android-ide-open-url: error: unknown option: %s\n\n' "${'$'}1" >&2
+            usage
+            exit 2
+            ;;
+        -*)
+            printf 'android-ide-open-url: error: invalid option: %s\n\n' "${'$'}1" >&2
+            usage
+            exit 2
+            ;;
         *) break ;;
     esac
 done
-if [ "${'$'}#" -lt 1 ]; then
-    echo 'usage: android-ide-open-url [--current|--new-tab] URL' >&2
+if [ "${'$'}#" -eq 0 ]; then
+    printf 'android-ide-open-url: error: missing URL\n\n' >&2
+    usage
+    exit 2
+fi
+if [ "${'$'}#" -gt 1 ]; then
+    printf 'android-ide-open-url: error: unexpected argument after URL: %s\n\n' "${'$'}2" >&2
+    usage
     exit 2
 fi
 url=${'$'}1
 case "${'$'}url" in
     localhost:*|127.0.0.1:*) url="http://${'$'}url" ;;
+    *://*) : ;;
+    *.*|www.*) url="https://${'$'}url" ;;
 esac
 case "${'$'}url" in
     http://*|https://*) ;;
-    *) echo 'Android IDE URL navigation accepts only HTTP(S) URLs.' >&2; exit 2 ;;
+    *)
+        printf 'android-ide-open-url: error: invalid URL %s\n' "${'$'}url" >&2
+        printf 'Only http://, https://, localhost:PORT, or 127.0.0.1:PORT URLs are supported.\n\n' >&2
+        usage
+        exit 2
+        ;;
 esac
 request_id=${'$'}(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')
 if [ -z "${'$'}request_id" ]; then request_id="term-${'$'}${'$'}-${'$'}(date +%s)"; fi
-receipt_directory="${'$'}receiptDirectory"
+# This value is embedded by the installer; it must not depend on an undefined
+# shell variable named receiptDirectory at runtime.
+receipt_directory="${receiptDirectory}"
 receipt="${'$'}receipt_directory/${'$'}request_id.status"
 mkdir -p "${'$'}receipt_directory" || { echo 'Unable to create Android IDE request receipt directory.' >&2; exit 1; }
 rm -f "${'$'}receipt"
@@ -379,7 +522,8 @@ while [ "${'$'}attempt" -lt 10 ]; do
         case "${'$'}status" in
             dispatched)
                 rm -f "${'$'}output_file"
-                printf 'Delivered URL request %s to Android IDE Browser: %s\n' "${'$'}request_id" "${'$'}url"
+                if [ "${'$'}new_tab" = true ]; then mode='new tab'; else mode='current tab'; fi
+                printf 'Opened %s in Android IDE Browser (%s). Request %s was dispatched.\n' "${'$'}url" "${'$'}mode" "${'$'}request_id"
                 exit 0
                 ;;
             rejected)
@@ -396,10 +540,11 @@ status=unconfirmed
 [ ! -f "${'$'}receipt" ] || status=${'$'}(cat "${'$'}receipt" 2>/dev/null)
 if [ "${'$'}status" = accepted ]; then
     rm -f "${'$'}output_file"
-    printf 'Android IDE accepted URL request %s, but Browser dispatch was not confirmed before the wait deadline.\n' "${'$'}request_id"
+    if [ "${'$'}new_tab" = true ]; then mode='new tab'; else mode='current tab'; fi
+    printf 'Android IDE accepted %s for the %s, but browser dispatch was not confirmed within 10 seconds (request %s).\n' "${'$'}url" "${'$'}mode" "${'$'}request_id"
     exit 0
 fi
-printf 'Android IDE did not confirm browser dispatch (request %s, status %s).\n' "${'$'}request_id" "${'$'}status" >&2
+printf 'Could not open %s in Android IDE Browser: dispatch status=%s (request %s).\n' "${'$'}url" "${'$'}status" "${'$'}request_id" >&2
 [ ! -s "${'$'}output_file" ] || cat "${'$'}output_file" >&2
 rm -f "${'$'}output_file"
 exit 1

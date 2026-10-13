@@ -56,6 +56,11 @@ public final class TerminalRenderer {
     /** Render the terminal to a canvas with at a specified row scroll, and an optional rectangular selection. */
     public final void render(TerminalEmulator mEmulator, Canvas canvas, int topRow,
                              int selectionY1, int selectionY2, int selectionX1, int selectionX2) {
+        // A reused view can briefly retain the previous session's scroll offset while
+        // the new emulator has no transcript. Clamp at the renderer boundary so an
+        // invalid row can never reach TerminalBuffer.externalToInternalRow().
+        final int activeTranscriptRows = mEmulator.getScreen().getActiveTranscriptRows();
+        topRow = Math.max(-activeTranscriptRows, Math.min(0, topRow));
         final boolean reverseVideo = mEmulator.isReverseVideo();
         final int endRow = topRow + mEmulator.mRows;
         final int columns = mEmulator.mColumns;

@@ -66,6 +66,10 @@ class BrowserSurfaceBinding(context: Context) : SwipeRefreshLayout(context) {
             session.attach(host)
         } else {
             onScrollChanged = onScroll
+            // onDetachedFromWindow releases the GeckoView session to prevent stale
+            // pixels. The same binding can be reused without changing tab identity,
+            // so sessionChanged is false even though the view is currently detached.
+            session.attach(host)
         }
 
         if (scrollListenerOwner != tabId || setScrollListener !== registerScrollListener) {

@@ -200,6 +200,38 @@ class BrowserStateStore(
         preferences.edit().putBoolean(DEVTOOLS_OPEN_KEY, open).apply()
     }
 
+    override fun readSitePermissions(): List<BrowserSitePermission> = runCatching {
+        val array = JSONArray(preferences.getString(SITE_PERMISSIONS_KEY, "[]"))
+        List(array.length()) { index ->
+            array.optJSONObject(index)?.let { item ->
+                val decision = runCatching {
+                    BrowserPermissionDecision.valueOf(item.optString("decision"))
+                }.getOrNull()
+                decision?.let {
+                    BrowserSitePermission(
+                        origin = item.optString("origin").trim(),
+                        permission = item.optString("permission").trim(),
+                        decision = it,
+                    )
+                }
+            }
+        }.mapNotNull { record ->
+            record?.takeIf { it.origin.isNotBlank() && it.permission.isNotBlank() }
+        }
+    }.getOrDefault(emptyList())
+
+    override fun saveSitePermissions(permissions: List<BrowserSitePermission>) {
+        val array = JSONArray()
+        permissions.distinctBy { it.origin to it.permission }.forEach { permission ->
+            array.put(JSONObject().apply {
+                put("origin", permission.origin)
+                put("permission", permission.permission)
+                put("decision", permission.decision.name)
+            })
+        }
+        preferences.edit().putString(SITE_PERMISSIONS_KEY, array.toString()).apply()
+    }
+
     companion object {
         private const val PREFS = "browser_state"
         private const val TABS_KEY = "tabs"
@@ -216,5 +248,6 @@ class BrowserStateStore(
         private const val DEFAULT_VIEWPORT_WIDTH_KEY = "default_viewport_width"
         private const val AUTO_RENAME_DUPLICATE_DOWNLOADS_KEY = "auto_rename_duplicate_downloads"
         private const val HISTORY_KEY = "navigation_history"
+        private const val SITE_PERMISSIONS_KEY = "site_permissions"
     }
 }

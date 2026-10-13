@@ -151,6 +151,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
      * Kept outside IdeUiState to avoid full Compose recomposition on every keystroke.
      */
     private val pendingContent = mutableMapOf<String, String>()
+    private val lastContentRevision = mutableMapOf<String, Long>()
+    private var openFileGeneration = 0L
     private val tabSaveMutexes = ConcurrentHashMap<String, Mutex>()
     private val lspDocumentVersions = mutableMapOf<String, Int>()
     private var workspaceSaveJob: Job? = null
@@ -1108,32 +1110,12 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         temporary: Boolean = false,
         pinned: Boolean = false,
     ) {
+        val requestGeneration = if (markActive) ++openFileGeneration else openFileGeneration
         if (markActive) _uiState.update { it.copy(languageIntelligenceAvailable = false, languageServerFeatures = emptySet()) }
         val existing = _uiState.value.openTabs.find { it.documentUri == documentUri }
         if (existing != null) {
             if (!temporary && existing.isTemporary) pinTab(existing.id)
-            if (markActive) selectTab(existing.id)
-            _uiState.update { it.copy(editorFileLoading = false) }
-            if (!existing.isDirty && pendingContent[existing.id] == null && existing.content != null) {
-                val bytes = fileMutations.read(documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
-                if (bytes != null && bytes.size <= MAX_EDITOR_DOCUMENT_BYTES) {
-                    val diskContent = withContext(Dispatchers.Default) { TextDocumentCodec.decode(bytes)?.text }
-                    val current = _uiState.value.openTabs.firstOrNull { it.id == existing.id }
-                    if (diskContent != null && current != null && !current.isDirty && pendingContent[current.id] == null && diskContent != current.content) {
-                        _uiState.update { state ->
-                            state.copy(openTabs = state.openTabs.map { if (it.id == current.id) it.copy(content = diskContent) else it })
-                        }
-                        sendEditorCommand(
-                            EditorOutbound.ReloadFile(
-                                path = documentUri,
-                                expectedCurrentContent = current.content,
-                                content = diskContent,
-                                language = current.language,
-                            ),
-                        )
-                    }
-                }
-            }
+            if (markActive) reopenExistingTab(existing) else _uiState.update { it.copy(editorFileLoading = false) }
             return
         }
 
@@ -1209,8 +1191,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 editorFileLoading = true,
             )
         }
-        if (markActive) sendEditorCommand(EditorOutbound.ClearActiveModel(UUID.randomUUID().toString()))
-
         fun failLoading(message: String, binaryFile: Boolean = false) {
             val restoreId = previousActiveTabId?.takeIf { id -> _uiState.value.openTabs.any { it.id == id } }
             _uiState.update { state ->
@@ -1229,7 +1209,13 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             if (_uiState.value.activeTabId == restoreId && restoreId != null) selectTab(restoreId)
         }
 
-        val bytes = fileMutations.read(documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
+        val bytes = withContext(Dispatchers.IO) {
+            fileMutations.read(documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
+        }
+        if (markActive && requestGeneration != openFileGeneration) {
+            _uiState.update { state -> state.copy(openTabs = state.openTabs.filterNot { it.id == loadingTab.id }) }
+            return
+        }
         if (bytes == null) {
             failLoading("Could not open file")
             return
@@ -1246,7 +1232,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val content = decodedFile.text
         val oldTemporaryUri = oldTemporaryTab?.documentUri
         if (oldTemporaryTab != null) pendingContent.remove(oldTemporaryTab.id)
+        if (_uiState.value.openTabs.none { it.id == loadingTab.id }) return
         _uiState.update { state ->
+            if (state.openTabs.none { it.id == loadingTab.id }) return@update
             val remaining = state.openTabs.filterNot { oldTemporaryTab != null && it.id == oldTemporaryTab.id }
             state.copy(
                 openTabs = remaining.map { tab ->
@@ -1263,6 +1251,59 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
         initializeLanguageServerDocument(loadingTab.id, documentUri, language, content, _uiState.value.projectRootUri)
         scheduleWorkspaceSave()
+    }
+
+    /** Validate only when an already-open file is explicitly reopened. */
+    private suspend fun reopenExistingTab(tab: EditorTab) {
+        selectTab(tab.id)
+        if (tab.isBlank || tab.isImagePreview || tab.content == null) {
+            _uiState.update { it.copy(editorFileLoading = false) }
+            return
+        }
+        val diskContent = withContext(Dispatchers.IO) {
+            fileMutations.read(tab.documentUri, maxBytes = MAX_EDITOR_DOCUMENT_BYTES)
+                ?.let(TextDocumentCodec::decode)?.text
+        }
+        if (diskContent == null) {
+            _uiState.update { it.copy(editorFileLoading = false, statusMessage = "Could not validate ${tab.displayName}; keeping the open editor content") }
+            return
+        }
+        if (diskContent == tab.content) {
+            _uiState.update { it.copy(editorFileLoading = false) }
+            return
+        }
+        if (tab.isDirty || pendingContent.containsKey(tab.id)) {
+            _uiState.update { it.copy(editorFileLoading = false, fileOpDialog = FileOpDialog.ExternalFileConflict(tab.id, tab.displayName, diskContent)) }
+            return
+        }
+        applyReopenedDiskContent(tab, diskContent, tab.content)
+    }
+
+    private fun applyReopenedDiskContent(tab: EditorTab, diskContent: String, expectedEditorContent: String?) {
+        pendingContent.remove(tab.id)
+        lastContentRevision.remove(tab.id)
+        _uiState.update { state ->
+            state.copy(
+                openTabs = state.openTabs.map { if (it.id == tab.id) it.copy(content = diskContent, isDirty = false, isSaving = false) else it },
+                editorFileLoading = false,
+                fileOpDialog = null,
+            )
+        }
+        sendEditorCommand(EditorOutbound.ReloadFile(tab.documentUri, expectedEditorContent, diskContent, tab.language))
+        initializeLanguageServerDocument(tab.id, tab.documentUri, tab.language, diskContent, _uiState.value.projectRootUri)
+        scheduleWorkspaceSave()
+    }
+
+    fun keepEditorContentAfterExternalChange(tabId: String) {
+        if (_uiState.value.openTabs.none { it.id == tabId }) return
+        _uiState.update { it.copy(fileOpDialog = null, editorFileLoading = false) }
+    }
+
+    fun useDiskContentAfterExternalChange(tabId: String) {
+        val dialog = _uiState.value.fileOpDialog as? FileOpDialog.ExternalFileConflict ?: return
+        if (dialog.tabId != tabId) return
+        val tab = _uiState.value.openTabs.firstOrNull { it.id == tabId } ?: return
+        applyReopenedDiskContent(tab, dialog.diskContent, tab.content)
     }
 
     private fun initializeLanguageServerDocument(
@@ -1445,6 +1486,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         pendingContent.remove(tabId)
+        lastContentRevision.remove(tabId)
         _uiState.value.projectRootUri?.let { projectRootUri ->
             crashRecovery.clearUnsavedContent(projectRootUri, tabId)
         }
@@ -1606,8 +1648,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Returns the latest draft when Monaco needs to be rebound after a layout change. */
-    fun editorContentForTab(tabId: String, fallback: String?): String =
-        pendingContent[tabId] ?: fallback.orEmpty()
+    fun editorContentForTab(tabId: String, fallback: String?): String? =
+        pendingContent[tabId] ?: fallback
 
     fun revealDiagnostic(diagnostic: EditorDiagnostic) {
         val state = _uiState.value
@@ -1639,6 +1681,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             is EditorInbound.ContentChanged -> {
                 val tab = _uiState.value.openTabs.find { it.documentUri == message.path } ?: return
                 if (tab.content == null && !tab.isBlank) return
+                val previousRevision = lastContentRevision[tab.id]
+                if (previousRevision != null && message.revision <= previousRevision) return
+                lastContentRevision[tab.id] = message.revision
                 pendingContent[tab.id] = message.content
                 _uiState.update { state ->
                     state.copy(openTabs = state.openTabs.map {

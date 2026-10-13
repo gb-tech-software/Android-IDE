@@ -294,6 +294,10 @@ public final class TerminalView extends View {
      */
     public boolean attachSession(TerminalSession session) {
         if (session == mTermSession) return false;
+        // A fling runnable may otherwise continue applying the old session's scroll
+        // coordinates after the view has been rebound to a new emulator.
+        mScroller.abortAnimation();
+        mScrollRemainder = 0.0f;
         mTopRow = 0;
 
         mTermSession = session;
@@ -994,6 +998,7 @@ public final class TerminalView extends View {
         int newRows = Math.max(4, (viewHeight - mRenderer.mFontLineSpacingAndAscent) / mRenderer.mFontLineSpacing);
 
         if (mEmulator == null || (newColumns != mEmulator.mColumns || newRows != mEmulator.mRows)) {
+            mScroller.abortAnimation();
             mTermSession.updateSize(newColumns, newRows, (int) mRenderer.getFontWidth(), mRenderer.getFontLineSpacing());
             mEmulator = mTermSession.getEmulator();
             mClient.onEmulatorSet();
@@ -1013,6 +1018,10 @@ public final class TerminalView extends View {
         if (mEmulator == null) {
             canvas.drawColor(0XFF000000);
         } else {
+            // Delayed scroll callbacks can carry the previous session's offset into a
+            // new emulator. Keep the view state valid before drawing or selection work.
+            int maxScroll = mEmulator.getScreen().getActiveTranscriptRows();
+            mTopRow = Math.max(-maxScroll, Math.min(0, mTopRow));
             // render the terminal view and highlight any selected text
             int[] sel = mDefaultSelectors;
             if (mTextSelectionCursorController != null) {
@@ -1058,7 +1067,12 @@ public final class TerminalView extends View {
     }
 
     public void setTopRow(int mTopRow) {
-        this.mTopRow = mTopRow;
+        if (mEmulator == null) {
+            this.mTopRow = 0;
+            return;
+        }
+        int maxScroll = mEmulator.getScreen().getActiveTranscriptRows();
+        this.mTopRow = Math.max(-maxScroll, Math.min(0, mTopRow));
     }
 
 

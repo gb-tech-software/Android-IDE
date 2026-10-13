@@ -19,7 +19,6 @@ import dev.android.ide.app.ExternalContentRoute
 import dev.android.ide.app.ExternalContentRouter
 import dev.android.ide.contracts.OpenUrlRequestProtocol
 import dev.android.ide.contracts.TerminalStorageSetupProtocol
-import dev.android.ide.editor.StandaloneEditorViewModel
 import dev.android.ide.ui.AppRoot
 import dev.android.ide.viewmodel.IdeViewModel
 
@@ -39,9 +38,6 @@ class MainActivity : ComponentActivity() {
     }
     val ideViewModel: IdeViewModel by lazy {
         ViewModelProvider(this)[IdeViewModel::class.java]
-    }
-    val standaloneEditorViewModel: StandaloneEditorViewModel by lazy {
-        ViewModelProvider(this)[StandaloneEditorViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,7 +59,6 @@ class MainActivity : ComponentActivity() {
             AppRoot(
                 viewModel = appShellViewModel,
                 ideViewModel = ideViewModel,
-                standaloneEditorViewModel = standaloneEditorViewModel,
                 onExit = ::finish,
             )
         }
@@ -73,6 +68,17 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIncomingIntent(intent)
+    }
+
+    @Deprecated("Use Activity Result APIs for new callers; GeckoView 129 exposes this callback contract.")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (!dev.android.ide.browser.AndroidPermissionBroker.onRequestPermissionsResult(requestCode, permissions, grantResults)) {
+            super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
     }
 
     private fun handleIncomingIntent(intent: Intent) {
@@ -112,7 +118,10 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         val filter = IntentFilter().apply { addAction(STORAGE_SETUP_ACTION) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(storageSetupReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            // termux-setup-storage invokes `am broadcast` from the bundled shell.
+            // That sender has a different UID, so NOT_EXPORTED rejects the request
+            // before the permission host can show any UI.
+            registerReceiver(storageSetupReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(storageSetupReceiver, filter)

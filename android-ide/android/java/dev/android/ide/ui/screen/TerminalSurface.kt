@@ -5,7 +5,11 @@ import android.os.Build
 import android.content.pm.PackageManager
 import android.view.KeyEvent
 import android.view.MotionEvent
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +29,6 @@ import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -47,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -361,33 +365,48 @@ private fun TerminalShortcutToolbar(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             TERMINAL_NAVIGATION_SHORTCUTS.forEach { shortcut ->
-                TerminalShortcutButton(shortcut.label, false) { onSend(shortcut) }
+                TerminalShortcutButton(
+                    label = shortcut.label,
+                    onClick = { onSend(shortcut) },
+                    onLongClick = shortcut.keyCode?.let { { onSend(shortcut) } },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun TerminalShortcutButton(label: String, selected: Boolean = false, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun TerminalShortcutButton(
+    label: String,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     val modifier = Modifier
         .height(38.dp)
+        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
         .semantics { this.selected = selected }
-    if (selected) {
-        Button(
-            onClick = onClick,
-            modifier = modifier,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+    Box(
+        modifier = modifier
+            .padding(vertical = 1.dp)
+            .background(
+                if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+            )
+            .border(
+                1.dp,
+                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
             ),
-        ) { Text(label, style = MaterialTheme.typography.labelMedium) }
-    } else {
-        androidx.compose.material3.OutlinedButton(
-            onClick = onClick,
-            modifier = modifier,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-        ) { Text(label, style = MaterialTheme.typography.labelMedium) }
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 12.dp),
+            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

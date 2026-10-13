@@ -44,8 +44,8 @@ sealed class EditorInbound {
     /** Monaco has detached the active model. */
     data class ActiveModelCleared(val requestId: String) : EditorInbound()
 
-    /** User edited the file; debounced 300 ms by monaco-init.js. */
-    data class ContentChanged(val path: String, val content: String) : EditorInbound()
+    /** User edited the file; [revision] prevents delayed stale bridge events from winning. */
+    data class ContentChanged(val path: String, val content: String, val revision: Long = 0L) : EditorInbound()
 
     /** Cursor moved; emitted on every cursor position change. */
     data class CursorMoved(val line: Int, val column: Int) : EditorInbound()
@@ -90,6 +90,7 @@ sealed class EditorInbound {
                 "contentChanged"       -> ContentChanged(
                     path    = obj.getString("path"),
                     content = obj.getString("content"),
+                    revision = obj.optLong("revision", 0L),
                 )
                 "cursorMoved"          -> CursorMoved(
                     line   = obj.getInt("line"),

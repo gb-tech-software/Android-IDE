@@ -88,6 +88,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -98,6 +99,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -107,6 +109,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
@@ -145,6 +148,7 @@ import dev.android.ide.browser.BrowserContextMenu
 import dev.android.ide.browser.BrowserNavigationFailure
 import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
+import dev.android.ide.browser.BrowserPermissionAnswer
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
 
@@ -417,23 +421,38 @@ private fun BrowserSurfaceContent(
                             onClick = { closeDrawerThen(browser::showHistoryPage) },
                             modifier = Modifier.padding(horizontal = 4.dp),
                         )
-                        if (state.settings.developerToolsEnabled) {
-                            NavigationDrawerItem(
-                                icon = { Icon(Icons.Default.DeveloperMode, contentDescription = null) },
-                                label = { Text(if (state.developerToolsOpen) "Hide developer tools" else "Show developer tools") },
-                                selected = false,
-                                onClick = { closeDrawerThen(browser::toggleDeveloperTools) },
-                                modifier = Modifier.padding(horizontal = 4.dp),
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                                closeDrawerThen { browser.setDesktopSiteDefault(!state.settings.desktopSiteDefault) }
+                            }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                                Text("Desktop site")
+                                Text("Request desktop pages for browser tabs", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = state.settings.desktopSiteDefault, onCheckedChange = { enabled -> closeDrawerThen { browser.setDesktopSiteDefault(enabled) } })
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                                closeDrawerThen {
+                                    if (!state.settings.developerToolsEnabled) browser.setDeveloperToolsEnabled(true)
+                                    browser.toggleDeveloperTools()
+                                }
+                            }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.DeveloperMode, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Developer tools", modifier = Modifier.weight(1f).padding(start = 16.dp))
+                            Switch(checked = state.developerToolsOpen, onCheckedChange = { open ->
+                                if (open != state.developerToolsOpen) closeDrawerThen {
+                                    if (open && !state.settings.developerToolsEnabled) browser.setDeveloperToolsEnabled(true)
+                                    browser.toggleDeveloperTools()
+                                }
+                            })
                         }
                         HorizontalDivider(Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
-                        NavigationDrawerItem(
-                            icon = { Icon(Icons.Default.Language, contentDescription = null) },
-                            label = { Text(if (state.settings.desktopSiteDefault) "Desktop site · On" else "Desktop site") },
-                            selected = state.settings.desktopSiteDefault,
-                            onClick = { closeDrawerThen { browser.setDesktopSiteDefault(!state.settings.desktopSiteDefault) } },
-                            modifier = Modifier.padding(horizontal = 4.dp),
-                        )
                     }
                 }
             }
@@ -441,6 +460,7 @@ private fun BrowserSurfaceContent(
             },
         ) {
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Box(modifier.fillMaxSize()) {
                 Column(modifier.fillMaxSize()) {
             TopAppBar(
                 title = { Text(when {
@@ -551,6 +571,7 @@ private fun BrowserSurfaceContent(
                             onRetry = browser::retryNavigationFailure,
                         )
                     } ?: state.selectedTabId?.let { tabId ->
+                        key(tabId) {
                         AndroidView(
                             factory = { browserContext ->
                                 BrowserSurfaceBinding(browserContext).apply {
@@ -581,6 +602,18 @@ private fun BrowserSurfaceContent(
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
+                        }
+                        if (state.loading && state.navigationFailure == null) {
+                            Box(
+                                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.72f))
+                                    Text("Loading…", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
                 }
                 if (addressFocused && addressSuggestionsOpen) {
                     val currentPage = browser.addressEditSuggestion()
@@ -637,10 +670,20 @@ private fun BrowserSurfaceContent(
                 }
             }
         }
+        if (drawerState.isOpen) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(1f)
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f))
+                    .clickable { drawerScope.launch { drawerState.close() } },
+            )
+        }
         }
     }
     }
 
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
     if (tabsOpen) {
         ModalBottomSheet(onDismissRequest = { setTabsOpen(false) }) {
             Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -686,11 +729,30 @@ private fun BrowserSurfaceContent(
     }
     state.permissionPrompt?.let { prompt ->
         AlertDialog(
-            onDismissRequest = { browser.answerPermission(false) },
+            onDismissRequest = { browser.answerPermission(BrowserPermissionAnswer.DENY_ONCE) },
             title = { Text("Site permission") },
-            text = { Text("${prompt.origin} requested ${prompt.permission}.") },
-            confirmButton = { TextButton(onClick = { browser.answerPermission(true) }) { Text("Allow") } },
-            dismissButton = { TextButton(onClick = { browser.answerPermission(false) }) { Text("Deny") } },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("${prompt.origin} requested ${prompt.permission}.")
+                    Text("Choose whether this applies only now or is remembered for this site.")
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.ALLOW_ONCE) }) { Text("Allow this time") }
+                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.ALLOW_ALWAYS) }) { Text("Allow and remember") }
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.DENY_ONCE) }) { Text("Deny this time") }
+                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.DENY_ALWAYS) }) { Text("Deny and remember") }
+                }
+            },
         )
     }
     state.duplicateDownload?.let { prompt ->
@@ -800,7 +862,8 @@ private fun WebsitePromptDialog(
         title = { Text(title) },
         text = {
             Column(
-                modifier = Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.Start,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 if (prompt.origin.isNotBlank()) {
@@ -847,7 +910,11 @@ private fun WebsitePromptDialog(
                         prompt.choices.forEach { choice ->
                             val selected = choice.id in selectedIds
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier.fillMaxWidth().clickable(enabled = !choice.disabled) {
+                                    selectedIds = if (prompt.multiple) {
+                                        if (selected) selectedIds - choice.id else selectedIds + choice.id
+                                    } else setOf(choice.id)
+                                },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 if (prompt.multiple) {
@@ -867,16 +934,13 @@ private fun WebsitePromptDialog(
                                 }
                                 Text(
                                     choice.label,
-                                    modifier = Modifier.clickable(enabled = !choice.disabled) {
-                                        selectedIds = if (prompt.multiple) {
-                                            if (selected) selectedIds - choice.id else selectedIds + choice.id
-                                        } else setOf(choice.id)
-                                    },
+                                    modifier = Modifier.weight(1f).padding(vertical = 8.dp),
                                     color = if (choice.disabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
-                        }
-                    }
+        )
+    }
+    }
+}
+}
                     else -> Unit
                 }
             }

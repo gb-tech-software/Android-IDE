@@ -46,6 +46,7 @@ data class BrowserUiState(
     val historyPageOpen: Boolean = false,
     val developerToolsOpen: Boolean = false,
     val permissionPrompt: BrowserPermissionPrompt? = null,
+    val sitePermissions: List<BrowserSitePermission> = emptyList(),
     val websitePrompt: BrowserWebsitePromptRequest? = null,
     val navigationFailure: BrowserNavigationFailure? = null,
     val duplicateDownload: DuplicateDownloadPrompt? = null,
@@ -114,6 +115,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             settings = settingsService.settings.value,
             history = historyService.entries.value,
             developerToolsOpen = storageService.developerToolsOpen() && settingsService.settings.value.developerToolsEnabled,
+            sitePermissions = permissionService.sitePermissions.value,
             duplicateDownload = downloadService.duplicatePrompt.value,
         ),
     )
@@ -130,6 +132,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.value = _uiState.value.copy(
                     permissionPrompt = request?.let { BrowserPermissionPrompt(it.origin, it.permission) },
                 )
+            }
+        }
+        viewModelScope.launch {
+            permissionService.sitePermissions.collect { permissions ->
+                _uiState.value = _uiState.value.copy(sitePermissions = permissions)
             }
         }
         viewModelScope.launch { downloadService.downloads.collect { _uiState.value = _uiState.value.copy(downloads = it) } }
@@ -315,10 +322,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun answerPermission(allow: Boolean) {
-        permissionService.answer(allow)
+    fun answerPermission(answer: BrowserPermissionAnswer) {
+        permissionService.answer(answer)
         _uiState.value = _uiState.value.copy(permissionPrompt = null)
-        if (!allow) setError("The site permission was denied")
+        if (answer == BrowserPermissionAnswer.DENY_ONCE || answer == BrowserPermissionAnswer.DENY_ALWAYS) {
+            setError("The site permission was denied")
+        }
+    }
+
+    fun revokeSitePermission(origin: String, permission: String? = null) {
+        permissionService.revoke(origin, permission)
     }
 
     fun answerWebsitePrompt(id: String, answer: BrowserWebsitePromptAnswer) {
@@ -577,6 +590,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             storageService.saveDeveloperToolsOpen(false)
             _uiState.value = _uiState.value.copy(developerToolsOpen = false)
         }
+        // The page bridge and Gecko viewport must be rebuilt after this mode
+        // change; a full reload prevents stale DevTools state or dimensions.
+        navigationService.reload()
     }
 
     fun setSearchEngine(engine: String) { updateSettings { it.copy(searchEngine = engine) } }

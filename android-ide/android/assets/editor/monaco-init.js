@@ -103,6 +103,7 @@ var monacoReady = false;
 var pendingNativeMessages = [];
 var contentChangeTimer = null;
 var CONTENT_CHANGE_DEBOUNCE_MS = 150;   // faster dirty-marking (was 300)
+var contentRevision = 0;
 var lspRequestId = 1;
 var lspPending = Object.create(null);
 var lspProviderDisposables = [];
@@ -120,7 +121,7 @@ function flushPendingContentChange() {
   if (!editor || !currentPath || contentChangeTimer === null) return;
   clearTimeout(contentChangeTimer);
   contentChangeTimer = null;
-  postToNative({ type: 'contentChanged', path: currentPath, content: editor.getValue() });
+  postToNative({ type: 'contentChanged', path: currentPath, content: editor.getValue(), revision: ++contentRevision });
 }
 
 function requestLsp(method, params, timeoutMs) {
@@ -613,6 +614,7 @@ require([
         type: 'contentChanged',
         path: currentPath,
         content: editor.getValue(),
+        revision: ++contentRevision,
       });
     }, CONTENT_CHANGE_DEBOUNCE_MS);
   });

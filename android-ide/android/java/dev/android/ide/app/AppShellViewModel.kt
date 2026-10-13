@@ -194,8 +194,15 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun createTerminalSession(workingDirectory: String? = null, name: String = "") {
         viewModelScope.launch {
+            // A new session opened from the terminal drawer follows the active
+            // session. Explicit project/folder launches still supply their own
+            // directory and therefore take precedence.
+            val inheritedWorkingDirectory = workingDirectory
+                ?: _state.value.terminalSessions
+                    .firstOrNull { it.id == _state.value.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
+                    ?.workingDirectory
             val session = terminalRuntime.createSession(
-                workingDirectory,
+                inheritedWorkingDirectory,
                 name.trim().ifBlank { "Untitled session" },
             )
             _state.update { state ->
@@ -559,7 +566,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 detailsLoading = false,
             )
         }
-        if (surface != Surface.STANDALONE_EDITOR) applicationState.recordSurface(surface)
+        applicationState.recordSurface(surface)
     }
 
     /** Queue an ordinary browser navigation request; the originating workflow is not encoded. */
@@ -599,7 +606,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         val request = choice.request
         val selected = when (action.kind) {
             ExternalContentActionKind.BROWSER -> ExternalContentRoute.Browser(OpenUrlRequest(request.uri, requestId = request.requestId))
-            ExternalContentActionKind.EDITOR -> ExternalContentRoute.Editor(request)
             ExternalContentActionKind.IMPORT_ARCHIVE -> ExternalContentRoute.ImportArchive(request)
             ExternalContentActionKind.EXTERNAL -> ExternalContentRoute.External(request)
         }

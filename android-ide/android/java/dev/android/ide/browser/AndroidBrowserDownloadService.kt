@@ -56,7 +56,8 @@ class AndroidBrowserDownloadService(
             mutableError.value = "The download did not provide a readable response"
             return
         }
-        val name = request.fileName?.takeIf(String::isNotBlank)
+        val name = parseContentDispositionFilename(request.contentDisposition)
+            ?: request.fileName?.takeIf(String::isNotBlank)
             ?: request.url.substringAfterLast('/').substringBefore('?').ifBlank { "download-${System.currentTimeMillis()}" }
         val mimeType = request.mimeType.ifBlank { "application/octet-stream" }
         val retryHint = retryHints.remove(request.url)?.takeIf { it.expiresAt > System.currentTimeMillis() }
@@ -425,6 +426,34 @@ class AndroidBrowserDownloadService(
             DocumentsContract.createDocument(resolver, parent, mimeType, name)
         }
     }.getOrNull()
+
+    /** Prefer RFC 6266 filename* over filename, while rejecting path traversal and unsafe names. */
+    private fun parseContentDispositionFilename(header: String?): String? {
+        if (header.isNullOrBlank()) return null
+        val parameters = Regex("(?i)(?:^|;)\\s*([^=;\\s]+)\\s*=\\s*(\"(?:\\\\.|[^\"])*\"|[^;]*)")
+            .findAll(header)
+            .associate { match -> match.groupValues[1].lowercase() to match.groupValues[2].trim() }
+        val encoded = parameters["filename*"]?.let { value ->
+            unquoteHeaderValue(value).let { it.substringAfter("''", it) }.let(Uri::decode)
+        }
+        val plain = parameters["filename"]?.let(::unquoteHeaderValue)
+        return sanitizeDownloadName(encoded ?: plain)
+    }
+
+    private fun unquoteHeaderValue(value: String): String =
+        value.removePrefix("\"").removeSuffix("\"")
+            .replace(Regex("\\\\(.)"), "$1")
+
+    private fun sanitizeDownloadName(value: String?): String? {
+        val clean = value?.trim()
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('\\')
+            ?.replace(Regex("[\\u0000-\\u001f\\u007f<>:\"/\\\\|?*]"), "_")
+            ?.trim('.', ' ')
+            ?.take(240)
+            ?.takeIf(String::isNotBlank)
+        return clean
+    }
 
     private fun publishPartialIfNeeded(uri: Uri) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.authority == "media") {
