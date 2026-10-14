@@ -143,6 +143,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     init {
         terminalRuntime.setTerminalFeedbackListener { report ->
             _state.update { it.copy(terminalFeedback = report) }
+            refreshTerminalSessions()
         }
         viewModelScope.launch {
             terminalRuntime.initializationProgress.collect { progress ->

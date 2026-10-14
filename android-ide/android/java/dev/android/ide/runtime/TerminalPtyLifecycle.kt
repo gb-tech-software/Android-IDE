@@ -61,6 +61,7 @@ class TerminalPtyLifecycle(
             ContextCompat.startForegroundService(appContext, Intent(appContext, TerminalForegroundService::class.java))
             sessions[id] = LiveSession(descriptor, session)
             persistence.upsert(descriptor)
+            TerminalForegroundService.updateNotification(appContext)
             descriptor
         }.getOrElse { error -> unavailable(id, sessionName, error.message ?: "Unable to start terminal session") }
     }
@@ -143,6 +144,7 @@ class TerminalPtyLifecycle(
         viewInvalidators.remove(sessionId)
         live?.let(::terminateOwnedProcessGroup)
         val removed = persistence.remove(sessionId)
+        TerminalForegroundService.updateNotification(appContext)
         if (sessions.isEmpty()) appContext.stopService(Intent(appContext, TerminalForegroundService::class.java))
         return if (live != null || removed) OperationReport(OperationOutcome.COMPLETE, "Terminal session closed", affectedIds = listOf(sessionId))
         else OperationReport(OperationOutcome.BLOCKED, "The terminal session was not found", ErrorCategory.PROCESS_LOSS)
@@ -184,6 +186,7 @@ class TerminalPtyLifecycle(
         val unavailable = live.descriptor.copy(availability = SessionAvailability.UNAVAILABLE, terminationReason = reason)
         live.descriptor = unavailable
         persistence.upsert(unavailable)
+        TerminalForegroundService.updateNotification(appContext)
         viewInvalidators.remove(sessionId)?.invoke()
     }
 
@@ -219,6 +222,11 @@ class TerminalPtyLifecycle(
                 return
             }
             markUnavailable(id, "Terminal process ended with exit code ${finishedSession.exitStatus}")
+            onFeedback(OperationReport(
+                OperationOutcome.COMPLETE,
+                "Terminal session closed",
+                affectedIds = listOf(id),
+            ))
             if (sessions.isEmpty()) appContext.stopService(Intent(appContext, TerminalForegroundService::class.java))
         }
         override fun onCopyTextToClipboard(session: TerminalSession, text: String) {

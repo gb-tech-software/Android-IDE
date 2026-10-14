@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -636,7 +637,7 @@ private fun ContextualNavigation(
                             })
                         }
                         item {
-                            NavigationItem(Icons.Default.Download, if (activeDownloads > 0) "Downloads · $activeDownloads active" else "Downloads", false, onClick = {
+                            NavigationItem(if (activeDownloads > 0) Icons.Default.Downloading else Icons.Default.Download, if (activeDownloads > 0) "Downloads · $activeDownloads active" else "Downloads", false, onClick = {
                                 browserViewModel.showDownloadsPage()
                                 onNavigate(Surface.BROWSER, true)
                             })

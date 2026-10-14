@@ -2,6 +2,7 @@ package dev.android.ide.browser
 
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.SharedFlow
 import java.io.InputStream
 
 internal const val DEFAULT_HOME = "https://www.google.com"
@@ -249,6 +250,7 @@ interface BrowserDownloadService {
     val downloads: StateFlow<List<BrowserDownload>>
     val duplicatePrompt: StateFlow<DuplicateDownloadPrompt?>
     val error: StateFlow<String?>
+    val feedback: SharedFlow<String>
     fun accept(request: BrowserDownloadRequest)
     fun resolveDuplicate(name: String?, autoRenameFutureConflicts: Boolean)
     fun pause(downloadId: String): Boolean

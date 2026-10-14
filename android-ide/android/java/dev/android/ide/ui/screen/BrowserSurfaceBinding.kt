@@ -1,10 +1,9 @@
 package dev.android.ide.ui.screen
 
 import android.content.Context
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import android.widget.FrameLayout
 import dev.android.ide.browser.BrowserEngineSession
 import dev.android.ide.browser.GeckoViewBrowserSurfaceHost
 import org.mozilla.geckoview.GeckoView
@@ -14,16 +13,13 @@ import org.mozilla.geckoview.GeckoView
  * Session attachment is repeated only when the tab/session identity changes;
  * scroll callback updates are independently diffed.
  */
-class BrowserSurfaceBinding(context: Context) : SwipeRefreshLayout(context) {
+class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     val engineView = GeckoView(context)
     val pageScrollY: Int get() = trackedScrollY
-    var devToolsInteractionActive: Boolean = false
-
     private val host = GeckoViewBrowserSurfaceHost(engineView)
     private var trackedScrollY = 0
     private var activeTabId: String? = null
     private var activeSession: BrowserEngineSession? = null
-    private var multiTouchGestureActive = false
     private var onScrollChanged: ((Int) -> Unit)? = null
     private var scrollListenerOwner: String? = null
     private var setScrollListener: ((String, ((Int) -> Unit)?) -> Unit)? = null
@@ -34,19 +30,6 @@ class BrowserSurfaceBinding(context: Context) : SwipeRefreshLayout(context) {
 
     init {
         addView(engineView, ViewGroup.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        setOnChildScrollUpCallback { _, _ -> trackedScrollY > 0 || engineView.canScrollVertically(-1) }
-    }
-
-    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
-        if (devToolsInteractionActive) return false
-        if (ev.actionMasked == MotionEvent.ACTION_DOWN) multiTouchGestureActive = false
-        if (ev.pointerCount > 1) multiTouchGestureActive = true
-
-        val intercepted = if (multiTouchGestureActive) false else super.onInterceptTouchEvent(ev)
-        if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-            multiTouchGestureActive = false
-        }
-        return intercepted
     }
 
     fun bind(

@@ -357,7 +357,11 @@ private fun TerminalShortcutToolbar(
             TerminalShortcutButton("Alt", altLatched, onAltToggle)
             TerminalShortcutButton("Esc mod", escapeLatched, onEscapeToggle)
             TERMINAL_CONTROL_SHORTCUTS.forEach { shortcut ->
-                TerminalShortcutButton(shortcut.label, false) { onSend(shortcut) }
+                TerminalShortcutButton(
+                    label = shortcut.label,
+                    selected = false,
+                    onClick = { onSend(shortcut) },
+                )
             }
         }
         Row(

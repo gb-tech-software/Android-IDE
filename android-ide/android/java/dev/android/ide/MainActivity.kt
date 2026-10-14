@@ -17,8 +17,12 @@ import dev.android.ide.app.AppShellViewModel
 import dev.android.ide.app.ApplicationServices
 import dev.android.ide.app.ExternalContentRoute
 import dev.android.ide.app.ExternalContentRouter
+import dev.android.ide.browser.AndroidBrowserDownloadService
+import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.contracts.OpenUrlRequestProtocol
+import dev.android.ide.contracts.Surface
 import dev.android.ide.contracts.TerminalStorageSetupProtocol
+import dev.android.ide.runtime.TerminalForegroundService
 import dev.android.ide.ui.AppRoot
 import dev.android.ide.viewmodel.IdeViewModel
 
@@ -38,6 +42,9 @@ class MainActivity : ComponentActivity() {
     }
     val ideViewModel: IdeViewModel by lazy {
         ViewModelProvider(this)[IdeViewModel::class.java]
+    }
+    val browserViewModel: BrowserViewModel by lazy {
+        ViewModelProvider(this)[BrowserViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -82,6 +89,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(intent: Intent) {
+        when (intent.action) {
+            TerminalForegroundService.ACTION_OPEN_TERMINAL -> {
+                appShellViewModel.navigate(Surface.TERMINAL)
+                return
+            }
+            TerminalForegroundService.ACTION_EXIT_ALL_TERMINALS -> {
+                appShellViewModel.closeAllTerminalSessions()
+                appShellViewModel.navigate(Surface.TERMINAL)
+                return
+            }
+            TerminalForegroundService.ACTION_SHUTDOWN_APP -> {
+                appShellViewModel.exit { finishAndRemoveTask() }
+                return
+            }
+            AndroidBrowserDownloadService.ACTION_RETRY_DOWNLOAD -> {
+                intent.getStringExtra(AndroidBrowserDownloadService.EXTRA_DOWNLOAD_ID)
+                    ?.let(browserViewModel::retryDownload)
+                browserViewModel.showDownloadsPage()
+                appShellViewModel.navigate(Surface.BROWSER)
+                return
+            }
+        }
+        if (intent.action == AndroidBrowserDownloadService.ACTION_OPEN_DOWNLOADS) {
+            browserViewModel.showDownloadsPage()
+            appShellViewModel.navigate(Surface.BROWSER)
+            return
+        }
         if (intent.action == OpenUrlRequestProtocol.ACTION) {
             val requestId = intent.getStringExtra(OpenUrlRequestProtocol.REQUEST_ID_EXTRA)
                 ?.takeIf { REQUEST_ID_PATTERN.matches(it) }

@@ -133,7 +133,10 @@ private class GeckoBrowserEngineSession(
 
             override fun onPageStop(session: GeckoSession, success: Boolean) {
                 sink.onProgressChanged(BrowserProgressChanged(tabId, 100))
-                val historyAddress = pendingHistoryAddress ?: lastKnownUrl
+                // Only explicit navigations carry a history address. Reloads,
+                // restore, tab activation, and back/forward must not fabricate
+                // new global history entries from the current URL.
+                val historyAddress = pendingHistoryAddress
                 pendingHistoryAddress = null
                 sink.onPageLoadCompleted(BrowserPageLoadCompleted(tabId, success, historyAddress))
             }

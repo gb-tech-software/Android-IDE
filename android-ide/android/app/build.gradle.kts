@@ -148,8 +148,6 @@ dependencies {
     implementation("br.com.devsrsouza.compose.icons:simple-icons-android:1.1.1")
     // GeckoView Stable is the approved embedded browser engine foundation.
     implementation("org.mozilla.geckoview:geckoview:129.0.20240819150008")
-    // Browser pull-to-refresh container around GeckoView.
-    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
 
     // ── Activity ───────────────────────────────────────────────────────────
     // ComponentActivity.setContent {} + rememberLauncherForActivityResult

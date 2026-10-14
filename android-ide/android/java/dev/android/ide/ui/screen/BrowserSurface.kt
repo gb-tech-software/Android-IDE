@@ -9,8 +9,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +49,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeveloperMode
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Language
@@ -72,6 +78,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -88,6 +96,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
@@ -112,6 +122,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -195,15 +206,12 @@ fun BrowserSurface(
     var urlRowVisible by remember { mutableStateOf(true) }
     var previousScrollY by remember { mutableIntStateOf(0) }
     var tabSearchQuery by remember { mutableStateOf("") }
-    var devToolsInteractionActive by remember { mutableStateOf(false) }
     val visibleBrowserSurface = remember { mutableStateOf<BrowserSurfaceBinding?>(null) }
     val focusManager = LocalFocusManager.current
 
     DisposableEffect(browser) {
-        browser.setDeveloperToolsInteractionListener { active -> devToolsInteractionActive = active }
         onDispose {
-            browser.setDeveloperToolsInteractionListener(null)
-            visibleBrowserSurface.value?.devToolsInteractionActive = false
+            visibleBrowserSurface.value = null
         }
     }
 
@@ -260,7 +268,6 @@ fun BrowserSurface(
             browser = browser,
             registerScrollListener = registerScrollListener,
             visibleBrowserSurface = visibleBrowserSurface,
-            devToolsInteractionActive = devToolsInteractionActive,
             addressValue = addressValue,
             debouncedSuggestionQuery = debouncedSuggestionQuery,
             setAddressValue = { addressValue = it },
@@ -296,7 +303,6 @@ private fun BrowserSurfaceContent(
     browser: BrowserViewModel,
     registerScrollListener: (String, ((Int) -> Unit)?) -> Unit,
     visibleBrowserSurface: androidx.compose.runtime.MutableState<BrowserSurfaceBinding?>,
-    devToolsInteractionActive: Boolean,
     addressValue: TextFieldValue,
     debouncedSuggestionQuery: String,
     setAddressValue: (TextFieldValue) -> Unit,
@@ -322,6 +328,13 @@ private fun BrowserSurfaceContent(
     val focusManager = LocalFocusManager.current
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(state.downloadFeedback) {
+        state.downloadFeedback?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            browser.clearDownloadFeedback()
+        }
+    }
     BackHandler(enabled = drawerState.isOpen) {
         drawerScope.launch { drawerState.close() }
     }
@@ -373,7 +386,7 @@ private fun BrowserSurfaceContent(
                                 onClick = { closeDrawerThen(browser::goForward) },
                             )
                             BrowserDrawerQuickAction(
-                                icon = Icons.Default.Download,
+                                icon = if (activeDownloadCount > 0) Icons.Default.Downloading else Icons.Default.Download,
                                 label = "Downloads",
                                 onClick = { closeDrawerThen(browser::showDownloadsPage) },
                             )
@@ -408,7 +421,7 @@ private fun BrowserSurfaceContent(
                             modifier = Modifier.padding(horizontal = 4.dp),
                         )
                         NavigationDrawerItem(
-                            icon = { Icon(Icons.Default.Download, contentDescription = null) },
+                            icon = { Icon(if (activeDownloadCount > 0) Icons.Default.Downloading else Icons.Default.Download, contentDescription = null) },
                             label = { Text(if (activeDownloadCount > 0) "Downloads · $activeDownloadCount active" else "Downloads") },
                             selected = false,
                             onClick = { closeDrawerThen(browser::showDownloadsPage) },
@@ -531,8 +544,10 @@ private fun BrowserSurfaceContent(
                                         if (focusState.isFocused && !addressFocused) {
                                             setAddressFocused(true)
                                             setAddressSuggestionsOpen(true)
-                                            val current = state.address
-                                            setAddressValue(TextFieldValue(current, TextRange(0, current.length)))
+                                            // Keep the current page available as the first
+                                            // suggestion, but give the user a truly empty
+                                            // field for a new search or address.
+                                            setAddressValue(TextFieldValue("", TextRange.Zero))
                                         } else if (!focusState.isFocused && addressFocused) {
                                             setAddressFocused(false)
                                             setAddressSuggestionsOpen(false)
@@ -541,7 +556,27 @@ private fun BrowserSurfaceContent(
                                     },
                                     singleLine = true,
                                     placeholder = { Text("Search or enter address") },
-                                    leadingIcon = { Icon(Icons.Default.Language, "Current page") },
+                                    leadingIcon = if (state.loading || !addressFocused) ({
+                                        val transition = rememberInfiniteTransition(label = "browser-load-control")
+                                        val flashingAlpha by transition.animateFloat(
+                                            initialValue = 0.45f,
+                                            targetValue = 1f,
+                                            animationSpec = infiniteRepeatable(
+                                                animation = tween(650),
+                                                repeatMode = RepeatMode.Reverse,
+                                            ),
+                                            label = "browser-load-alpha",
+                                        )
+                                        IconButton(
+                                            onClick = if (state.loading) browser::stop else browser::reload,
+                                        ) {
+                                            Icon(
+                                                imageVector = if (state.loading) Icons.Default.Stop else Icons.Default.Refresh,
+                                                contentDescription = if (state.loading) "Stop loading" else "Reload page",
+                                                modifier = Modifier.alpha(if (state.loading) flashingAlpha else 1f),
+                                            )
+                                        }
+                                    }) else null,
                                     shape = RoundedCornerShape(26.dp),
                                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                     keyboardActions = KeyboardActions(onSearch = {
@@ -576,19 +611,12 @@ private fun BrowserSurfaceContent(
                             factory = { browserContext ->
                                 BrowserSurfaceBinding(browserContext).apply {
                                     visibleBrowserSurface.value = this
-                                    setOnRefreshListener { browser.reload() }
                                 }
                             },
                             update = { surfaceBinding: BrowserSurfaceBinding ->
                                 visibleBrowserSurface.value = surfaceBinding
-                                // DevTools itself reports launcher/panel touches through the
-                                // extension bridge; ordinary page pull-to-refresh remains enabled.
-                                surfaceBinding.devToolsInteractionActive = devToolsInteractionActive
                                 browser.engineSession(tabId)?.let { engineSession ->
                                     surfaceBinding.bind(tabId, engineSession, registerScrollListener) { scrollY ->
-                                        // SwipeRefreshLayout decides whether to intercept before the engine view
-                                        // receives a drag. Keep this value current so an upward/downward
-                                        // page scroll remains a page scroll everywhere except document top.
                                         setUrlRowVisible(when {
                                             scrollY <= 0 -> true
                                             scrollY > previousScrollY + 2 -> false
@@ -598,7 +626,6 @@ private fun BrowserSurfaceContent(
                                         setPreviousScrollY(scrollY)
                                     }
                                 }
-                                if (!state.loading) surfaceBinding.isRefreshing = false
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
@@ -679,6 +706,10 @@ private fun BrowserSurfaceContent(
                     .clickable { drawerScope.launch { drawerState.close() } },
             )
         }
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).zIndex(3f),
+        )
         }
     }
     }
@@ -936,11 +967,10 @@ private fun WebsitePromptDialog(
                                     choice.label,
                                     modifier = Modifier.weight(1f).padding(vertical = 8.dp),
                                     color = if (choice.disabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface,
-        )
-    }
-    }
-}
-}
+                                )
+                            }
+                        }
+                    }
                     else -> Unit
                 }
             }
@@ -1339,18 +1369,39 @@ private fun DownloadsScreen(
     browser: BrowserViewModel,
     modifier: Modifier = Modifier,
 ) {
-    val active = downloads.filter { it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED }
-        .sortedByDescending { it.timestamp }
-    val completed = downloads.filter { it.status == BrowserDownloadStatus.COMPLETED && it.available }
-        .sortedByDescending { it.timestamp }
-    val attention = downloads.filterNot { it in active || it in completed }
-        .sortedByDescending { it.timestamp }
+    var sort by remember { mutableStateOf(DownloadSort.DATE) }
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    val ordered = when (sort) {
+        DownloadSort.DATE -> downloads.sortedByDescending { it.timestamp }
+        DownloadSort.NAME -> downloads.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        DownloadSort.SIZE -> downloads.sortedByDescending { it.size.coerceAtLeast(it.downloadedBytes) }
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("All downloads · ${downloads.size}", style = MaterialTheme.typography.titleSmall)
+                Box {
+                    TextButton(onClick = { sortMenuOpen = true }) { Text("Sort: ${sort.label}") }
+                    DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                        DownloadSort.values().forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = { sort = option; sortMenuOpen = false },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         if (downloads.isEmpty()) {
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -1362,25 +1413,11 @@ private fun DownloadsScreen(
                 }
             }
         }
-        if (active.isNotEmpty()) {
-            item { DownloadSectionTitle("In progress", active.size) }
-            items(active, key = { it.id }) { item -> DownloadRow(item, browser) }
-        }
-        if (attention.isNotEmpty()) {
-            item { DownloadSectionTitle("Needs attention", attention.size) }
-            items(attention, key = { it.id }) { item -> DownloadRow(item, browser) }
-        }
-        if (completed.isNotEmpty()) {
-            item { DownloadSectionTitle("Completed", completed.size) }
-            items(completed, key = { it.id }) { item -> DownloadRow(item, browser) }
-        }
+        items(ordered, key = { it.id }) { item -> DownloadRow(item, browser) }
     }
 }
 
-@Composable
-private fun DownloadSectionTitle(title: String, count: Int) {
-    Text("$title · $count", modifier = Modifier.padding(top = 8.dp, bottom = 2.dp), style = MaterialTheme.typography.titleSmall)
-}
+private enum class DownloadSort(val label: String) { DATE("Date"), NAME("Name"), SIZE("Size") }
 
 @Composable
 private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {

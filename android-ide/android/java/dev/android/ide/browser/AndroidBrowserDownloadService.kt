@@ -3,6 +3,10 @@ package dev.android.ide.browser
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -14,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -34,6 +40,7 @@ class AndroidBrowserDownloadService(
     private val mutableDownloads = MutableStateFlow(storage.readDownloads())
     private val mutableDuplicatePrompt = MutableStateFlow<DuplicateDownloadPrompt?>(null)
     private val mutableError = MutableStateFlow<String?>(null)
+    private val mutableFeedback = MutableSharedFlow<String>(extraBufferCapacity = 32)
     private val activeTransfers = ConcurrentHashMap<String, ActiveTransfer>()
     private val retryHints = ConcurrentHashMap<String, RetryMetadata>()
     private var pendingDuplicate: PendingDownload? = null
@@ -41,8 +48,10 @@ class AndroidBrowserDownloadService(
     override val downloads: StateFlow<List<BrowserDownload>> = mutableDownloads.asStateFlow()
     override val duplicatePrompt: StateFlow<DuplicateDownloadPrompt?> = mutableDuplicatePrompt.asStateFlow()
     override val error: StateFlow<String?> = mutableError.asStateFlow()
+    override val feedback: SharedFlow<String> = mutableFeedback
 
     init {
+        createNotificationChannel()
         // BrowserStateStore maps an in-flight row from a dead process to INTERRUPTED.
         // Preserve only its URL/path metadata; no stream or worker is restored.
         mutableDownloads.value.filter { it.status == BrowserDownloadStatus.INTERRUPTED }
@@ -367,6 +376,9 @@ class AndroidBrowserDownloadService(
                     error = null,
                 )
             }
+            val message = "Download complete: ${transfer.pending.name}"
+            mutableFeedback.tryEmit(message)
+            notifyDownload(transfer.id, transfer.pending.name, message, failed = false)
         } catch (error: CancellationException) {
             destination?.let(::publishPartialIfNeeded)
             if (!transfer.cancelled) markFailed(transfer, destination, copied, error)
@@ -390,15 +402,18 @@ class AndroidBrowserDownloadService(
                 )
             }
         } else {
+            val message = "Download failed: ${transfer.pending.name} — ${error.message ?: "The transfer could not be completed"}"
             updateEntry(transfer.id) {
                 it.copy(
                     uri = destination?.toString().orEmpty(),
                     downloadedBytes = copied,
                     status = BrowserDownloadStatus.FAILED,
                     available = false,
-                    error = "${error.message ?: "The transfer could not be completed"}",
+                    error = message.substringAfter(" — "),
                 )
             }
+            mutableFeedback.tryEmit(message)
+            notifyDownload(transfer.id, transfer.pending.name, message, failed = true)
         }
     }
 
@@ -427,6 +442,63 @@ class AndroidBrowserDownloadService(
         }
     }.getOrNull()
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            appContext.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+                NotificationChannel(
+                    DOWNLOAD_CHANNEL_ID,
+                    "Browser downloads",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+        }
+    }
+
+    private fun notifyDownload(id: String, name: String, message: String, failed: Boolean) {
+        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return
+        val openIntent = Intent(appContext, dev.android.ide.MainActivity::class.java).apply {
+            action = ACTION_OPEN_DOWNLOADS
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val openPendingIntent = PendingIntent.getActivity(
+            appContext,
+            id.hashCode(),
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val retryPendingIntent = PendingIntent.getActivity(
+            appContext,
+            id.hashCode() xor 0x20000000,
+            Intent(appContext, dev.android.ide.MainActivity::class.java).apply {
+                action = ACTION_RETRY_DOWNLOAD
+                putExtra(EXTRA_DOWNLOAD_ID, id)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val dismissPendingIntent = PendingIntent.getBroadcast(
+            appContext,
+            id.hashCode() xor 0x40000000,
+            Intent(appContext, DownloadNotificationDismissReceiver::class.java).putExtra(
+                EXTRA_NOTIFICATION_ID,
+                downloadNotificationId(id),
+            ),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = Notification.Builder(appContext, DOWNLOAD_CHANNEL_ID)
+            .setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
+            .setContentTitle(if (failed) "Download failed" else "Download complete")
+            .setContentText(name)
+            .setStyle(Notification.BigTextStyle().bigText(message))
+            .setContentIntent(openPendingIntent)
+            .setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null, "Open downloads", openPendingIntent).build())
+        if (failed) builder.addAction(Notification.Action.Builder(null, "Retry", retryPendingIntent).build())
+        builder.addAction(Notification.Action.Builder(null, "Dismiss", dismissPendingIntent).build())
+        val notification = builder.build()
+        manager.notify(downloadNotificationId(id), notification)
+    }
+
     /** Prefer RFC 6266 filename* over filename, while rejecting path traversal and unsafe names. */
     private fun parseContentDispositionFilename(header: String?): String? {
         if (header.isNullOrBlank()) return null
@@ -453,6 +525,19 @@ class AndroidBrowserDownloadService(
             ?.take(240)
             ?.takeIf(String::isNotBlank)
         return clean
+    }
+
+    companion object {
+        const val ACTION_OPEN_DOWNLOADS = "dev.android.ide.action.OPEN_DOWNLOADS"
+        const val ACTION_RETRY_DOWNLOAD = "dev.android.ide.action.RETRY_DOWNLOAD"
+        const val EXTRA_NOTIFICATION_ID = "dev.android.ide.extra.NOTIFICATION_ID"
+        const val EXTRA_DOWNLOAD_ID = "dev.android.ide.extra.DOWNLOAD_ID"
+        private const val DOWNLOAD_CHANNEL_ID = "browser_downloads"
+        private const val DOWNLOAD_NOTIFICATION_BASE = 5200
+        private const val RETRY_HINT_TTL_MS = 5 * 60 * 1000L
+
+        private fun downloadNotificationId(id: String): Int =
+            DOWNLOAD_NOTIFICATION_BASE + (id.hashCode() and 0x0fff)
     }
 
     private fun publishPartialIfNeeded(uri: Uri) {
@@ -542,7 +627,4 @@ class AndroidBrowserDownloadService(
         }
     }
 
-    companion object {
-        private const val RETRY_HINT_TTL_MS = 5 * 60 * 1000L
-    }
 }

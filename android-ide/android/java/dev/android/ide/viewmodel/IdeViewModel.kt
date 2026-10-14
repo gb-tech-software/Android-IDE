@@ -1234,7 +1234,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         if (oldTemporaryTab != null) pendingContent.remove(oldTemporaryTab.id)
         if (_uiState.value.openTabs.none { it.id == loadingTab.id }) return
         _uiState.update { state ->
-            if (state.openTabs.none { it.id == loadingTab.id }) return@update
+            if (state.openTabs.none { it.id == loadingTab.id }) return@update state
             val remaining = state.openTabs.filterNot { oldTemporaryTab != null && it.id == oldTemporaryTab.id }
             state.copy(
                 openTabs = remaining.map { tab ->

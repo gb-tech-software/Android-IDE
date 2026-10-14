@@ -50,6 +50,7 @@ data class BrowserUiState(
     val websitePrompt: BrowserWebsitePromptRequest? = null,
     val navigationFailure: BrowserNavigationFailure? = null,
     val duplicateDownload: DuplicateDownloadPrompt? = null,
+    val downloadFeedback: String? = null,
     val contextMenu: BrowserContextMenu? = null,
     val error: String? = null,
     val clearingBrowserData: Boolean = false,
@@ -141,6 +142,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch { downloadService.downloads.collect { _uiState.value = _uiState.value.copy(downloads = it) } }
         viewModelScope.launch { downloadService.duplicatePrompt.collect { _uiState.value = _uiState.value.copy(duplicateDownload = it) } }
+        viewModelScope.launch {
+            downloadService.feedback.collect { message ->
+                _uiState.value = _uiState.value.copy(downloadFeedback = message)
+            }
+        }
         viewModelScope.launch { downloadService.error.collect { error -> if (error != null) setError(error) } }
     }
 
@@ -170,12 +176,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         selectTab(selected)
     }
 
-    fun createTab(url: String = DEFAULT_HOME, reuseKey: String? = null) {
+    fun createTab(url: String = DEFAULT_HOME, reuseKey: String? = null, historyAddress: String? = null) {
         val id = tabService.create(url, reuseKey)
         val descriptor = tabService.tabs.value.firstOrNull { it.id == id } ?: return
         val tab = BrowserTabRuntime(id, null, descriptor.url, descriptor.title, reuseKey = descriptor.reuseKey, viewportWidth = descriptor.viewportWidth)
         sessions[id] = tab
-        sessionFor(tab)
+        sessionFor(tab, historyAddress)
         selectTab(id)
         persistTabs()
     }
@@ -190,7 +196,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistTabs()
     }
 
-    private fun sessionFor(tab: BrowserTabRuntime): BrowserEngineSession {
+    private fun sessionFor(tab: BrowserTabRuntime, initialHistoryAddress: String? = null): BrowserEngineSession {
         tab.session?.let { return it }
         val restoredState = tab.sessionState?.let(::BrowserSerializedState)
         val session = sessionService.ensureSession(
@@ -200,7 +206,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             sink = engineEventSink(tab),
         )
         tab.session = session
-        if (restoredState == null || tab.url == DEFAULT_HOME) session.load(BrowserNavigation(tab.url))
+        if (restoredState == null || tab.url == DEFAULT_HOME) {
+            session.load(BrowserNavigation(tab.url, historyAddress = initialHistoryAddress))
+        }
         return session
     }
 
@@ -537,7 +545,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun openUrlInNewTab(url: String) {
         val entered = url.trim()
         if (entered.isEmpty()) return
-        createTab(navigationService.resolve(entered))
+        createTab(navigationService.resolve(entered), historyAddress = entered)
     }
 
     /** Navigate to a logical browser destination, reusing its tab key when one is supplied. */
@@ -577,10 +585,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         storageService.saveDeveloperToolsOpen(open)
         _uiState.value = _uiState.value.copy(developerToolsOpen = open)
         if (open) developerToolsService.open() else developerToolsService.close()
-    }
-
-    fun setDeveloperToolsInteractionListener(listener: ((Boolean) -> Unit)?) {
-        developerToolsService.setInteractionListener(listener)
     }
 
     fun setDeveloperToolsEnabled(enabled: Boolean) {
@@ -690,6 +694,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             .onFailure { complete(Result.failure(it)) }
     }
     fun clearError() { downloadService.clearError(); _uiState.value = _uiState.value.copy(error = null) }
+    fun clearDownloadFeedback() { _uiState.value = _uiState.value.copy(downloadFeedback = null) }
     fun engineSession(tabId: String): BrowserEngineSession? = sessions[tabId]?.let(::sessionFor)
 
     fun setScrollListener(tabId: String, listener: ((Int) -> Unit)?) {
