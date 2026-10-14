@@ -90,6 +90,16 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent) {
         when (intent.action) {
+            OpenUrlRequestProtocol.RELOAD_BROWSER_ACTION -> {
+                browserViewModel.reload()
+                appShellViewModel.navigate(Surface.BROWSER)
+                return
+            }
+            OpenUrlRequestProtocol.CLEAR_BROWSER_DATA_ACTION -> {
+                browserViewModel.clearBrowserData()
+                appShellViewModel.navigate(Surface.BROWSER)
+                return
+            }
             TerminalForegroundService.ACTION_OPEN_TERMINAL -> {
                 appShellViewModel.navigate(Surface.TERMINAL)
                 return

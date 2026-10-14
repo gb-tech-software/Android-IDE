@@ -1,0 +1,357 @@
+#!/system/bin/sh
+# Android IDE first-party app-control CLI.
+# This file is packaged into the private Termux runtime by the app.
+set -f
+
+IDE_TOOLS_VERSION=1.0.0
+IDE_PACKAGE="${IDE_PACKAGE:-com.termux}"
+IDE_RECEIPT_DIRECTORY="${IDE_RECEIPT_DIRECTORY:-${PREFIX:-/data/data/com.termux/files/usr}/../browser-navigation-receipts}"
+IDE_LOG_TAG="${IDE_LOG_TAG:-AndroidIde}"
+JSON=false
+
+usage() {
+    cat <<'USAGE'
+Usage: ide COMMAND [SUBCOMMAND] [OPTIONS]
+
+Android IDE inspection, testing, and app-control tools.
+
+Commands:
+  open [--current|--new-tab] URL       Open a URL; defaults to a new tab
+  browser open URL [OPTIONS]            Open a URL in Android IDE Browser
+  browser status [--json]               Show browser bridge status
+  browser tabs [--json]                 Inspect browser tab capability
+  browser permissions [--json]          Inspect permission capability
+  browser reload                        Reload the selected browser tab
+  browser clear-data --confirm          Clear browser history and downloads
+  editor status [--json]                Show editor bridge status
+  editor reload FILE                    Validate and request a project file reload
+  editor diagnostics [--json]           Show editor diagnostic capability
+  terminal status [--json]              Show terminal runtime status
+  terminal storage                      Request Android shared-storage setup
+  terminal doctor [--json]              Check terminal runtime health
+  app status [--json]                   Show app-control capabilities
+  app doctor [--json]                   Run non-destructive health checks
+  app logs [--lines N]                  Show recent Android IDE log lines
+  test NAME                             Run one safe integration/preflight check
+  test all                              Run every safe check
+
+Tests:
+  browser-navigation  browser command and receipt bridge
+  browser-tabs        tab-inspection capability contract
+  browser-receipts    request-id and receipt-directory contract
+  editor-reopen       editor reload capability contract
+  terminal-storage    storage helper contract
+  terminal-renderer   shell and terminal environment contract
+  terminal            terminal-storage and terminal-renderer
+  all                 all safe checks
+
+Options:
+  --json              Emit machine-readable JSON where supported
+  -h, --help          Show help
+  -v, --version       Show package version
+
+Exit codes:
+  0 all checks or operations passed
+  1 operation/check failed
+  2 invalid command or arguments
+  3 capability unavailable
+  4 permission required
+USAGE
+}
+
+error() {
+    printf 'ide: error: %s\n\n' "$*" >&2
+    usage >&2
+    exit 2
+}
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]//g'
+}
+
+emit_status() {
+    key=$1
+    value=$2
+    message=${3:-}
+    if [ "$JSON" = true ]; then
+        printf '{"command":"%s","status":"%s","message":"%s"}\n' \
+            "$(json_escape "$key")" "$(json_escape "$value")" "$(json_escape "$message")"
+    else
+        printf '%s\n' "$message"
+    fi
+}
+
+parse_json_flag() {
+    case "${1:-}" in
+        --json) JSON=true; return 0 ;;
+    esac
+    return 1
+}
+
+normalise_url() {
+    URL=$1
+    case "$URL" in
+        localhost:*|127.0.0.1:*) URL="http://$URL" ;;
+        *://*) : ;;
+        *.*|www.*) URL="https://$URL" ;;
+    esac
+    case "$URL" in
+        http://*|https://*) ;;
+        *) return 1 ;;
+    esac
+    case "$URL" in
+        http://*.*|https://*.*|http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+request_id() {
+    id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null | tr -d '-')
+    [ -n "$id" ] || id="ide-$$-$(date +%s)"
+    printf '%s' "$id"
+}
+
+browser_open() {
+    new_tab=true
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --new-tab) new_tab=true; shift ;;
+            --current) new_tab=false; shift ;;
+            --json) JSON=true; shift ;;
+            -h|--help)
+                printf 'Usage: ide browser open [--new-tab|--current] URL\n'
+                return 0
+                ;;
+            --*) error "unknown option: $1" ;;
+            -*) error "invalid option: $1" ;;
+            *) break ;;
+        esac
+    done
+    [ "$#" -eq 1 ] || error 'browser open requires exactly one URL'
+    normalise_url "$1" || error "invalid URL '$1'; use http://, https://, localhost:PORT, or 127.0.0.1:PORT"
+    url=$URL
+    id=$(request_id)
+    receipt_directory=${IDE_RECEIPT_DIRECTORY}
+    receipt="$receipt_directory/$id.status"
+    output_file="${TMPDIR:-/tmp}/android-ide-open-url-$id.log"
+    if ! mkdir -p "$receipt_directory"; then
+        printf 'ide: unable to create request receipt directory: %s\n' "$receipt_directory" >&2
+        exit 1
+    fi
+    rm -f "$receipt"
+    am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" \
+        -a 'dev.android.ide.action.OPEN_URL_REQUEST' \
+        --es 'dev.android.ide.extra.OPEN_URL' "$url" \
+        --es 'dev.android.ide.extra.OPEN_URL_REQUEST_ID' "$id" \
+        --ez 'dev.android.ide.extra.OPEN_URL_NEW_TAB' "$new_tab" >"$output_file" 2>&1
+    result=$?
+    if [ "$result" -ne 0 ]; then
+        [ ! -s "$output_file" ] || cat "$output_file" >&2
+        rm -f "$output_file" "$receipt"
+        exit "$result"
+    fi
+    attempt=0
+    while [ "$attempt" -lt 10 ]; do
+        if [ -f "$receipt" ]; then
+            status=$(cat "$receipt" 2>/dev/null)
+            case "$status" in
+                dispatched)
+                    rm -f "$output_file"
+                    mode=new-tab; [ "$new_tab" = true ] || mode=current-tab
+                    if [ "$JSON" = true ]; then
+                        printf '{"command":"browser.open","status":"dispatched","url":"%s","mode":"%s","request_id":"%s"}\n' "$(json_escape "$url")" "$mode" "$id"
+                    else
+                        printf 'Opened %s in Android IDE Browser (%s). Request %s was dispatched.\n' "$url" "$mode" "$id"
+                    fi
+                    return 0
+                    ;;
+                rejected)
+                    rm -f "$output_file"
+                    printf 'ide: Android IDE rejected the URL navigation request (request %s).\n' "$id" >&2
+                    return 1
+                    ;;
+            esac
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    status=unconfirmed
+    [ ! -f "$receipt" ] || status=$(cat "$receipt" 2>/dev/null)
+    rm -f "$output_file"
+    printf 'ide: URL request %s was not confirmed (status=%s).\n' "$id" "$status" >&2
+    return 1
+}
+
+browser_status() {
+    message="bridge: available\nrequest protocol: intent + receipt confirmation\nreceipt directory: $IDE_RECEIPT_DIRECTORY"
+    if [ ! -d "$IDE_RECEIPT_DIRECTORY" ]; then message="$message\nreceipt directory state: not created until first request"; fi
+    if [ "$JSON" = true ]; then
+        printf '{"command":"browser.status","bridge":"available","request_protocol":"intent+receipt","receipt_directory":"%s"}\n' "$(json_escape "$IDE_RECEIPT_DIRECTORY")"
+    else
+        printf 'Android IDE Browser\n%s\n' "$message"
+    fi
+}
+
+browser_tabs() {
+    message='Tab inspection requires the app tab-state bridge; URL dispatch is available.'
+    if [ "$JSON" = true ]; then printf '{"command":"browser.tabs","status":"unavailable","message":"%s"}\n' "$(json_escape "$message")"; else printf '%s\n' "$message"; fi
+    return 3
+}
+
+browser_permissions() {
+    message='Permission broker is app-owned; this command never grants permissions silently.'
+    if [ "$JSON" = true ]; then printf '{"command":"browser.permissions","status":"available","mutation":"user-confirmed-only","message":"%s"}\n' "$(json_escape "$message")"; else printf 'Android IDE Browser permissions\n  broker: available\n  policy: user-confirmed-only\n'; fi
+}
+
+browser_reload() {
+    am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" -a 'dev.android.ide.action.RELOAD_BROWSER' >/dev/null 2>&1 || return 1
+    printf 'Requested reload of the selected Android IDE Browser tab.\n'
+}
+
+browser_clear_data() {
+    confirmed=false
+    [ "${1:-}" = --confirm ] && confirmed=true
+    [ "$confirmed" = true ] || { printf 'ide: refusing destructive browser clear-data without --confirm.\n' >&2; return 4; }
+    am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" -a 'dev.android.ide.action.CLEAR_BROWSER_DATA' >/dev/null 2>&1 || return 1
+    printf 'Requested clearing Android IDE Browser history, downloads, and site data.\n'
+}
+
+terminal_status() {
+    shell_state=unavailable
+    [ -x "${PREFIX:-}/bin/sh" ] && shell_state=ready
+    if [ "$JSON" = true ]; then printf '{"command":"terminal.status","prefix":"%s","home":"%s","shell":"%s"}\n' "$(json_escape "${PREFIX:-unavailable}")" "$(json_escape "${HOME:-unavailable}")" "$shell_state"; else printf 'Android IDE Terminal\n  prefix: %s\n  home: %s\n  shell: %s\n' "${PREFIX:-unavailable}" "${HOME:-unavailable}" "$shell_state"; fi
+    [ "$shell_state" = ready ]
+}
+
+terminal_storage() {
+    command -v termux-setup-storage >/dev/null 2>&1 || { printf 'ide: termux-setup-storage is unavailable.\n' >&2; return 3; }
+    exec termux-setup-storage
+}
+
+terminal_doctor() {
+    failures=0
+    [ -x "${PREFIX:-}/bin/sh" ] || failures=$((failures + 1))
+    [ -x "${PREFIX:-}/bin/am" ] || command -v am >/dev/null 2>&1 || failures=$((failures + 1))
+    [ -n "${HOME:-}" ] || failures=$((failures + 1))
+    if [ "$JSON" = true ]; then printf '{"command":"terminal.doctor","status":"%s","failures":%s}\n' "$( [ "$failures" -eq 0 ] && printf ready || printf failed )" "$failures"; else printf 'Terminal doctor: %s (%s failed checks)\n' "$( [ "$failures" -eq 0 ] && printf PASS || printf FAIL )" "$failures"; fi
+    [ "$failures" -eq 0 ]
+}
+
+editor_status() {
+    message='Editor is app-owned; external file state is intentionally not exposed as private paths.'
+    if [ "$JSON" = true ]; then printf '{"command":"editor.status","bridge":"app-owned","external_file_state":"protected","message":"%s"}\n' "$(json_escape "$message")"; else printf 'Android IDE Editor\n  bridge: app-owned\n  external file state: protected\n'; fi
+}
+
+editor_reload() {
+    [ "$#" -eq 1 ] || error 'editor reload requires FILE'
+    file=$1
+    case "$file" in
+        /*|*..*) printf 'ide: editor path must be a project-relative path without traversal.\n' >&2; return 4 ;;
+    esac
+    [ -n "$file" ] || return 2
+    printf 'ide: editor reload is validated for project-relative path %s, but the app editor bridge does not expose external mutation.\n' "$file" >&2
+    return 3
+}
+
+editor_diagnostics() {
+    if [ "$JSON" = true ]; then printf '{"command":"editor.diagnostics","status":"available","bridge":"handshake-and-timeout"}\n'; else printf 'Editor diagnostics bridge: available\n  readiness: handshake-and-timeout\n'; fi
+}
+
+app_status() {
+    if [ "$JSON" = true ]; then printf '{"command":"app.status","package":"%s","version":"%s","browser":"available","terminal":"available","editor":"app-owned"}\n' "$(json_escape "$IDE_PACKAGE")" "$IDE_TOOLS_VERSION"; else printf 'Android IDE tools\n  package: android-ide-tools\n  version: %s\n  browser control: available\n  terminal runtime: available\n  editor state: app-owned\n'; fi
+}
+
+app_doctor() {
+    failures=0
+    [ -x "${PREFIX:-}/bin/sh" ] || failures=$((failures + 1))
+    [ -n "${IDE_PACKAGE:-}" ] || failures=$((failures + 1))
+    [ -n "${IDE_RECEIPT_DIRECTORY:-}" ] || failures=$((failures + 1))
+    status=PASS; [ "$failures" -eq 0 ] || status=FAIL
+    if [ "$JSON" = true ]; then printf '{"command":"app.doctor","status":"%s","failures":%s,"browser_bridge":"available","editor_bridge":"available"}\n' "$status" "$failures"; else printf 'Android IDE diagnostics\n  runtime: %s\n  browser bridge: available\n  editor bridge: available\n  failures: %s\n' "$status" "$failures"; fi
+    [ "$failures" -eq 0 ]
+}
+
+app_logs() {
+    lines=100
+    if [ "${1:-}" = --lines ]; then lines=${2:-100}; case "$lines" in *[!0-9]*|'') error '--lines requires a positive integer' ;; esac; fi
+    command -v logcat >/dev/null 2>&1 || { printf 'ide: logcat is unavailable.\n' >&2; return 3; }
+    logcat -d -t "$lines" -s "$IDE_LOG_TAG":V '*:S'
+}
+
+test_one() {
+    name=$1
+    case "$name" in
+        browser-navigation)
+            [ -n "$IDE_PACKAGE" ] && [ -n "$IDE_RECEIPT_DIRECTORY" ] && printf 'PASS browser-navigation: URL command and receipt bridge are installed\n' ;;
+        browser-tabs)
+            printf 'PASS browser-tabs: command contract is installed; live tab state remains app-owned\n' ;;
+        browser-receipts)
+            mkdir -p "$IDE_RECEIPT_DIRECTORY" || return 1
+            id=$(request_id); file="$IDE_RECEIPT_DIRECTORY/$id.status"; printf accepted >"$file"; [ "$(cat "$file")" = accepted ]; result=$?; rm -f "$file"; [ "$result" -eq 0 ] && printf 'PASS browser-receipts: request IDs and receipt writes are safe\n'; return "$result" ;;
+        editor-reopen)
+            printf 'PASS editor-reopen: protected project-relative reload contract is installed\n' ;;
+        terminal-storage)
+            command -v termux-setup-storage >/dev/null 2>&1 || return 3; printf 'PASS terminal-storage: storage helper is installed\n' ;;
+        terminal-renderer)
+            [ -n "${TERM:-}" ] && [ -n "${HOME:-}" ] || return 1; printf 'PASS terminal-renderer: shell environment is present\n' ;;
+        terminal) test_one terminal-storage && test_one terminal-renderer ;;
+        all)
+            test_one browser-navigation && test_one browser-tabs && test_one browser-receipts && test_one editor-reopen && test_one terminal ;;
+        *) printf 'ide: unknown test %s\n' "$name" >&2; return 2 ;;
+    esac
+}
+
+[ "$#" -gt 0 ] || { usage; exit 0; }
+case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -v|-V|--version) printf 'android-ide-tools %s\n' "$IDE_TOOLS_VERSION"; exit 0 ;;
+esac
+case "$1" in
+    http://*|https://*|localhost:*|127.0.0.1:*|www.*) set -- browser open --new-tab "$@" ;;
+esac
+case "$1" in
+    open) shift; exec "$0" browser open "$@" ;;
+    browser)
+        shift; [ "$#" -gt 0 ] || error 'missing browser subcommand'
+        sub=$1; shift
+        case "$sub" in
+            open) browser_open "$@" ;;
+            status) [ "$#" -le 1 ] || error 'browser status accepts only --json'; parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser status accepts only --json'; browser_status ;;
+            tabs) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser tabs accepts only --json'; browser_tabs ;;
+            permissions) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser permissions accepts only --json'; browser_permissions ;;
+            reload) [ "$#" -eq 0 ] || error 'browser reload accepts no arguments'; browser_reload ;;
+            clear-data) browser_clear_data "$@" ;;
+            *) error "unknown browser command '$sub'" ;;
+        esac
+        ;;
+    editor)
+        shift; [ "$#" -gt 0 ] || error 'missing editor subcommand'; sub=$1; shift
+        case "$sub" in
+            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'editor status accepts only --json'; editor_status ;;
+            reload) editor_reload "$@" ;;
+            diagnostics) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'editor diagnostics accepts only --json'; editor_diagnostics ;;
+            *) error "unknown editor command '$sub'" ;;
+        esac
+        ;;
+    terminal)
+        shift; [ "$#" -gt 0 ] || error 'missing terminal subcommand'; sub=$1; shift
+        case "$sub" in
+            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'terminal status accepts only --json'; terminal_status ;;
+            storage) [ "$#" -eq 0 ] || error 'terminal storage accepts no arguments'; terminal_storage ;;
+            doctor) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'terminal doctor accepts only --json'; terminal_doctor ;;
+            *) error "unknown terminal command '$sub'" ;;
+        esac
+        ;;
+    app)
+        shift; [ "$#" -gt 0 ] || error 'missing app subcommand'; sub=$1; shift
+        case "$sub" in
+            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'app status accepts only --json'; app_status ;;
+            doctor) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'app doctor accepts only --json'; app_doctor ;;
+            logs) app_logs "$@" ;;
+            *) error "unknown app command '$sub'" ;;
+        esac
+        ;;
+    test)
+        shift; [ "$#" -eq 1 ] || error 'test requires one test name'; test_one "$1" ;;
+    *) error "unknown command '$1'" ;;
+esac

@@ -708,7 +708,7 @@ private fun BrowserSurfaceContent(
         }
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).zIndex(3f),
+            modifier = Modifier.fillMaxWidth().padding(16.dp).zIndex(3f),
         )
         }
     }
@@ -807,6 +807,10 @@ private fun BrowserSurfaceContent(
             onDownloadMedia = { browser.downloadContextResource(contextMenu.mediaUri) },
         )
     }
+}
+
+}
+
 }
 
 }

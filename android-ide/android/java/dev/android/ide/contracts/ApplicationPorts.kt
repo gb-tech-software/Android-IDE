@@ -27,6 +27,10 @@ interface LifecycleCoordinator {
 object OpenUrlRequestProtocol {
     /** Explicit MainActivity action used by the bundled terminal URL helper. */
     const val ACTION = "dev.android.ide.action.OPEN_URL_REQUEST"
+    /** Controlled action used by `ide browser reload`; it never changes the URL. */
+    const val RELOAD_BROWSER_ACTION = "dev.android.ide.action.RELOAD_BROWSER"
+    /** Controlled action used by `ide browser clear-data --confirm`. */
+    const val CLEAR_BROWSER_DATA_ACTION = "dev.android.ide.action.CLEAR_BROWSER_DATA"
     const val URL_EXTRA = "dev.android.ide.extra.OPEN_URL"
     const val REQUEST_ID_EXTRA = "dev.android.ide.extra.OPEN_URL_REQUEST_ID"
     const val OPEN_IN_NEW_TAB_EXTRA = "dev.android.ide.extra.OPEN_URL_NEW_TAB"
