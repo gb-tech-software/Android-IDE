@@ -134,17 +134,20 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val _editorCommand = MutableSharedFlow<EditorOutbound>(extraBufferCapacity = 16)
     val editorCommand: SharedFlow<EditorOutbound> = _editorCommand.asSharedFlow()
 
-    private val languageServers = services.languageServerAdapter { projectId, serverId, message ->
-        if (_uiState.value.editorSettings.languageServerEnabled) {
-            _editorCommand.tryEmit(
-                EditorOutbound.LanguageServerMessage(
-                    projectId = projectId,
-                    serverId = serverId,
-                    message = rewriteLanguageServerResponseUris(message.toString(Charsets.UTF_8)),
-                ),
-            )
-        }
-    }
+    private val languageServers = services.languageServerAdapter(
+        onMessage = { projectId, serverId, message ->
+            if (_uiState.value.editorSettings.languageServerEnabled) {
+                _editorCommand.tryEmit(
+                    EditorOutbound.LanguageServerMessage(
+                        projectId = projectId,
+                        serverId = serverId,
+                        message = rewriteLanguageServerResponseUris(message.toString(Charsets.UTF_8)),
+                    ),
+                )
+            }
+        },
+        onUnavailable = ::onLanguageServerUnavailable,
+    )
 
     /**
      * Unsaved editor content keyed by tab ID.
@@ -1783,14 +1786,25 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun onLanguageServerMessage(rawMessage: String) {
         if (!_uiState.value.editorSettings.languageServerEnabled) return
-        val tab = _uiState.value.openTabs.firstOrNull { it.isActive } ?: return
         val rootUri = _uiState.value.projectRootUri ?: return
         val project = projectManagement.registeredProjectAt(rootUri) ?: return
-        val definition = LanguageServerRegistry.forLanguage(tab.language) ?: return
         val message = runCatching { JSONObject(rawMessage) }.getOrNull() ?: return
-        message.optJSONObject("params")
-            ?.optJSONObject("textDocument")
-            ?.put("uri", languageServerDocumentUri(tab.documentUri))
+        val state = _uiState.value
+        val requestUri = message.optJSONObject("params")?.let { params ->
+            params.optJSONObject("textDocument")?.optString("uri")?.takeIf(String::isNotBlank)
+                ?: params.optString("uri").takeIf(String::isNotBlank)
+        }
+        // A request carries the Monaco model URI. Route by that stable identity,
+        // not by the tab that happens to be active when the request is handled.
+        val tab = requestUri?.let { uri ->
+            state.openTabs.firstOrNull { candidate ->
+                candidate.documentUri == uri ||
+                    languageServerDocumentUri(candidate.documentUri) == uri ||
+                    monacoDocumentUri(candidate.documentUri) == uri
+            }
+        } ?: state.openTabs.firstOrNull { it.isActive } ?: return
+        val definition = LanguageServerRegistry.forLanguage(tab.language) ?: return
+        rewriteEditorRequestUris(message)
         viewModelScope.launch(Dispatchers.IO) {
             if (!_uiState.value.editorSettings.languageServerEnabled) return@launch
             val report = languageServers.send(
@@ -1814,6 +1828,53 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /** Mark all state derived from one server stale as soon as its process exits. */
+    private fun onLanguageServerUnavailable(projectId: String, serverId: String, explanation: String) {
+        _uiState.update { state ->
+            val currentProjectId = state.projectRootUri
+                ?.let { projectManagement.registeredProjectAt(it)?.id }
+            if (currentProjectId == null || currentProjectId != projectId) return@update state
+            val affectedUris = state.openTabs
+                .filter { LanguageServerRegistry.forLanguage(it.language)?.id == serverId }
+                .map { it.documentUri }
+                .toSet()
+            val activeAffected = state.activeTabId?.let { id ->
+                state.openTabs.any { it.id == id && it.documentUri in affectedUris }
+            } == true
+            state.copy(
+                languageIntelligenceAvailable = if (activeAffected) false else state.languageIntelligenceAvailable,
+                languageServerFeatures = if (activeAffected) emptySet() else state.languageServerFeatures,
+                languageServerDiagnostics = state.languageServerDiagnostics - affectedUris,
+                statusMessage = if (state.editorSettings.languageServerEnabled) {
+                    "Language intelligence unavailable: $explanation"
+                } else state.statusMessage,
+            )
+        }
+    }
+
+    /** Translate all editor model URIs in a Monaco request, including workspace edits. */
+    private fun rewriteEditorRequestUris(message: JSONObject) {
+        fun rewrite(value: Any?): Any? = when (value) {
+            is JSONObject -> {
+                value.keys().asSequence().toList().forEach { key -> value.put(key, rewrite(value.opt(key))) }
+                value
+            }
+            is org.json.JSONArray -> {
+                for (index in 0 until value.length()) value.put(index, rewrite(value.opt(index)))
+                value
+            }
+            is String -> _uiState.value.openTabs.firstOrNull {
+                it.documentUri == value || monacoDocumentUri(it.documentUri) == value
+            }?.let { languageServerDocumentUri(it.documentUri) } ?: value
+            else -> value
+        }
+        rewrite(message)
+    }
+
+    /** Must mirror monaco-init.js: androidide:///files/{encodeURIComponent(path)}. */
+    private fun monacoDocumentUri(documentUri: String): String =
+        "androidide:///files/${Uri.encode(documentUri)}"
 
     // ── Save ───────────────────────────────────────────────────────────────
 

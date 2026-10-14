@@ -29,7 +29,10 @@ object LanguageServerRegistry {
         ),
         LanguageServerDefinition(
             id = "css",
-            languageIds = setOf("css"),
+            // vscode-css-language-server handles the CSS-family dialects exposed
+            // by Monaco.  Keeping these IDs together prevents SCSS/Less/Sass
+            // from being silently downgraded to syntax-only editing.
+            languageIds = setOf("css", "scss", "less", "sass"),
             command = listOf("vscode-css-language-server", "--stdio"),
             requiredExecutable = "vscode-css-language-server",
         ),
@@ -38,6 +41,12 @@ object LanguageServerRegistry {
             languageIds = setOf("json", "jsonc"),
             command = listOf("vscode-json-language-server", "--stdio"),
             requiredExecutable = "vscode-json-language-server",
+        ),
+        LanguageServerDefinition(
+            id = "markdown",
+            languageIds = setOf("markdown"),
+            command = listOf("vscode-markdown-language-server", "--stdio"),
+            requiredExecutable = "vscode-markdown-language-server",
         ),
     )
 

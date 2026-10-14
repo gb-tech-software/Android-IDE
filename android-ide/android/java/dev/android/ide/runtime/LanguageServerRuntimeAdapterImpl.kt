@@ -35,6 +35,7 @@ class LanguageServerRuntimeAdapterImpl(
     private val installer: BundledTermuxRuntimeInstaller,
     private val packageInstaller: LanguageServerPackageInstaller,
     private val onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit = { _, _, _ -> },
+    private val onUnavailable: (projectId: String, serverId: String, explanation: String) -> Unit = { _, _, _ -> },
 ) : LanguageServerAdapter {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val nextRequestId = AtomicInteger(1)
@@ -57,8 +58,15 @@ class LanguageServerRuntimeAdapterImpl(
             )
         val key = Key(project.id, definition.id)
         processes[key]?.let { live ->
-            return@withContext if (live.initialized.isCompleted) live.status.copy(initialized = true)
-            else unavailable(project, languageId, "${definition.id} is still starting")
+            return@withContext when (val initialization = live.initialization) {
+                null -> unavailable(project, languageId, "${definition.id} is still starting")
+                else -> live.status.copy(
+                    available = initialization.successful,
+                    initialized = initialization.successful,
+                    supportedFeatures = initialization.features,
+                    explanation = if (initialization.successful) null else "${definition.id} failed LSP initialization",
+                )
+            }
         }
 
         runCatching {
@@ -88,6 +96,7 @@ class LanguageServerRuntimeAdapterImpl(
             if (initialization == null || !initialization.successful) {
                 processes.remove(key)
                 runCatching { process.destroy() }
+                onUnavailable(project.id, definition.id, "${definition.id} did not complete LSP initialization")
                 return@runCatching unavailable(project, languageId, "${definition.id} did not complete LSP initialization")
             }
             transport.write(initializedNotification())
@@ -101,13 +110,16 @@ class LanguageServerRuntimeAdapterImpl(
     override suspend fun send(projectId: String, serverId: String, message: ByteArray): OperationReport {
         val key = Key(projectId, serverId)
         val live = processes[key] ?: return unavailableReport("Language server is unavailable")
-        if (!live.initialized.isCompleted) return unavailableReport("Language server is still initializing")
+        val initialization = live.initialization
+            ?: return unavailableReport("Language server is still initializing")
+        if (!initialization.successful) return unavailableReport("Language server failed to initialize")
         return runCatching {
             live.transport.write(message)
             OperationReport(OperationOutcome.COMPLETE, "Language-server message sent")
         }.getOrElse {
-            processes.remove(key)
+            val removed = processes.remove(key)
             runCatching { live.process.destroy() }
+            if (removed != null) onUnavailable(projectId, serverId, "Language-server transport failed")
             OperationReport(OperationOutcome.FAILED, "Language-server transport failed", ErrorCategory.PROCESS_LOSS)
         }
     }
@@ -128,7 +140,12 @@ class LanguageServerRuntimeAdapterImpl(
 
     override suspend fun status(projectId: String): List<LanguageServerStatus> =
         processes.filterKeys { it.projectId == projectId }.values.map { live ->
-            live.status.copy(initialized = live.initialized.isCompleted)
+            val initialization = live.initialization
+            live.status.copy(
+                available = initialization?.successful == true,
+                initialized = initialization?.successful == true,
+                supportedFeatures = initialization?.features.orEmpty(),
+            )
         }
 
     override suspend fun stopAll(): OperationReport {
@@ -147,6 +164,7 @@ class LanguageServerRuntimeAdapterImpl(
             transport.readFrames { body ->
                 val text = body.toString(Charsets.UTF_8)
                 val live = processes[key]
+                var internalInitializeResponse = false
                 if (live != null) {
                     val json = runCatching { JSONObject(text) }.getOrNull()
                     if (json?.opt("id")?.toString() == live.initializeId.toString() &&
@@ -155,13 +173,26 @@ class LanguageServerRuntimeAdapterImpl(
                         val features = if (successful) serverFeatures(json.optJSONObject("result")?.optJSONObject("capabilities"))
                         else emptySet()
                         live.status = live.status.copy(initialized = successful, supportedFeatures = features)
+                        live.initialization = InitializationResult(successful, features)
                         live.initialized.complete(InitializationResult(successful, features))
+                        // initialize is an Android IDE transport concern. It is
+                        // not a Monaco request and must never be correlated by
+                        // the editor's JSON-RPC pending-request table.
+                        internalInitializeResponse = successful || json.has("error")
                     }
                 }
-                onMessage(key.projectId, key.serverId, body)
+                if (!internalInitializeResponse) onMessage(key.projectId, key.serverId, body)
             }
         } finally {
-            processes.remove(key)
+            val removed = processes.remove(key)
+            if (removed != null) {
+                val explanation = if (removed.initialization?.successful == true) {
+                    "Language server process exited unexpectedly"
+                } else {
+                    "Language server process exited before initialization completed"
+                }
+                onUnavailable(key.projectId, key.serverId, explanation)
+            }
         }
     }
 
@@ -179,8 +210,13 @@ class LanguageServerRuntimeAdapterImpl(
             }))
             put("capabilities", JSONObject().apply {
                 put("workspace", JSONObject().apply {
+                    put("applyEdit", true)
                     put("workspaceFolders", true)
                     put("configuration", true)
+                    put("workspaceEdit", JSONObject().apply {
+                        put("documentChanges", true)
+                        put("resourceOperations", org.json.JSONArray().put("create").put("rename").put("delete"))
+                    })
                 })
                 put("textDocument", JSONObject().apply {
                     put("completion", JSONObject().apply { put("completionItem", JSONObject().apply { put("snippetSupport", true) }) })
@@ -193,12 +229,23 @@ class LanguageServerRuntimeAdapterImpl(
                         put("contextSupport", true)
                     })
                     put("hover", JSONObject())
-                    put("definition", JSONObject())
-                    put("references", JSONObject())
+                    put("definition", JSONObject().put("dynamicRegistration", true))
+                    put("declaration", JSONObject().put("dynamicRegistration", true))
+                    put("typeDefinition", JSONObject().put("dynamicRegistration", true))
+                    put("implementation", JSONObject().put("dynamicRegistration", true))
+                    put("references", JSONObject().put("dynamicRegistration", true))
                     put("rename", JSONObject())
                     put("formatting", JSONObject())
                     put("codeAction", JSONObject())
+                    put("documentSymbol", JSONObject().put("dynamicRegistration", true))
+                    put("semanticTokens", JSONObject().put("dynamicRegistration", true).put("requests", JSONObject().put("range", true).put("full", true)).put("tokenTypes", org.json.JSONArray()).put("tokenModifiers", org.json.JSONArray()))
+                    put("codeLens", JSONObject().put("dynamicRegistration", true))
+                    put("foldingRange", JSONObject().put("dynamicRegistration", true))
+                    put("selectionRange", JSONObject().put("dynamicRegistration", true))
+                    put("linkedEditingRange", JSONObject().put("dynamicRegistration", true))
+                    put("inlayHint", JSONObject().put("dynamicRegistration", true))
                 })
+                put("window", JSONObject().put("workDoneProgress", true))
             })
         })
 
@@ -224,6 +271,20 @@ class LanguageServerRuntimeAdapterImpl(
             if (supports("documentFormattingProvider")) add(LanguageServerFeature.DOCUMENT_FORMATTING)
             if (supports("documentRangeFormattingProvider")) add(LanguageServerFeature.RANGE_FORMATTING)
             if (supports("codeActionProvider")) add(LanguageServerFeature.CODE_ACTION)
+            if (supports("documentSymbolProvider")) add(LanguageServerFeature.DOCUMENT_SYMBOL)
+            if (supports("workspaceSymbolProvider")) add(LanguageServerFeature.WORKSPACE_SYMBOL)
+            if (supports("semanticTokensProvider")) add(LanguageServerFeature.SEMANTIC_TOKENS)
+            if (supports("inlayHintProvider")) add(LanguageServerFeature.INLAY_HINTS)
+            if (supports("codeLensProvider")) add(LanguageServerFeature.CODE_LENS)
+            if (supports("foldingRangeProvider")) add(LanguageServerFeature.FOLDING_RANGE)
+            if (supports("selectionRangeProvider")) add(LanguageServerFeature.SELECTION_RANGE)
+            if (supports("linkedEditingRangeProvider")) add(LanguageServerFeature.LINKED_EDITING)
+            if (supports("executeCommandProvider")) add(LanguageServerFeature.EXECUTE_COMMAND)
+            // Workspace edits are returned by rename/code-action providers;
+            // LSP does not expose a standalone workspaceEditProvider key.
+            if (supports("workspaceEditProvider") || supports("codeActionProvider") || supports("renameProvider")) {
+                add(LanguageServerFeature.WORKSPACE_EDIT)
+            }
         }
     }
 
@@ -265,6 +326,7 @@ class LanguageServerRuntimeAdapterImpl(
         @Volatile var status: LanguageServerStatus,
         val initializeId: Int,
         val initialized: CompletableDeferred<InitializationResult> = CompletableDeferred(),
+        @Volatile var initialization: InitializationResult? = null,
     )
 
     private companion object {

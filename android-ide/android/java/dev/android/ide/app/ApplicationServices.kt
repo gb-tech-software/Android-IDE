@@ -102,7 +102,14 @@ class ApplicationServices private constructor(application: Application) {
 
     fun languageServerAdapter(
         onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit,
-    ) = LanguageServerRuntimeAdapterImpl(projectWorkspace, bundledRuntimeInstaller, languageServerPackageInstaller, onMessage)
+        onUnavailable: (projectId: String, serverId: String, explanation: String) -> Unit = { _, _, _ -> },
+    ) = LanguageServerRuntimeAdapterImpl(
+        projectWorkspace,
+        bundledRuntimeInstaller,
+        languageServerPackageInstaller,
+        onMessage,
+        onUnavailable,
+    )
 
     companion object {
         private val instances = java.util.WeakHashMap<Application, ApplicationServices>()

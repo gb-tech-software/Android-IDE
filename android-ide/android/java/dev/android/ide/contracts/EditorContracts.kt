@@ -27,6 +27,16 @@ enum class LanguageServerFeature {
     DOCUMENT_FORMATTING,
     RANGE_FORMATTING,
     CODE_ACTION,
+    DOCUMENT_SYMBOL,
+    WORKSPACE_SYMBOL,
+    SEMANTIC_TOKENS,
+    INLAY_HINTS,
+    CODE_LENS,
+    FOLDING_RANGE,
+    SELECTION_RANGE,
+    LINKED_EDITING,
+    EXECUTE_COMMAND,
+    WORKSPACE_EDIT,
 }
 
 data class LanguageServerStatus(
