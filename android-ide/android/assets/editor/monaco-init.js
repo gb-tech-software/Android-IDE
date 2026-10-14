@@ -107,6 +107,8 @@ var contentRevision = 0;
 var lspRequestId = 1;
 var lspPending = Object.create(null);
 var lspProviderDisposables = [];
+var languageProvidersRegistered = false;
+var languageFeaturesRequested = false;
 var lspDiagnosticsByPath = Object.create(null);
 
 // ---------------------------------------------------------------------------
@@ -329,6 +331,8 @@ function handleLanguageServerMessage(raw) {
 }
 
 function registerLanguageProviders() {
+  if (languageProvidersRegistered) return;
+  languageProvidersRegistered = true;
   var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'sql', 'markdown', 'shell', 'groovy'];
   var lspCompletionLanguages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc'];
   var localCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
@@ -486,11 +490,12 @@ function registerLanguageProviders() {
 
 require.config({ paths: { vs: 'vs' } });
 
-require([
-  'vs/editor/editor.main',
-  'vs/basic-languages/sql/sql.contribution',
-  'vs/basic-languages/xml/xml.contribution',
-], function () {
+// Load only Monaco's core editor before announcing readiness. Monaco 0.55.1's
+// Vite bundle does not expose the old AMD contribution paths for SQL/XML; an
+// unresolved dependency prevents this callback, leaving the native side stuck
+// behind its renderer timeout. Language registration and assistance providers
+// are deliberately installed after the editor is usable below.
+require(['vs/editor/editor.main'], function () {
 
   // Define AndroidIDE dark theme
   monaco.editor.defineTheme('androidide-dark', {
@@ -559,21 +564,22 @@ require([
     // context menu is slow and duplicates functionality.
     contextmenu: false,
 
-    // LSP-backed suggestions are debounced and cancelled by the native session;
-    // keep Monaco's lightweight local suggestion UI enabled on mobile.
-    quickSuggestions: { other: true, comments: false, strings: true },
-    suggestOnTriggerCharacters: true,
-    acceptSuggestionOnCommitCharacter: true,
-    acceptSuggestionOnEnter: 'smart',
-    snippetSuggestions: 'inline',
-    parameterHints: { enabled: true },
+    // Keep the first usable editor pass independent of suggestions, signature
+    // help, diagnostics, and language-server traffic. These options are
+    // enabled after the ready event, once the user can edit the document.
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    acceptSuggestionOnCommitCharacter: false,
+    acceptSuggestionOnEnter: 'off',
+    snippetSuggestions: 'none',
+    parameterHints: { enabled: false },
 
     folding: false,
 
     // Link detection runs a regex over every visible line on every edit.
     links: false,
 
-    renderValidationDecorations: 'on',
+    renderValidationDecorations: 'off',
 
     // Smooth caret animation adds GPU compositing overhead on Android.
     cursorSmoothCaretAnimation: 'off',
@@ -598,8 +604,6 @@ require([
     // next to line numbers without spending DOM/paint budget.
     lineDecorationsWidth: 5,
   });
-
-  registerLanguageProviders();
 
   // Initial layout — best-effort.
   applyLayout();
@@ -656,13 +660,34 @@ require([
   // JavaScript click/touchend focus calls used to run after Android long-press
   // selection handles appeared and collapse the selection.
 
-  // Flush commands that arrived while Monaco was loading, then signal readiness.
+  // Flush commands that arrived while Monaco was loading, then signal
+  // readiness. Nothing related to LSP or suggestions is allowed to delay this
+  // point: opening a file must first produce an editable Monaco surface.
   monacoReady = true;
   var queuedMessages = pendingNativeMessages;
   pendingNativeMessages = [];
   queuedMessages.forEach(function (message) { window.androidIDE.receiveMessage(message); });
   document.getElementById('loading').classList.add('hidden');
   postToNative({ type: 'ready' });
+
+  // The native side explicitly enables optional language assistance after it
+  // has checked the user's LSP setting. Keep this work off the core startup
+  // path and yield once more so the first model/layout can paint.
+  window.androidIDE.enableLanguageFeatures = function () {
+    setTimeout(function () {
+      registerLanguageProviders();
+      editor.updateOptions({
+        quickSuggestions: { other: true, comments: false, strings: true },
+        suggestOnTriggerCharacters: true,
+        acceptSuggestionOnCommitCharacter: true,
+        acceptSuggestionOnEnter: 'smart',
+        snippetSuggestions: 'inline',
+        parameterHints: { enabled: true },
+        renderValidationDecorations: 'on',
+      });
+    }, 0);
+  };
+  if (languageFeaturesRequested) window.androidIDE.enableLanguageFeatures();
 });
 
 // ---------------------------------------------------------------------------
@@ -751,6 +776,11 @@ window.androidIDE = {
     }
 
     switch (msg.type) {
+
+      case 'enableLanguageFeatures':
+        if (window.androidIDE.enableLanguageFeatures) window.androidIDE.enableLanguageFeatures();
+        else languageFeaturesRequested = true;
+        break;
 
       case 'loadFile':
         loadFile(msg.requestId, msg.path, msg.content, msg.language, msg.readOnly === true);

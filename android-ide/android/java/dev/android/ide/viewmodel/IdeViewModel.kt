@@ -159,6 +159,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val tabSaveMutexes = ConcurrentHashMap<String, Mutex>()
     private val lspDocumentVersions = mutableMapOf<String, Int>()
     private var workspaceSaveJob: Job? = null
+    private var editorFeatureBoundaryReached = false
 
     init {
         // Read the previous session marker before marking this process as active.
@@ -166,7 +167,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val previousSessionDirty = crashRecovery.isPreviousSessionDirty()
         crashRecovery.markSessionStart()
         lifecycleStore.markProcessStarted()
-        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.setEnabled(true)
         viewModelScope.launch {
             languageServerPackageInstaller.state.collect { setup ->
                 val enabled = _uiState.value.editorSettings.languageServerEnabled
@@ -206,7 +206,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAppForeground() {
         lifecycleStore.markForeground()
-        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.refresh()
+        if (editorFeatureBoundaryReached && _uiState.value.editorSettings.languageServerEnabled) {
+            languageServerPackageInstaller.refresh()
+        }
     }
 
     fun onAppBackground() {
@@ -410,7 +412,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(editorSettings = settings) }
         if (settings.languageServerEnabled != previousSettings.languageServerEnabled) {
             if (settings.languageServerEnabled) {
-                languageServerPackageInstaller.setEnabled(true)
+                if (editorFeatureBoundaryReached) activateLanguageFeaturesAfterEditorReady()
             } else {
                 languageServerPackageInstaller.setEnabled(false)
                 _uiState.update {
@@ -1252,7 +1254,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
         oldTemporaryUri?.let { sendEditorCommand(EditorOutbound.CloseTab(it)) }
 
-        initializeLanguageServerDocument(loadingTab.id, documentUri, language, content, _uiState.value.projectRootUri)
         scheduleWorkspaceSave()
     }
 
@@ -1347,6 +1348,17 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 } else state
             }
         }
+    }
+
+    /**
+     * Enables optional language workspace features only after Monaco is usable.
+     * Package validation and server startup must not be part of the tab-opening
+     * critical path.
+     */
+    private fun activateLanguageFeaturesAfterEditorReady() {
+        if (!_uiState.value.editorSettings.languageServerEnabled) return
+        languageServerPackageInstaller.setEnabled(true)
+        sendEditorCommand(EditorOutbound.EnableLanguageFeatures)
     }
 
     private suspend fun startLanguageServerForActiveProject(
@@ -1617,12 +1629,17 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     // ── Editor bridge ──────────────────────────────────────────────────────
 
     fun onEditorReady() {
+        editorFeatureBoundaryReached = true
         _uiState.update {
             it.copy(
                 isEditorReady    = true,
                 editorBindRevision = it.editorBindRevision + 1,
             )
         }
+        // Monaco readiness is the boundary for optional workspace features.
+        // Do not probe/install LSP packages while the editor surface is still
+        // being created; the user must first receive an editable surface.
+        activateLanguageFeaturesAfterEditorReady()
         val settings = _uiState.value.editorSettings
         sendEditorCommand(EditorOutbound.SetEditorOptions(
             tabSize                = settings.tabSize,
@@ -1676,7 +1693,11 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun onEditorMessage(message: EditorInbound) {
         when (message) {
             is EditorInbound.Ready -> onEditorReady()
-            is EditorInbound.FileLoaded,
+            is EditorInbound.FileLoaded -> {
+                // The editor has attached and displayed the model. Optional
+                // LSP/package work may begin only after this point.
+                activateLanguageFeaturesAfterEditorReady()
+            }
             is EditorInbound.FileLoadFailed,
             is EditorInbound.ActiveModelCleared,
             -> Unit

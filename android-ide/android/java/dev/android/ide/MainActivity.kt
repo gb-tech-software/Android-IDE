@@ -1,12 +1,8 @@
 package dev.android.ide
 
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.Color
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.activity.ComponentActivity
@@ -28,15 +24,6 @@ import dev.android.ide.viewmodel.IdeViewModel
 
 class MainActivity : ComponentActivity() {
     private val externalContentRouter = ExternalContentRouter()
-    private val storageSetupReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == STORAGE_SETUP_ACTION && intent.getStringExtra(STORAGE_SETUP_ACTION) == "storage") {
-                intent.getStringExtra(TerminalStorageSetupProtocol.REQUEST_ID_EXTRA)
-                    ?.let(appShellViewModel::requestTerminalStorageSetup)
-            }
-        }
-    }
-
     val appShellViewModel: AppShellViewModel by lazy {
         ViewModelProvider(this)[AppShellViewModel::class.java]
     }
@@ -90,6 +77,15 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent) {
         when (intent.action) {
+            TerminalStorageSetupProtocol.ACTION -> {
+                if (intent.getStringExtra(TerminalStorageSetupProtocol.REQUEST_KIND_EXTRA) ==
+                    TerminalStorageSetupProtocol.REQUEST_KIND_STORAGE
+                ) {
+                    intent.getStringExtra(TerminalStorageSetupProtocol.REQUEST_ID_EXTRA)
+                        ?.let(appShellViewModel::requestTerminalStorageSetup)
+                }
+                return
+            }
             OpenUrlRequestProtocol.RELOAD_BROWSER_ACTION -> {
                 browserViewModel.reload()
                 appShellViewModel.navigate(Surface.BROWSER)
@@ -160,28 +156,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        val filter = IntentFilter().apply { addAction(STORAGE_SETUP_ACTION) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // termux-setup-storage invokes `am broadcast` from the bundled shell.
-            // That sender has a different UID, so NOT_EXPORTED rejects the request
-            // before the permission host can show any UI.
-            registerReceiver(storageSetupReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            registerReceiver(storageSetupReceiver, filter)
-        }
         appShellViewModel.foreground()
     }
 
     override fun onStop() {
-        unregisterReceiver(storageSetupReceiver)
         appShellViewModel.background()
         ApplicationServices.from(application).browserPersistenceCoordinator.flush()
         super.onStop()
     }
 
     private companion object {
-        const val STORAGE_SETUP_ACTION = "dev.android.ide.app.reload_style"
         val REQUEST_ID_PATTERN = Regex("[A-Za-z0-9._-]{1,80}")
     }
 }

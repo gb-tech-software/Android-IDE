@@ -256,8 +256,10 @@ PS1='${promptNonPrintingStart}${promptGreen}${promptNonPrintingEnd}${'$'}(_andro
 
     private fun installStorageSetupCommand() {
         val command = File(prefix, "bin/termux-setup-storage")
-        val action = "${context.packageName}.app.reload_style"
+        val action = TerminalStorageSetupProtocol.ACTION
         val packageName = context.packageName
+        val requestKindExtra = TerminalStorageSetupProtocol.REQUEST_KIND_EXTRA
+        val requestKind = TerminalStorageSetupProtocol.REQUEST_KIND_STORAGE
         val requestIdExtra = TerminalStorageSetupProtocol.REQUEST_ID_EXTRA
         val resultDirectory = TerminalStorageSetupProtocol.RESULT_DIRECTORY
         val script = """#!/system/bin/sh
@@ -293,7 +295,7 @@ user_id="${'$'}{TERMUX__USER_ID:-0}"
 case "${'$'}user_id" in
     ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
 esac
-broadcast_output=${'$'}(am broadcast --user "${'$'}user_id" -a "$action" -p "$packageName" --es "$action" storage --es "$requestIdExtra" "${'$'}request_id" 2>&1)
+broadcast_output=${'$'}(am broadcast --user "${'$'}user_id" -a "$action" -p "$packageName" --es "$requestKindExtra" "$requestKind" --es "$requestIdExtra" "${'$'}request_id" 2>&1)
 result=${'$'}?
 if [ "${'$'}result" -ne 0 ]; then
     printf 'Android IDE did not receive the storage setup request (exit %s).\n' "${'$'}result"

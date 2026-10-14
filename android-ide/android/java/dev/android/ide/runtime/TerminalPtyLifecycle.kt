@@ -74,7 +74,14 @@ class TerminalPtyLifecycle(
     fun liveDescriptors(): List<SessionDescriptor> {
         sessions.values.filterNot { it.session.isRunning() }
             .forEach { markUnavailable(it.descriptor.id, "The terminal process ended") }
-        return sessions.values.map { it.descriptor }
+        return sessions.values.map { live ->
+            val currentDirectory = live.session.getCwd() ?: live.descriptor.workingDirectory
+            if (currentDirectory != live.descriptor.workingDirectory) {
+                live.descriptor = live.descriptor.copy(workingDirectory = currentDirectory)
+                persistence.upsert(live.descriptor)
+            }
+            live.descriptor
+        }
     }
 
     fun updateDescriptor(sessionId: String, descriptor: SessionDescriptor) {

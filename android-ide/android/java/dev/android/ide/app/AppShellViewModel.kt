@@ -198,10 +198,13 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             // A new session opened from the terminal drawer follows the active
             // session. Explicit project/folder launches still supply their own
             // directory and therefore take precedence.
+            val sessions = terminalRuntime.listSessions()
+            val activeSession = sessions.firstOrNull { session ->
+                session.id == _state.value.selectedTerminalSessionId &&
+                    session.availability == SessionAvailability.AVAILABLE
+            }
             val inheritedWorkingDirectory = workingDirectory
-                ?: _state.value.terminalSessions
-                    .firstOrNull { it.id == _state.value.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
-                    ?.workingDirectory
+                ?: activeSession?.workingDirectory
             val session = terminalRuntime.createSession(
                 inheritedWorkingDirectory,
                 name.trim().ifBlank { "Untitled session" },

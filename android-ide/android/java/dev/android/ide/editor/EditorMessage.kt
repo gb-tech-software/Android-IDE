@@ -177,6 +177,9 @@ sealed class EditorOutbound {
     /** Update editor font size (sp). */
     data class SetFontSize(val size: Int) : EditorOutbound()
 
+    /** Enable optional suggestions and language-assistance providers after ready. */
+    object EnableLanguageFeatures : EditorOutbound()
+
     /**
      * Update one or more editor options. Null fields are not sent (no change).
      * Sent whenever the user changes editor settings; also on first editor ready
@@ -317,6 +320,7 @@ sealed class EditorOutbound {
             is RequestSave     -> { put("type", "requestSave"); put("path", msg.path) }
             is SetTheme        -> { put("type", "setTheme");    put("theme", msg.theme) }
             is SetFontSize     -> { put("type", "setFontSize"); put("size", msg.size) }
+            is EnableLanguageFeatures -> put("type", "enableLanguageFeatures")
             is SetEditorOptions-> {
                 put("type", "setEditorOptions")
                 msg.tabSize?.let          { put("tabSize", it) }

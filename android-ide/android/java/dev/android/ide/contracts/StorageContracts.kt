@@ -200,6 +200,9 @@ sealed interface TerminalStorageSetupPermission {
 }
 
 object TerminalStorageSetupProtocol {
+    const val ACTION = "dev.android.ide.action.TERMINAL_STORAGE_SETUP"
+    const val REQUEST_KIND_EXTRA = "dev.android.ide.extra.STORAGE_SETUP_KIND"
+    const val REQUEST_KIND_STORAGE = "storage"
     const val REQUEST_ID_EXTRA = "dev.android.ide.extra.STORAGE_SETUP_REQUEST_ID"
     const val RESULT_DIRECTORY = ".android-ide-storage-setup"
 }
