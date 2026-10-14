@@ -54,7 +54,7 @@ sealed class EditorInbound {
     data class SelectionChanged(val hasSelection: Boolean) : EditorInbound()
 
     /** User pressed Ctrl+S / Cmd+S in Monaco. */
-    data class FileSaved(val path: String) : EditorInbound()
+    data class FileSaved(val path: String, val content: String? = null) : EditorInbound()
 
     /** A JSON-RPC request or notification from Monaco to the active server. */
     data class LanguageServerMessage(val message: String) : EditorInbound()
@@ -99,7 +99,10 @@ sealed class EditorInbound {
                 "selectionChanged"    -> SelectionChanged(
                     hasSelection = obj.optBoolean("hasSelection", false),
                 )
-                "fileSaved"            -> FileSaved(path = obj.getString("path"))
+                "fileSaved"            -> FileSaved(
+                    path = obj.getString("path"),
+                    content = obj.optString("content").takeIf { obj.has("content") },
+                )
                 "languageServerMessage" -> LanguageServerMessage(message = obj.getString("message"))
                 "diagnosticsChanged"   -> {
                     val entries = obj.optJSONArray("diagnostics") ?: JSONArray()

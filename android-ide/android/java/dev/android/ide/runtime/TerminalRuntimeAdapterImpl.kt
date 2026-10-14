@@ -69,6 +69,9 @@ class TerminalRuntimeAdapterImpl(
     override suspend fun createSession(workingDirectory: String?, name: String): SessionDescriptor =
         pty.createSession(workingDirectory, name)
 
+    override suspend fun refreshSessionWorkingDirectory(sessionId: String): SessionDescriptor? =
+        pty.refreshWorkingDirectory(sessionId)
+
     fun terminalSession(sessionId: String): TerminalSession? = pty.terminalSession(sessionId)
     fun bindTerminalView(sessionId: String, invalidate: () -> Unit) = pty.bindView(sessionId, invalidate)
     fun unbindTerminalView(sessionId: String) = pty.unbindView(sessionId)

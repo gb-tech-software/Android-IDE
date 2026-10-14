@@ -153,7 +153,10 @@ fun EditorPane(
     }
 
     DisposableEffect(editorBridge) {
-        onDispose { editorBridge.close() }
+        onDispose {
+            rendererGone()
+            editorBridge.close()
+        }
     }
 
     // ── Monaco WebView — created once, never recreated ─────────────────────

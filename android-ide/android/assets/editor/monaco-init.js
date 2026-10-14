@@ -653,7 +653,7 @@ require(['vs/editor/editor.main'], function () {
   // --- Keyboard shortcut: Ctrl+S / Cmd+S ---
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
     if (!currentPath) return;
-    postToNative({ type: 'fileSaved', path: currentPath });
+    postToNative({ type: 'fileSaved', path: currentPath, content: editor.getValue() });
   });
 
   // Focus is intentionally controlled by the native WebView touch listener.
@@ -839,7 +839,7 @@ window.androidIDE = {
 
       case 'requestSave':
         if (editor && currentPath) {
-          postToNative({ type: 'fileSaved', path: currentPath });
+          postToNative({ type: 'fileSaved', path: currentPath, content: editor.getValue() });
         }
         break;
 

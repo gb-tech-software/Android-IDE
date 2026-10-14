@@ -171,6 +171,8 @@ interface TerminalRuntimeAdapter {
     suspend fun inspectProjectAccess(project: ProjectIdentity): TerminalProjectAccess
     suspend fun workingDirectory(project: ProjectIdentity): String?
     suspend fun createSession(workingDirectory: String?, name: String = ""): SessionDescriptor
+    /** Refreshes the selected live session's cwd from its shell process before inheritance. */
+    suspend fun refreshSessionWorkingDirectory(sessionId: String): SessionDescriptor?
     /** Completes a shell-originated setup request and publishes its result to that command's output. */
     suspend fun completeStorageSetupRequest(
         requestId: String,
@@ -205,4 +207,5 @@ object TerminalStorageSetupProtocol {
     const val REQUEST_KIND_STORAGE = "storage"
     const val REQUEST_ID_EXTRA = "dev.android.ide.extra.STORAGE_SETUP_REQUEST_ID"
     const val RESULT_DIRECTORY = ".android-ide-storage-setup"
+    const val ACCEPTED_SUFFIX = ".accepted"
 }

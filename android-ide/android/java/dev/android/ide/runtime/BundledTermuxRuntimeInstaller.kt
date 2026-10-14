@@ -56,6 +56,9 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
     fun home(): File = home
     fun userFilesRoot(): File = userFiles
     fun rebuildStorageLinks(): OperationReport = storageBridge.rebuildLinks()
+    fun acknowledgeStorageSetupRequest(requestId: String) =
+        storageSetupResultChannel.publishAccepted(requestId)
+
     fun publishStorageSetupResult(requestId: String, report: OperationReport) =
         storageSetupResultChannel.publish(requestId, report)
 
@@ -286,11 +289,12 @@ printf 'Requesting Android shared-storage access…\n'
 request_id=${'$'}${'$'}
 result_dir="${'$'}HOME/$resultDirectory"
 result_file="${'$'}result_dir/${'$'}request_id.result"
+accepted_file="${'$'}result_dir/${'$'}request_id.accepted"
 if ! mkdir -p "${'$'}result_dir"; then
     printf 'Unable to prepare the Android IDE storage-setup result channel.\n' >&2
     exit 1
 fi
-rm -f "${'$'}result_file" "${'$'}result_dir/${'$'}request_id.tmp"
+rm -f "${'$'}result_file" "${'$'}accepted_file" "${'$'}result_dir/${'$'}request_id.tmp"
 user_id="${'$'}{TERMUX__USER_ID:-0}"
 case "${'$'}user_id" in
     ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
@@ -302,6 +306,16 @@ if [ "${'$'}result" -ne 0 ]; then
     [ -z "${'$'}broadcast_output" ] || printf '%s\n' "${'$'}broadcast_output"
     exit "${'$'}result"
 fi
+accepted_wait_seconds=0
+while [ ! -f "${'$'}accepted_file" ]; do
+    if [ "${'$'}accepted_wait_seconds" -ge 15 ]; then
+        printf 'Android IDE did not open the storage setup flow. Open Android IDE and run the command again.\n' >&2
+        exit 1
+    fi
+    sleep 1
+    accepted_wait_seconds=${'$'}((accepted_wait_seconds + 1))
+done
+rm -f "${'$'}accepted_file"
 printf 'Waiting for Android IDE storage setup to finish…\n'
 wait_seconds=0
 while [ ! -f "${'$'}result_file" ]; do

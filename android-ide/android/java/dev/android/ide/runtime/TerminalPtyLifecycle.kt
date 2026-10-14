@@ -88,6 +88,20 @@ class TerminalPtyLifecycle(
         sessions[sessionId]?.descriptor = descriptor
     }
 
+    fun refreshWorkingDirectory(sessionId: String): SessionDescriptor? {
+        val live = sessions[sessionId] ?: return null
+        if (!live.session.isRunning()) {
+            markUnavailable(sessionId, "The terminal process ended")
+            return null
+        }
+        val currentDirectory = live.session.getCwd() ?: live.descriptor.workingDirectory
+        if (currentDirectory != live.descriptor.workingDirectory) {
+            live.descriptor = live.descriptor.copy(workingDirectory = currentDirectory)
+            persistence.upsert(live.descriptor)
+        }
+        return live.descriptor
+    }
+
     fun outputSnapshot(sessionId: String): String = liveSession(sessionId)?.session
         ?.getEmulator()?.getScreen()?.getTranscriptText().orEmpty()
 

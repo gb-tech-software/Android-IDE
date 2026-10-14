@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import dev.android.ide.MainActivity
 import dev.android.ide.contracts.TerminalStorageSetupProtocol
+import java.io.File
 
 /**
  * Durable entry point for the bundled termux-setup-storage command.
@@ -30,6 +31,10 @@ class TerminalStorageSetupReceiver : BroadcastReceiver() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             },
         )
+        runCatching {
+            TerminalStorageSetupResultChannel(File(context.filesDir, "home"))
+                .publishAccepted(requestId)
+        }
     }
 
     private companion object {

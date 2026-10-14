@@ -120,6 +120,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     private var projectRefreshGeneration = 0L
     private val projectSummaryJobs = mutableMapOf<String, Job>()
     private var folderInspectionGeneration = 0L
+    private var storageSetupExpiryJob: Job? = null
 
     private val _state = MutableStateFlow(
         AppShellState(
@@ -198,9 +199,11 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             // A new session opened from the terminal drawer follows the active
             // session. Explicit project/folder launches still supply their own
             // directory and therefore take precedence.
+            val selectedSessionId = _state.value.selectedTerminalSessionId
+            selectedSessionId?.let { terminalRuntime.refreshSessionWorkingDirectory(it) }
             val sessions = terminalRuntime.listSessions()
             val activeSession = sessions.firstOrNull { session ->
-                session.id == _state.value.selectedTerminalSessionId &&
+                session.id == selectedSessionId &&
                     session.availability == SessionAvailability.AVAILABLE
             }
             val inheritedWorkingDirectory = workingDirectory
@@ -418,6 +421,24 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 terminalStorageSetupRequest = TerminalStorageSetupRequest(requestId),
             )
         }
+        storageSetupExpiryJob?.cancel()
+        storageSetupExpiryJob = viewModelScope.launch {
+            // Match the shell's five-minute wait, but expire slightly earlier
+            // so a timed-out command cannot strand the next invocation.
+            kotlinx.coroutines.delay(285_000L)
+            if (_state.value.terminalStorageSetupRequest?.id == requestId) {
+                completeTerminalStorageSetup(
+                    requestId,
+                    TerminalStorageSetupPermission.Denied(
+                        OperationReport(
+                            OperationOutcome.BLOCKED,
+                            "Android IDE did not complete storage setup in time. Run termux-setup-storage again.",
+                            ErrorCategory.UNAVAILABLE_RUNTIME,
+                        ),
+                    ),
+                )
+            }
+        }
     }
 
     /** Completes setup and returns its report through the shell command's result channel. */
@@ -442,6 +463,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             } finally {
                 _state.update { state ->
                     if (state.terminalStorageSetupRequest?.id == requestId) {
+                        storageSetupExpiryJob = null
                         state.copy(terminalStorageSetupRequest = null)
                     } else state
                 }

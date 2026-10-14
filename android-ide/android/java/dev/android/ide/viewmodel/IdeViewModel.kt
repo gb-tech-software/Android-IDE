@@ -1272,11 +1272,34 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(editorFileLoading = false, statusMessage = "Could not validate ${tab.displayName}; keeping the open editor content") }
             return
         }
-        if (diskContent == tab.content) {
-            _uiState.update { it.copy(editorFileLoading = false) }
+        val draftContent = pendingContent[tab.id]
+        if (draftContent == null && diskContent == tab.content) {
+            _uiState.update { state ->
+                state.copy(
+                    openTabs = state.openTabs.map {
+                        if (it.id == tab.id) it.copy(isDirty = false, isSaving = false) else it
+                    },
+                    editorFileLoading = false,
+                )
+            }
             return
         }
-        if (tab.isDirty || pendingContent.containsKey(tab.id)) {
+        if (draftContent != null && draftContent == diskContent) {
+            pendingContent.remove(tab.id)
+            _uiState.value.projectRootUri?.let { projectRootUri ->
+                crashRecovery.clearUnsavedContent(projectRootUri, tab.id)
+            }
+            _uiState.update { state ->
+                state.copy(
+                    openTabs = state.openTabs.map {
+                        if (it.id == tab.id) it.copy(content = diskContent, isDirty = false, isSaving = false) else it
+                    },
+                    editorFileLoading = false,
+                )
+            }
+            return
+        }
+        if (tab.isDirty || draftContent != null) {
             _uiState.update { it.copy(editorFileLoading = false, fileOpDialog = FileOpDialog.ExternalFileConflict(tab.id, tab.displayName, diskContent)) }
             return
         }
@@ -1629,6 +1652,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     // ── Editor bridge ──────────────────────────────────────────────────────
 
     fun onEditorReady() {
+        // Monaco's revision counter belongs to one WebView renderer and starts
+        // over when the editor surface is recreated. Never compare a new
+        // renderer's revisions with the previous renderer's values.
+        lastContentRevision.clear()
         editorFeatureBoundaryReached = true
         _uiState.update {
             it.copy(
@@ -1659,6 +1686,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Marks the native editor as unavailable until the WebView sends Ready again. */
     fun onEditorRendererGone() {
+        lastContentRevision.clear()
         _uiState.update {
             it.copy(
                 isEditorReady    = false,
@@ -1708,20 +1736,32 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 val previousRevision = lastContentRevision[tab.id]
                 if (previousRevision != null && message.revision <= previousRevision) return
                 lastContentRevision[tab.id] = message.revision
-                pendingContent[tab.id] = message.content
+                val matchesSavedContent = tab.content != null && message.content == tab.content
+                if (matchesSavedContent) {
+                    pendingContent.remove(tab.id)
+                    _uiState.value.projectRootUri?.let { projectRootUri ->
+                        crashRecovery.clearUnsavedContent(projectRootUri, tab.id)
+                    }
+                } else {
+                    pendingContent[tab.id] = message.content
+                    _uiState.value.projectRootUri?.let { projectRootUri ->
+                        crashRecovery.saveUnsavedContent(
+                            projectRootUri = projectRootUri,
+                            tabId          = tab.id,
+                            documentUri    = tab.documentUri,
+                            displayName    = tab.displayName,
+                            content        = message.content,
+                        )
+                    }
+                }
                 _uiState.update { state ->
                     state.copy(openTabs = state.openTabs.map {
-                        if (it.id == tab.id) it.copy(isDirty = true, isTemporary = false) else it
+                        if (it.id == tab.id) it.copy(
+                            isDirty = !matchesSavedContent,
+                            isTemporary = false,
+                        ) else it
                     })
                 }
-                val projectRootUri = _uiState.value.projectRootUri ?: return
-                crashRecovery.saveUnsavedContent(
-                    projectRootUri = projectRootUri,
-                    tabId          = tab.id,
-                    documentUri    = tab.documentUri,
-                    displayName    = tab.displayName,
-                    content        = message.content,
-                )
                 sendLanguageServerNotificationForTab(
                     tab,
                     "textDocument/didChange",
@@ -1733,8 +1773,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                         put("contentChanges", org.json.JSONArray().put(JSONObject().put("text", message.content)))
                     },
                 )
-                if (_uiState.value.editorSettings.autoSave) {
-                    saveFile(message.path)
+                if (_uiState.value.editorSettings.autoSave && !matchesSavedContent) {
+                    saveFile(message.path, message.content)
                 }
             }
 
@@ -1756,7 +1796,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             is EditorInbound.SelectionChanged ->
                 _uiState.update { it.copy(hasEditorSelection = message.hasSelection) }
 
-            is EditorInbound.FileSaved -> saveFile(message.path)
+            is EditorInbound.FileSaved -> saveFile(message.path, message.content)
 
             is EditorInbound.LanguageServerMessage -> onLanguageServerMessage(message.message)
 
@@ -1911,15 +1951,27 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         saveFile(tab.documentUri)
     }
 
-    private fun saveFile(documentUri: String) {
-        val tab     = _uiState.value.openTabs.find { it.documentUri == documentUri } ?: return
+    private fun saveFile(documentUri: String, contentOverride: String? = null) {
+        val tab = _uiState.value.openTabs.find { it.documentUri == documentUri } ?: return
         if (tab.isBlank || tab.content == null) return
         viewModelScope.launch {
             val mutex = tabSaveMutexes.computeIfAbsent(tab.id) { Mutex() }
             mutex.withLock {
                 val currentTab = _uiState.value.openTabs.find { it.id == tab.id } ?: return@withLock
                 if (currentTab.isBlank || currentTab.content == null) return@withLock
-                val content = pendingContent[tab.id] ?: return@withLock
+                val content = contentOverride ?: pendingContent[tab.id] ?: return@withLock
+                if (content == currentTab.content) {
+                    pendingContent.remove(tab.id)
+                    _uiState.value.projectRootUri?.let { projectRootUri ->
+                        crashRecovery.clearUnsavedContent(projectRootUri, tab.id)
+                    }
+                    _uiState.update { state ->
+                        state.copy(openTabs = state.openTabs.map {
+                            if (it.id == tab.id) it.copy(isDirty = false, isSaving = false) else it
+                        })
+                    }
+                    return@withLock
+                }
                 _uiState.update { state ->
                     state.copy(
                         openTabs = state.openTabs.map {
@@ -1929,7 +1981,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val ok = fileMutations.write(currentTab.documentUri, content.toByteArray(Charsets.UTF_8))
                 if (ok) {
-                    val draftIsCurrent = pendingContent[tab.id] == content
+                    val latestDraft = pendingContent[tab.id]
+                    val draftIsCurrent = latestDraft == null || latestDraft == content
                     if (draftIsCurrent) {
                         pendingContent.remove(tab.id)
                         _uiState.value.projectRootUri?.let { projectRootUri ->
