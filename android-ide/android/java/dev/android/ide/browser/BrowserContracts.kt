@@ -83,6 +83,9 @@ data class BrowserWebsitePromptChoice(
     val label: String,
     val selected: Boolean,
     val disabled: Boolean,
+    val separator: Boolean = false,
+    val group: Boolean = false,
+    val depth: Int = 0,
 )
 data class BrowserWebsitePromptAnswer(
     val accepted: Boolean,
@@ -108,6 +111,9 @@ data class BrowserWebsitePromptRequest(
     val multiple: Boolean = false,
     val mimeTypes: List<String> = emptyList(),
     val inputType: String? = null,
+    val minValue: String? = null,
+    val maxValue: String? = null,
+    val predefinedValues: List<String> = emptyList(),
     val decision: CompletableDeferred<BrowserWebsitePromptAnswer>,
 )
 enum class BrowserDownloadStatus { DOWNLOADING, PAUSED, COMPLETED, FAILED, INTERRUPTED, CANCELED }

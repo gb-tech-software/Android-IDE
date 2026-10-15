@@ -366,6 +366,7 @@ private class GeckoBrowserEngineSession(
                 title = prompt.title ?: "Choose a color",
                 message = "Choose a color to share with this page.",
                 defaultValue = prompt.defaultValue,
+                predefinedValues = prompt.predefinedValues?.toList().orEmpty(),
                 resolve = { answer -> if (answer.accepted) prompt.confirm(answer.value.orEmpty()) else prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
@@ -385,6 +386,8 @@ private class GeckoBrowserEngineSession(
                     GeckoSession.PromptDelegate.DateTimePrompt.Type.TIME -> "time"
                     else -> "datetime-local"
                 },
+                minValue = prompt.minValue,
+                maxValue = prompt.maxValue,
                 resolve = { answer -> if (answer.accepted) prompt.confirm(answer.value.orEmpty()) else prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
@@ -474,6 +477,9 @@ private class GeckoBrowserEngineSession(
         multiple: Boolean = false,
         mimeTypes: List<String> = emptyList(),
         inputType: String? = null,
+        minValue: String? = null,
+        maxValue: String? = null,
+        predefinedValues: List<String> = emptyList(),
         resolve: (BrowserWebsitePromptAnswer) -> GeckoSession.PromptDelegate.PromptResponse,
         cancel: () -> GeckoSession.PromptDelegate.PromptResponse,
     ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
@@ -493,6 +499,9 @@ private class GeckoBrowserEngineSession(
             multiple = multiple,
             mimeTypes = mimeTypes,
             inputType = inputType,
+            minValue = minValue,
+            maxValue = maxValue,
+            predefinedValues = predefinedValues,
             decision = CompletableDeferred(),
         )
         val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
@@ -528,15 +537,20 @@ private class GeckoBrowserEngineSession(
 
     private fun flattenChoices(
         choices: Array<GeckoSession.PromptDelegate.ChoicePrompt.Choice>,
-        prefix: String = "",
+        depth: Int = 0,
     ): List<BrowserWebsitePromptChoice> = buildList {
         choices.forEach { choice ->
-            if (choice.separator) return@forEach
+            if (choice.separator) {
+                add(BrowserWebsitePromptChoice("separator-${size}", "", false, true, separator = true, depth = depth))
+                return@forEach
+            }
             val children = choice.items
             if (children.isNullOrEmpty()) {
-                add(BrowserWebsitePromptChoice(choice.id, "$prefix${choice.label}", choice.selected, choice.disabled))
+                add(BrowserWebsitePromptChoice(choice.id, choice.label, choice.selected, choice.disabled, depth = depth))
+            } else {
+                add(BrowserWebsitePromptChoice("group-${choice.id}", choice.label, false, true, group = true, depth = depth))
+                addAll(flattenChoices(children, depth + 1))
             }
-            else addAll(flattenChoices(children, "${prefix}${choice.label} · "))
         }
     }
 

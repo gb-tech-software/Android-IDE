@@ -344,6 +344,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun answerWebsitePrompt(id: String, answer: BrowserWebsitePromptAnswer) {
         val prompt = _uiState.value.websitePrompt ?: return
+        // A native dialog can outlive a recomposition; its prompt ID prevents an old
+        // dismissal or answer from resolving a newer Gecko request.
         if (prompt.id != id) return
         if (prompt.kind == BrowserWebsitePromptKind.FILE && answer.accepted) {
             viewModelScope.launch {
@@ -366,6 +368,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             prompt.decision.complete(answer)
             _uiState.value = _uiState.value.copy(websitePrompt = null)
         }
+    }
+
+    /** Completes a native prompt when its browser surface or owning tab disappears. */
+    fun dismissWebsitePrompt(id: String? = null) {
+        val prompt = _uiState.value.websitePrompt ?: return
+        if (id != null && prompt.id != id) return
+        prompt.decision.complete(BrowserWebsitePromptAnswer(accepted = false))
+        _uiState.value = _uiState.value.copy(websitePrompt = null)
     }
 
     private fun stageWebsiteUpload(uriValue: String): String? = runCatching {
@@ -484,6 +494,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
+        if (_uiState.value.websitePrompt?.tabId != null && _uiState.value.websitePrompt?.tabId != tabId) {
+            dismissWebsitePrompt()
+        }
         _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
         sessionFor(sessions.getValue(tabId))
         tabService.select(tabId)
@@ -528,6 +541,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val tab = sessions[_uiState.value.selectedTabId] ?: return
         val entered = address.trim()
         if (entered.isEmpty()) return
+        dismissWebsitePrompt()
         _uiState.value = _uiState.value.copy(downloadsPageOpen = false)
         val target = navigationService.resolve(entered)
         tab.url = target

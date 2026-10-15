@@ -211,6 +211,7 @@ fun BrowserSurface(
 
     DisposableEffect(browser) {
         onDispose {
+            browser.dismissWebsitePrompt()
             visibleBrowserSurface.value = null
         }
     }
@@ -790,7 +791,7 @@ private fun BrowserSurfaceContent(
         DuplicateDownloadDialog(prompt, browser::confirmDuplicateDownload)
     }
     state.websitePrompt?.takeUnless { it.kind == BrowserWebsitePromptKind.FILE }?.let { prompt ->
-        WebsitePromptDialog(prompt) { answer -> browser.answerWebsitePrompt(prompt.id, answer) }
+        NativeWebsitePromptHostComposable(prompt, browser::answerWebsitePrompt)
     }
     state.error?.let { message ->
         InlineBrowserNotice(message = message, onDismiss = browser::clearError)
@@ -851,156 +852,6 @@ private fun InlineBrowserNotice(message: String, onDismiss: () -> Unit) {
             TextButton(onClick = onDismiss) { Text("Dismiss") }
         }
     }
-}
-
-@Composable
-private fun WebsitePromptDialog(
-    prompt: BrowserWebsitePromptRequest,
-    onAnswer: (BrowserWebsitePromptAnswer) -> Unit,
-) {
-    var value by remember(prompt.id) { mutableStateOf(prompt.defaultValue.orEmpty()) }
-    var username by remember(prompt.id) { mutableStateOf(prompt.defaultUsername.orEmpty()) }
-    var password by remember(prompt.id) { mutableStateOf(prompt.defaultPassword.orEmpty()) }
-    var selectedIds by remember(prompt.id) {
-        mutableStateOf(prompt.choices.filter { it.selected }.map { it.id }.toSet())
-    }
-    val title = prompt.title?.takeIf(String::isNotBlank) ?: when (prompt.kind) {
-        BrowserWebsitePromptKind.ALERT -> "Alert"
-        BrowserWebsitePromptKind.CONFIRM -> "Confirm"
-        BrowserWebsitePromptKind.TEXT -> "Input required"
-        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Leave this page?"
-        BrowserWebsitePromptKind.REPOST -> "Resubmit form?"
-        BrowserWebsitePromptKind.AUTH -> "Sign in"
-        BrowserWebsitePromptKind.POPUP -> "Pop-up blocked"
-        BrowserWebsitePromptKind.CHOICE -> "Choose an option"
-        BrowserWebsitePromptKind.COLOR -> "Choose a color"
-        BrowserWebsitePromptKind.DATE_TIME -> "Enter a value"
-        BrowserWebsitePromptKind.FILE -> "Choose a file"
-    }
-    val confirmLabel = when (prompt.kind) {
-        BrowserWebsitePromptKind.ALERT -> "OK"
-        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Leave"
-        BrowserWebsitePromptKind.REPOST -> "Continue"
-        BrowserWebsitePromptKind.AUTH -> "Sign in"
-        BrowserWebsitePromptKind.POPUP -> "Allow"
-        BrowserWebsitePromptKind.CHOICE -> "Select"
-        else -> "OK"
-    }
-    val dismissLabel = when (prompt.kind) {
-        BrowserWebsitePromptKind.BEFORE_UNLOAD -> "Stay"
-        BrowserWebsitePromptKind.REPOST -> "Cancel"
-        BrowserWebsitePromptKind.POPUP -> "Block"
-        else -> "Cancel"
-    }
-    AlertDialog(
-        onDismissRequest = { onAnswer(BrowserWebsitePromptAnswer(accepted = false)) },
-        title = { Text(title) },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
-                horizontalAlignment = Alignment.Start,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (prompt.origin.isNotBlank()) {
-                    Text(prompt.origin, style = MaterialTheme.typography.labelMedium)
-                }
-                prompt.message?.takeIf(String::isNotBlank)?.let { Text(it) }
-                when (prompt.kind) {
-                    BrowserWebsitePromptKind.TEXT -> OutlinedTextField(
-                        value = value,
-                        onValueChange = { value = it },
-                        label = { Text("Response") },
-                        singleLine = true,
-                    )
-                    BrowserWebsitePromptKind.COLOR -> OutlinedTextField(
-                        value = value,
-                        onValueChange = { value = it },
-                        label = { Text("Color (for example, #336699)") },
-                        singleLine = true,
-                    )
-                    BrowserWebsitePromptKind.DATE_TIME -> OutlinedTextField(
-                        value = value,
-                        onValueChange = { value = it },
-                        label = { Text(prompt.inputType ?: "Date or time") },
-                        singleLine = true,
-                    )
-                    BrowserWebsitePromptKind.AUTH -> {
-                        if (!prompt.passwordOnly) {
-                            OutlinedTextField(
-                                value = username,
-                                onValueChange = { username = it },
-                                label = { Text("Username") },
-                                singleLine = true,
-                            )
-                        }
-                        OutlinedTextField(
-                            value = password,
-                            onValueChange = { password = it },
-                            label = { Text("Password") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true,
-                        )
-                    }
-                    BrowserWebsitePromptKind.CHOICE -> {
-                        prompt.choices.forEach { choice ->
-                            val selected = choice.id in selectedIds
-                            Row(
-                                modifier = Modifier.fillMaxWidth().clickable(enabled = !choice.disabled) {
-                                    selectedIds = if (prompt.multiple) {
-                                        if (selected) selectedIds - choice.id else selectedIds + choice.id
-                                    } else setOf(choice.id)
-                                },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                if (prompt.multiple) {
-                                    Checkbox(
-                                        checked = selected,
-                                        enabled = !choice.disabled,
-                                        onCheckedChange = { checked ->
-                                            selectedIds = if (checked) selectedIds + choice.id else selectedIds - choice.id
-                                        },
-                                    )
-                                } else {
-                                    RadioButton(
-                                        selected = selected,
-                                        enabled = !choice.disabled,
-                                        onClick = { selectedIds = setOf(choice.id) },
-                                    )
-                                }
-                                Text(
-                                    choice.label,
-                                    modifier = Modifier.weight(1f).padding(vertical = 8.dp),
-                                    color = if (choice.disabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface,
-                                )
-                            }
-                        }
-                    }
-                    else -> Unit
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = prompt.kind != BrowserWebsitePromptKind.CHOICE || prompt.multiple || selectedIds.size == 1,
-                onClick = {
-                    onAnswer(
-                        BrowserWebsitePromptAnswer(
-                            accepted = true,
-                            value = value,
-                            username = username,
-                            password = password,
-                            selectedIds = selectedIds.toList(),
-                        ),
-                    )
-                },
-            ) { Text(confirmLabel) }
-        },
-        dismissButton = {
-            if (prompt.kind != BrowserWebsitePromptKind.ALERT) {
-                TextButton(onClick = { onAnswer(BrowserWebsitePromptAnswer(accepted = false)) }) { Text(dismissLabel) }
-            }
-        },
-    )
 }
 
 @Composable
