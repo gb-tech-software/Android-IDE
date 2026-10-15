@@ -57,6 +57,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -64,7 +65,6 @@ import androidx.compose.material.icons.filled.NorthWest
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Mic
@@ -353,6 +353,62 @@ fun BrowserSurface(
             previousScrollY = previousScrollY,
             setPreviousScrollY = { previousScrollY = it },
         )
+        val filePrompt = state.websitePrompt?.takeIf { it.kind == BrowserWebsitePromptKind.FILE }
+        if (filePrompt != null && fileChooserPromptId == filePrompt.id) {
+            BrowserFileSourceSheet(
+                canCapture = supportsCameraCapture(filePrompt.mimeTypes),
+                onDismiss = {
+                    fileChooserPromptId = null
+                    activeFilePromptId = null
+                    browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                },
+                onCamera = {
+                    fileChooserPromptId = null
+                    activeFilePromptId = filePrompt.id
+                    val directory = File(context.cacheDir, "browser_form_captures").apply { mkdirs() }
+                    val file = runCatching { File.createTempFile("capture_", ".jpg", directory) }.getOrNull()
+                    val target = file?.let { captureFile ->
+                        runCatching {
+                            val uri = FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.browser.fileprovider",
+                                captureFile,
+                            )
+                            BrowserCaptureTarget(captureFile, uri, filePrompt.id)
+                        }.getOrElse {
+                            captureFile.delete()
+                            null
+                        }
+                    }
+                    if (target == null) {
+                        activeFilePromptId = null
+                        browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                    } else {
+                        pendingCameraPromptId = target.promptId
+                        pendingCameraUri = target.uri.toString()
+                        runCatching { cameraPicker.launch(target.uri) }.onFailure {
+                            pendingCameraPromptId = null
+                            pendingCameraUri = null
+                            activeFilePromptId = null
+                            target.file.delete()
+                            browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                        }
+                    }
+                },
+                onMediaPicker = {
+                    fileChooserPromptId = null
+                    activeFilePromptId = filePrompt.id
+                    val mimeTypes = filePrompt.mimeTypes.filter(String::isNotBlank).toTypedArray().ifEmpty { arrayOf("*/*") }
+                    runCatching {
+                        if (filePrompt.multiple) multipleFilePicker.launch(mimeTypes)
+                        else singleFilePicker.launch(mimeTypes)
+                    }.onFailure {
+                        activeFilePromptId = null
+                        browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                    }
+                },
+            )
+        }
     }
 }
 
@@ -902,62 +958,6 @@ private fun BrowserSurfaceContent(
             )
         }
     }
-    val filePrompt = state.websitePrompt?.takeIf { it.kind == BrowserWebsitePromptKind.FILE }
-    if (filePrompt != null && fileChooserPromptId == filePrompt.id) {
-        BrowserFileSourceSheet(
-            canCapture = supportsCameraCapture(filePrompt.mimeTypes),
-            onDismiss = {
-                fileChooserPromptId = null
-                activeFilePromptId = null
-                browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
-            },
-            onCamera = {
-                fileChooserPromptId = null
-                activeFilePromptId = filePrompt.id
-                val directory = File(context.cacheDir, "browser_form_captures").apply { mkdirs() }
-                val file = runCatching { File.createTempFile("capture_", ".jpg", directory) }.getOrNull()
-                val target = file?.let { captureFile ->
-                    runCatching {
-                        val uri = FileProvider.getUriForFile(
-                            context,
-                            "${context.packageName}.browser.fileprovider",
-                            captureFile,
-                        )
-                        BrowserCaptureTarget(captureFile, uri, filePrompt.id)
-                    }.getOrElse {
-                        captureFile.delete()
-                        null
-                    }
-                }
-                if (target == null) {
-                    activeFilePromptId = null
-                    browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
-                } else {
-                    pendingCameraPromptId = target.promptId
-                    pendingCameraUri = target.uri.toString()
-                    runCatching { cameraPicker.launch(target.uri) }.onFailure {
-                        pendingCameraPromptId = null
-                        pendingCameraUri = null
-                        activeFilePromptId = null
-                        target.file.delete()
-                        browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
-                    }
-                }
-            },
-            onMediaPicker = {
-                fileChooserPromptId = null
-                activeFilePromptId = filePrompt.id
-                val mimeTypes = filePrompt.mimeTypes.filter(String::isNotBlank).toTypedArray().ifEmpty { arrayOf("*/*") }
-                runCatching {
-                    if (filePrompt.multiple) multipleFilePicker.launch(mimeTypes)
-                    else singleFilePicker.launch(mimeTypes)
-                }.onFailure {
-                    activeFilePromptId = null
-                    browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
-                }
-            },
-        )
-    }
     state.duplicateDownload?.let { prompt ->
         DuplicateDownloadDialog(prompt, browser::confirmDuplicateDownload)
     }
@@ -1047,7 +1047,7 @@ private fun BrowserFileSourceSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                Icon(ImageIcon, contentDescription = null)
+                Icon(Icons.Filled.ImageIcon, contentDescription = null)
                 Text("Media picker", style = MaterialTheme.typography.bodyLarge)
             }
         }
@@ -1369,7 +1369,7 @@ private fun VideoResourcePreview(url: String) {
     var failed by remember(url) { mutableStateOf(false) }
     AndroidView(
         factory = { parent ->
-            val controller = MediaController(parent.context)
+            val controller = MediaController(parent)
             videoView.apply {
                 setBackgroundColor(android.graphics.Color.BLACK)
                 setMediaController(controller)

@@ -273,7 +273,8 @@ private class GeckoBrowserEngineSession(
                 title = prompt.title,
                 message = prompt.message,
                 basePrompt = prompt,
-                resolve = { prompt.confirm() },
+                // GeckoView AlertPrompt has no confirm response; dismissing it is the OK action.
+                resolve = { prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
 
@@ -424,6 +425,7 @@ private class GeckoBrowserEngineSession(
             ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> = requestWebsitePrompt(
                 kind = BrowserWebsitePromptKind.DATE_TIME,
                 title = prompt.title ?: "Enter a value",
+                message = "Choose a date or time.",
                 defaultValue = prompt.defaultValue,
                 inputType = when (prompt.type) {
                     GeckoSession.PromptDelegate.DateTimePrompt.Type.DATE -> "date"
@@ -488,7 +490,18 @@ private class GeckoBrowserEngineSession(
         resourceReferrer(referrer, parsed)?.let(requestBuilder::referrer)
         return runCatching {
             GeckoWebExecutor(runtime).fetch(requestBuilder.build()).accept(
-                { response ->
+                { maybeResponse ->
+                    val response = maybeResponse ?: run {
+                        sink.onDownloadRequested(
+                            BrowserDownloadRequest(
+                                tabId = tabId,
+                                url = url,
+                                mimeType = "application/octet-stream",
+                                fileName = null,
+                            ),
+                        )
+                        return@accept
+                    }
                     val headers = response.headers
                     val contentType = headers.entries.firstOrNull { it.key.equals("Content-Type", true) }
                         ?.value?.substringBefore(';')?.trim().orEmpty().ifBlank { "application/octet-stream" }
@@ -756,7 +769,7 @@ class GeckoBrowserDeveloperToolsService(
                 installed = true
                 extension.setMessageDelegate(object : WebExtension.MessageDelegate {
                     override fun onConnect(port: WebExtension.Port) {
-                        if (port.name != "android-ide") return
+                        if (port.name != "android_ide") return
                         ports += port
                         port.setDelegate(object : WebExtension.PortDelegate {
                             override fun onPortMessage(message: Any, port: WebExtension.Port) {
@@ -773,7 +786,7 @@ class GeckoBrowserDeveloperToolsService(
                         })
                         postVisibility(opened, port)
                     }
-                }, "android-ide")
+                }, "android_ide")
             }
         }, {
             handler.post { installing = false; installed = false }

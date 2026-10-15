@@ -46,7 +46,7 @@ object AndroidPermissionBroker {
             callback.grant()
             return
         }
-        synchronized(lock) { queued.addLast(Pending(activity, requested, callback)) }
+        synchronized(lock) { queued.addLast(Pending(activity, requested.toTypedArray(), callback)) }
         launchNext()
     }
 

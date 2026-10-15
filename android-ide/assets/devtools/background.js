@@ -1,6 +1,6 @@
 (() => {
   const CONTENT_PORT_NAME = "android-ide-devtools-content";
-  const NATIVE_APPLICATION = "android-ide";
+  const NATIVE_APPLICATION = "android_ide";
   const contentPorts = new Set();
   let nativePort = null;
   let visibility = { type: "developer-tools", open: false };

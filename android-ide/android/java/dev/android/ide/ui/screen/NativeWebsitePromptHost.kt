@@ -131,7 +131,8 @@ internal object NativeWebsitePromptHost {
             setColor(surfaceColor)
         })
         styleNativeText(dialog.window?.decorView, appFontScale, onSurfaceColor, primaryColor, errorColor)
-        dialog.findViewById<TextView>(android.R.id.alertTitle)?.setTextColor(onSurfaceColor)
+        val alertTitleId = context.resources.getIdentifier("alertTitle", "id", "android")
+        if (alertTitleId != 0) dialog.findViewById<TextView>(alertTitleId)?.setTextColor(onSurfaceColor)
         dialog.findViewById<TextView>(android.R.id.message)?.setTextColor(onSurfaceColor)
         (dialog as? AlertDialog)?.apply {
             getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(primaryColor)

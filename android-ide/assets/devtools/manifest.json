@@ -1,14 +1,14 @@
 {
   "manifest_version": 2,
   "name": "Android IDE Developer Tools",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Built-in page developer tools for Android IDE browser tabs.",
   "browser_specific_settings": {
     "gecko": {
       "id": "android-ide-devtools@android-ide"
     }
   },
-  "permissions": ["<all_urls>", "nativeMessaging"],
+  "permissions": ["<all_urls>", "nativeMessaging", "geckoViewAddons"],
   "background": {
     "scripts": ["background.js"]
   },
