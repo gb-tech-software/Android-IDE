@@ -456,7 +456,7 @@ private fun ProjectCard(
                                 ?: Text("Size unavailable", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    Text(relativeLastOpened(project.lastOpenedAt), style = MaterialTheme.typography.labelSmall)
+                    Text(relativeLastOpened(project.lastOpenedAt), style = MaterialTheme.typography.labelMedium)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (!summaryLoading && summary?.hasGit == true) {
@@ -566,7 +566,7 @@ private fun ProjectBadge(
         shape = MaterialTheme.shapes.small,
         tonalElevation = 1.dp,
     ) {
-        Text(label, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
+        Text(label, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp), style = MaterialTheme.typography.labelMedium)
     }
 }
 

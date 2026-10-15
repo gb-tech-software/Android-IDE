@@ -159,10 +159,20 @@ class MainActivity : ComponentActivity() {
         appShellViewModel.foreground()
     }
 
+    override fun onResume() {
+        super.onResume()
+        dev.android.ide.browser.AndroidPermissionBroker.attach(this)
+    }
+
     override fun onStop() {
         appShellViewModel.background()
         ApplicationServices.from(application).browserPersistenceCoordinator.flush()
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        dev.android.ide.browser.AndroidPermissionBroker.detach(this)
+        super.onDestroy()
     }
 
     private companion object {

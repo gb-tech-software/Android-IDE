@@ -198,7 +198,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
         }
         CompositionLocalProvider(
             LocalDensity provides androidx.compose.ui.unit.Density(
-                density = baseDensity.density * uiScale,
+                density = baseDensity.density,
                 fontScale = baseDensity.fontScale * uiScale,
             ),
         ) {

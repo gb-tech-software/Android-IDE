@@ -206,7 +206,7 @@ fun ProjectDetailsSurface(
             val localStorageConfirmed = storageCapabilities.localStorageConfirmed
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                colors = CardDefaults.cardColors(containerColor = LocalIdeColors.current.warningContainer),
             ) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
@@ -222,7 +222,7 @@ fun ProjectDetailsSurface(
                                 ?: "This location has not been confirmed as device-local. Cloud or remote projects are not supported; reselect a local location with valid access."
                         },
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        color = LocalIdeColors.current.onWarningContainer,
                     )
                 }
             }

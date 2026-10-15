@@ -134,7 +134,7 @@ fun TerminalSurface(
         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
             Column(Modifier.weight(1f)) {
-                Text("Terminal", style = MaterialTheme.typography.headlineSmall)
+                Text("Terminal", style = MaterialTheme.typography.titleMedium)
             }
             Box {
                 IconButton(onClick = { appearanceMenuOpen = true }) {

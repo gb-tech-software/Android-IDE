@@ -78,6 +78,8 @@ data class BrowserNavigationFailure(
 enum class BrowserWebsitePromptKind {
     ALERT, CONFIRM, TEXT, BEFORE_UNLOAD, REPOST, AUTH, POPUP, CHOICE, COLOR, DATE_TIME, FILE,
 }
+/** GeckoView distinguishes menu popups from confirmed single/multiple choice lists. */
+enum class BrowserChoiceMode { MENU, SINGLE, MULTIPLE }
 data class BrowserWebsitePromptChoice(
     val id: String,
     val label: String,
@@ -94,6 +96,8 @@ data class BrowserWebsitePromptAnswer(
     val password: String? = null,
     val selectedIds: List<String> = emptyList(),
     val selectedFileUris: List<String> = emptyList(),
+    /** App-owned camera temp files are deleted after they have been staged or cancelled. */
+    val temporaryFileUris: List<String> = emptyList(),
 )
 data class BrowserWebsitePromptRequest(
     val id: String,
@@ -108,12 +112,15 @@ data class BrowserWebsitePromptRequest(
     val passwordOnly: Boolean = false,
     val targetUri: String? = null,
     val choices: List<BrowserWebsitePromptChoice> = emptyList(),
+    val choiceMode: BrowserChoiceMode? = null,
     val multiple: Boolean = false,
     val mimeTypes: List<String> = emptyList(),
     val inputType: String? = null,
     val minValue: String? = null,
     val maxValue: String? = null,
     val predefinedValues: List<String> = emptyList(),
+    /** Changes when GeckoView updates a live prompt; IDs remain stable for stale-answer checks. */
+    val revision: Int = 0,
     val decision: CompletableDeferred<BrowserWebsitePromptAnswer>,
 )
 enum class BrowserDownloadStatus { DOWNLOADING, PAUSED, COMPLETED, FAILED, INTERRUPTED, CANCELED }
@@ -143,6 +150,7 @@ data class BrowserDownloadRequest(
     val totalBytes: Long = -1L,
 )
 data class BrowserPermissionRequest(
+    val id: String,
     val tabId: String,
     val origin: String,
     val permission: String,
@@ -152,6 +160,7 @@ enum class BrowserPermissionDecision { ALLOW, DENY }
 /** The scope selected by the user for the current website permission request. */
 enum class BrowserPermissionAnswer {
     ALLOW_ONCE,
+    ALLOW_WHILE_VISITING,
     ALLOW_ALWAYS,
     DENY_ONCE,
     DENY_ALWAYS,
@@ -184,6 +193,8 @@ interface BrowserEngineEventSink {
     fun onDownloadRequested(event: BrowserDownloadRequest)
     fun onPermissionRequested(event: BrowserPermissionRequest)
     fun onWebsitePromptRequested(event: BrowserWebsitePromptRequest)
+    fun onWebsitePromptUpdated(event: BrowserWebsitePromptRequest) = Unit
+    fun onWebsitePromptDismissed(tabId: String, promptId: String) = Unit
     fun onContextMenuRequested(event: BrowserContextMenuRequest)
     fun onScrollChanged(event: BrowserScrollChanged)
     fun onNewTabRequested(url: String): BrowserEngineSession?
@@ -196,6 +207,8 @@ interface BrowserEngineSession {
     fun open()
     fun attach(host: BrowserSurfaceHost)
     fun load(request: BrowserNavigation)
+    /** Fetches an HTTP(S) resource in the engine's browsing context and emits it as a download. */
+    fun downloadResource(url: String, referrer: String?): Boolean = false
     fun goBack()
     fun goForward()
     fun reload()
@@ -240,6 +253,12 @@ interface BrowserTabService {
 }
 
 interface BrowserSessionService {
+    /** Creates and retains a fresh session without opening it, for GeckoView onNewSession. */
+    fun createUnopenedSession(
+        tabId: String,
+        settings: BrowserSessionSettings,
+        sink: BrowserEngineEventSink,
+    ): BrowserEngineSession
     fun ensureSession(
         tabId: String,
         settings: BrowserSessionSettings,
@@ -320,9 +339,13 @@ interface BrowserPermissionService {
     val pending: StateFlow<BrowserPermissionRequest?>
     val sitePermissions: StateFlow<List<BrowserSitePermission>>
     fun request(request: BrowserPermissionRequest)
-    fun answer(answer: BrowserPermissionAnswer)
-    fun revoke(origin: String, permission: String? = null)
+    fun answer(requestId: String, answer: BrowserPermissionAnswer)
+    fun revoke(origin: String, permission: String?)
     fun cancel()
+    fun cancelAll()
+    fun onTabDeselected(tabId: String)
+    fun onTabNavigated(tabId: String, url: String)
+    fun onTabClosed(tabId: String)
 }
 
 interface BrowserDeveloperToolsService {

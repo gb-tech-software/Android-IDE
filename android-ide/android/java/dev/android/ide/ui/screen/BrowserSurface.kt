@@ -4,7 +4,11 @@ import android.graphics.BitmapFactory
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
+import android.widget.MediaController
+import android.widget.VideoView
+import androidx.core.content.FileProvider
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -47,7 +51,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DeveloperMode
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.LaptopChromebook
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Downloading
 import androidx.compose.material.icons.filled.Home
@@ -60,6 +65,10 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Image as ImageIcon
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -75,6 +84,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -100,8 +112,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -113,6 +123,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -124,10 +135,15 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
@@ -138,11 +154,15 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.Image
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.DateFormat
@@ -161,7 +181,7 @@ import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.browser.BrowserPermissionAnswer
 import dev.android.ide.data.ThemeResolver
-import dev.android.ide.data.ResolvedTheme
+import dev.android.ide.ui.theme.AndroidIDETheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -175,25 +195,61 @@ fun BrowserSurface(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val registerScrollListener = remember(browser) { browser::setScrollListener }
     val themeResolver = remember { ThemeResolver(context) }
     val state by browser.uiState.collectAsState()
+    var activeFilePromptId by rememberSaveable { mutableStateOf<String?>(null) }
+    var fileChooserPromptId by remember { mutableStateOf<String?>(null) }
+    var pendingCameraPromptId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraUri by rememberSaveable { mutableStateOf<String?>(null) }
     val singleFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        val prompt = browser.uiState.value.websitePrompt ?: return@rememberLauncherForActivityResult
-        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
+        val promptId = activeFilePromptId
+        activeFilePromptId = null
+        val prompt = browser.uiState.value.websitePrompt
+        if (promptId != null && prompt?.id == promptId && prompt.kind == BrowserWebsitePromptKind.FILE) {
             browser.answerWebsitePrompt(
-                prompt.id,
+                promptId,
                 BrowserWebsitePromptAnswer(accepted = uri != null, selectedFileUris = listOfNotNull(uri?.toString())),
             )
         }
     }
     val multipleFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        val prompt = browser.uiState.value.websitePrompt ?: return@rememberLauncherForActivityResult
-        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
+        val promptId = activeFilePromptId
+        activeFilePromptId = null
+        val prompt = browser.uiState.value.websitePrompt
+        if (promptId != null && prompt?.id == promptId && prompt.kind == BrowserWebsitePromptKind.FILE) {
             browser.answerWebsitePrompt(
-                prompt.id,
+                promptId,
                 BrowserWebsitePromptAnswer(accepted = uris.isNotEmpty(), selectedFileUris = uris.map(Uri::toString)),
             )
+        }
+    }
+    val cameraPicker = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { captured ->
+        val capturePromptId = pendingCameraPromptId
+        val captureUri = pendingCameraUri?.let(Uri::parse)
+        val captureFile = captureUri?.lastPathSegment?.let { name ->
+            File(File(context.cacheDir, "browser_form_captures"), name)
+        }
+        pendingCameraPromptId = null
+        pendingCameraUri = null
+        val promptId = activeFilePromptId
+        activeFilePromptId = null
+        val prompt = browser.uiState.value.websitePrompt
+        if (captured && captureUri != null && capturePromptId != null && promptId == capturePromptId && prompt?.id == capturePromptId) {
+            browser.answerWebsitePrompt(
+                capturePromptId,
+                BrowserWebsitePromptAnswer(
+                    accepted = true,
+                    selectedFileUris = listOf(captureUri.toString()),
+                    temporaryFileUris = listOf(captureUri.toString()),
+                ),
+            )
+        } else {
+            captureFile?.delete()
+            if (promptId != null && prompt?.id == promptId) {
+                browser.answerWebsitePrompt(promptId, BrowserWebsitePromptAnswer(accepted = false))
+            }
         }
     }
     var addressValue by remember {
@@ -209,8 +265,14 @@ fun BrowserSurface(
     val visibleBrowserSurface = remember { mutableStateOf<BrowserSurfaceBinding?>(null) }
     val focusManager = LocalFocusManager.current
 
-    DisposableEffect(browser) {
+    DisposableEffect(browser, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) browser.cancelPermissionPrompts()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            browser.cancelPermissionPrompts()
             browser.dismissWebsitePrompt()
             visibleBrowserSurface.value = null
         }
@@ -235,11 +297,13 @@ fun BrowserSurface(
         }
     }
     LaunchedEffect(state.websitePrompt?.id) {
-        val prompt = state.websitePrompt ?: return@LaunchedEffect
-        if (prompt.kind == BrowserWebsitePromptKind.FILE) {
-            val mimeTypes = prompt.mimeTypes.filter(String::isNotBlank).toTypedArray().ifEmpty { arrayOf("*/*") }
-            if (prompt.multiple) multipleFilePicker.launch(mimeTypes)
-            else singleFilePicker.launch(mimeTypes)
+        val prompt = state.websitePrompt
+        if (prompt?.kind == BrowserWebsitePromptKind.FILE) {
+            activeFilePromptId = prompt.id
+            fileChooserPromptId = prompt.id
+        } else {
+            fileChooserPromptId = null
+            activeFilePromptId = null
         }
     }
     BackHandler(enabled = state.downloadsPageOpen || state.historyPageOpen || state.selectedTabId != null) {
@@ -258,11 +322,7 @@ fun BrowserSurface(
         }
     }
 
-    val browserColorScheme = when (themeResolver.getBrowserTheme(state.settings.theme)) {
-        ResolvedTheme.DARK -> darkColorScheme()
-        ResolvedTheme.LIGHT -> lightColorScheme()
-    }
-    MaterialTheme(colorScheme = browserColorScheme) {
+    AndroidIDETheme(resolvedTheme = themeResolver.getBrowserTheme(state.settings.theme)) {
         BrowserSurfaceContent(
             modifier = modifier,
             state = state,
@@ -330,6 +390,7 @@ private fun BrowserSurfaceContent(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    val activeDownloadCount = state.downloads.count { it.status == BrowserDownloadStatus.DOWNLOADING }
     LaunchedEffect(state.downloadFeedback) {
         state.downloadFeedback?.let { message ->
             snackbarHostState.showSnackbar(message)
@@ -363,9 +424,6 @@ private fun BrowserSurfaceContent(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         val activeTab = state.tabs.firstOrNull { it.id == state.selectedTabId }
-                        val activeDownloadCount = state.downloads.count {
-                            it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED
-                        }
                         val canGoBack = activeTab?.canGoBack == true
                         val canGoForward = activeTab?.canGoForward == true
 
@@ -387,8 +445,9 @@ private fun BrowserSurfaceContent(
                                 onClick = { closeDrawerThen(browser::goForward) },
                             )
                             BrowserDrawerQuickAction(
-                                icon = if (activeDownloadCount > 0) Icons.Default.Downloading else Icons.Default.Download,
+                                icon = Icons.Default.Download,
                                 label = "Downloads",
+                                activeCount = activeDownloadCount,
                                 onClick = { closeDrawerThen(browser::showDownloadsPage) },
                             )
                             BrowserDrawerQuickAction(
@@ -422,7 +481,7 @@ private fun BrowserSurfaceContent(
                             modifier = Modifier.padding(horizontal = 4.dp),
                         )
                         NavigationDrawerItem(
-                            icon = { Icon(if (activeDownloadCount > 0) Icons.Default.Downloading else Icons.Default.Download, contentDescription = null) },
+                            icon = { DownloadActivityIcon(activeDownloadCount) },
                             label = { Text(if (activeDownloadCount > 0) "Downloads · $activeDownloadCount active" else "Downloads") },
                             selected = false,
                             onClick = { closeDrawerThen(browser::showDownloadsPage) },
@@ -441,7 +500,7 @@ private fun BrowserSurfaceContent(
                             }.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(Icons.Default.Language, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Default.LaptopChromebook, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             Column(Modifier.weight(1f).padding(start = 16.dp)) {
                                 Text("Desktop site")
                                 Text("Request desktop pages for browser tabs", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -457,7 +516,7 @@ private fun BrowserSurfaceContent(
                             }.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Icon(Icons.Default.DeveloperMode, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Default.BugReport, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("Developer tools", modifier = Modifier.weight(1f).padding(start = 16.dp))
                             Switch(checked = state.developerToolsOpen, onCheckedChange = { open ->
                                 if (open != state.developerToolsOpen) closeDrawerThen {
@@ -496,6 +555,9 @@ private fun BrowserSurfaceContent(
                         IconButton(onClick = browser::reconcileDownloads) { Icon(Icons.Default.Refresh, "Refresh downloads") }
                     } else if (!state.historyPageOpen) {
                         IconButton(onClick = createTab) { Icon(Icons.Default.Add, "New tab") }
+                        IconButton(onClick = browser::showDownloadsPage) {
+                            DownloadActivityIcon(activeDownloadCount)
+                        }
                         IconButton(onClick = openTabs) {
                             Box(
                                 modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 10.dp, vertical = 6.dp),
@@ -759,30 +821,139 @@ private fun BrowserSurfaceContent(
             }
         }
     }
-    state.permissionPrompt?.let { prompt ->
-        AlertDialog(
-            onDismissRequest = { browser.answerPermission(BrowserPermissionAnswer.DENY_ONCE) },
-            title = { Text("Site permission") },
-            text = {
+    state.permissionPrompt?.takeIf { it.tabId == state.selectedTabId }?.let { prompt ->
+        val answer: (BrowserPermissionAnswer) -> Unit = { browser.answerPermission(prompt.id, it) }
+        when (prompt.permission) {
+            "notifications" -> Dialog(onDismissRequest = { answer(BrowserPermissionAnswer.DENY_ONCE) }) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.Start,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.fillMaxWidth().widthIn(max = 360.dp).clip(RoundedCornerShape(28.dp))
+                        .background(MaterialTheme.colorScheme.surface).padding(20.dp),
                 ) {
-                    Text("${prompt.origin} requested ${prompt.permission}.")
-                    Text("Choose whether this applies only now or is remembered for this site.")
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Icon(Icons.Filled.Notifications, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(24.dp))
+                        Text(sitePermissionMessage(prompt.origin, " wants to send you notifications"), style = MaterialTheme.typography.bodyLarge)
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 18.dp), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.DENY_ALWAYS) }) { Text("Block") }
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.ALLOW_ALWAYS) }) { Text("Allow") }
+                    }
+                }
+            }
+            "location", "camera", "microphone", "camera and microphone" -> {
+                val requestText = when (prompt.permission) {
+                    "location" -> " wants to use your device's location"
+                    "camera" -> " wants to use your camera"
+                    "microphone" -> " wants to use your microphone"
+                    else -> " wants to use your camera and microphone"
+                }
+                Dialog(onDismissRequest = { answer(BrowserPermissionAnswer.DENY_ONCE) }) {
+                    Column(
+                        Modifier.fillMaxWidth().widthIn(max = 360.dp).clip(RoundedCornerShape(28.dp))
+                            .background(MaterialTheme.colorScheme.surface).padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            when (prompt.permission) {
+                                "location" -> Icon(Icons.Filled.LocationOn, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(32.dp))
+                                "camera" -> Icon(Icons.Filled.PhotoCamera, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(32.dp))
+                                "microphone" -> Icon(Icons.Filled.Mic, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(32.dp))
+                                else -> Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Icon(Icons.Filled.PhotoCamera, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(24.dp))
+                                    Icon(Icons.Filled.Mic, contentDescription = null, tint = Color(0xff1a73e8), modifier = Modifier.size(24.dp))
+                                }
+                            }
+                            Text(sitePermissionMessage(prompt.origin, requestText), style = MaterialTheme.typography.bodyLarge)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        listOf(
+                            "Allow while visiting the site" to BrowserPermissionAnswer.ALLOW_WHILE_VISITING,
+                            "Allow this time" to BrowserPermissionAnswer.ALLOW_ONCE,
+                            "Never allow" to BrowserPermissionAnswer.DENY_ALWAYS,
+                        ).forEach { (label, choice) ->
+                            Button(
+                                modifier = Modifier.fillMaxWidth().height(44.dp),
+                                shape = RoundedCornerShape(9.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xffd8e5ff),
+                                    contentColor = Color(0xff174ea6),
+                                ),
+                                onClick = { answer(choice) },
+                            ) { Text(label) }
+                        }
+                    }
+                }
+            }
+            else -> AlertDialog(
+                onDismissRequest = { answer(BrowserPermissionAnswer.DENY_ONCE) },
+                title = { Text("Site permission") },
+                text = { Text("${prompt.origin} requested ${prompt.permission}.") },
+                confirmButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.ALLOW_ONCE) }) { Text("Allow this time") }
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.ALLOW_ALWAYS) }) { Text("Allow and remember") }
+                    }
+                },
+                dismissButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.DENY_ONCE) }) { Text("Deny this time") }
+                        TextButton(onClick = { answer(BrowserPermissionAnswer.DENY_ALWAYS) }) { Text("Deny and remember") }
+                    }
+                },
+            )
+        }
+    }
+    val filePrompt = state.websitePrompt?.takeIf { it.kind == BrowserWebsitePromptKind.FILE }
+    if (filePrompt != null && fileChooserPromptId == filePrompt.id) {
+        BrowserFileSourceSheet(
+            canCapture = supportsCameraCapture(filePrompt.mimeTypes),
+            onDismiss = {
+                fileChooserPromptId = null
+                activeFilePromptId = null
+                browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+            },
+            onCamera = {
+                fileChooserPromptId = null
+                activeFilePromptId = filePrompt.id
+                val directory = File(context.cacheDir, "browser_form_captures").apply { mkdirs() }
+                val file = runCatching { File.createTempFile("capture_", ".jpg", directory) }.getOrNull()
+                val target = file?.let { captureFile ->
+                    runCatching {
+                        val uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.browser.fileprovider",
+                            captureFile,
+                        )
+                        BrowserCaptureTarget(captureFile, uri, filePrompt.id)
+                    }.getOrElse {
+                        captureFile.delete()
+                        null
+                    }
+                }
+                if (target == null) {
+                    activeFilePromptId = null
+                    browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                } else {
+                    pendingCameraPromptId = target.promptId
+                    pendingCameraUri = target.uri.toString()
+                    runCatching { cameraPicker.launch(target.uri) }.onFailure {
+                        pendingCameraPromptId = null
+                        pendingCameraUri = null
+                        activeFilePromptId = null
+                        target.file.delete()
+                        browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
+                    }
                 }
             },
-            confirmButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.ALLOW_ONCE) }) { Text("Allow this time") }
-                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.ALLOW_ALWAYS) }) { Text("Allow and remember") }
-                }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.DENY_ONCE) }) { Text("Deny this time") }
-                    TextButton(onClick = { browser.answerPermission(BrowserPermissionAnswer.DENY_ALWAYS) }) { Text("Deny and remember") }
+            onMediaPicker = {
+                fileChooserPromptId = null
+                activeFilePromptId = filePrompt.id
+                val mimeTypes = filePrompt.mimeTypes.filter(String::isNotBlank).toTypedArray().ifEmpty { arrayOf("*/*") }
+                runCatching {
+                    if (filePrompt.multiple) multipleFilePicker.launch(mimeTypes)
+                    else singleFilePicker.launch(mimeTypes)
+                }.onFailure {
+                    activeFilePromptId = null
+                    browser.answerWebsitePrompt(filePrompt.id, BrowserWebsitePromptAnswer(accepted = false))
                 }
             },
         )
@@ -835,6 +1006,51 @@ private fun BrowserNavigationErrorPage(
         }
         Spacer(Modifier.height(20.dp))
         Button(onClick = onRetry) { Text("Reload") }
+    }
+}
+
+private data class BrowserCaptureTarget(val file: File, val uri: Uri, val promptId: String)
+
+private fun supportsCameraCapture(mimeTypes: List<String>): Boolean = mimeTypes.isEmpty() || mimeTypes.any {
+    val type = it.trim().lowercase()
+    type == "*/*" || type == "image/*" || type == "image/jpeg" || type == "image/jpg" || type == "image/pjpeg"
+}
+
+private fun sitePermissionMessage(origin: String, suffix: String) = buildAnnotatedString {
+    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(origin.ifBlank { "This site" }) }
+    append(suffix)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BrowserFileSourceSheet(
+    canCapture: Boolean,
+    onDismiss: () -> Unit,
+    onCamera: () -> Unit,
+    onMediaPicker: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
+            Text("Choose a source", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+            if (canCapture) {
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onCamera).padding(horizontal = 24.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(20.dp),
+                ) {
+                    Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                    Text("Camera", style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onMediaPicker).padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+                Icon(ImageIcon, contentDescription = null)
+                Text("Media picker", style = MaterialTheme.typography.bodyLarge)
+            }
+        }
     }
 }
 
@@ -1020,6 +1236,18 @@ private fun BrowserContextMenuSheet(
                     }
                 }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                if (mediaType == "Image" && mediaPreview != null) {
+                    Image(
+                        bitmap = mediaPreview!!,
+                        contentDescription = "Preview of $name",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(12.dp)),
+                        contentScale = ContentScale.Fit,
+                    )
+                }
+                when {
+                    mediaType == "Video" && !media.isNullOrBlank() -> VideoResourcePreview(media)
+                    mediaType == "Audio" && !media.isNullOrBlank() -> AudioResourcePreview(media)
+                }
                 if (link != null) {
                     ContextMenuSectionLabel("LINK")
                     BrowserContextAction(Icons.Default.OpenInNew, "Open link in new tab", onOpenLinkInNewTab)
@@ -1033,10 +1261,11 @@ private fun BrowserContextMenuSheet(
                     if (link != null) HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     ContextMenuSectionLabel(if (mediaType == "Image") "IMAGE" else "MEDIA")
                     BrowserContextAction(Icons.Default.OpenInNew, "Open ${mediaType.lowercase()} in new tab", onOpenMediaInNewTab)
-                    BrowserContextAction(if (mediaType == "Image") Icons.Default.ImageIcon else Icons.Default.PlayArrow, if (mediaType == "Image") "Preview image" else "Open media", onOpenMediaCurrent)
+                    BrowserContextAction(if (mediaType == "Image") Icons.Default.ImageIcon else Icons.Default.OpenInNew, if (mediaType == "Image") "Open image in browser" else "Open media in browser", onOpenMediaCurrent)
                     BrowserContextAction(Icons.Default.Link, if (mediaType == "Image") "Copy image address" else "Copy media address") { copy("Media address", media) }
                     BrowserContextAction(Icons.Default.Download, "Download ${mediaType.lowercase()}", onDownloadMedia)
                     BrowserContextAction(Icons.Default.Share, if (mediaType == "Image") "Share image link" else "Share media link") { share("Share media link", media) }
+                    BrowserContextAction(Icons.Default.OpenInNew, "Open in another app…") { openWith(media) }
                     if (mediaType == "Image") BrowserContextAction(Icons.Default.Search, "Search this image") { searchImage(media) }
                 }
                 if (primaryUrl != null) {
@@ -1046,6 +1275,158 @@ private fun BrowserContextMenuSheet(
                 TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End).padding(top = 4.dp)) { Text("Close") }
             }
         }
+    }
+}
+
+@Composable
+private fun AudioResourcePreview(url: String) {
+    val context = LocalContext.current
+    val player = remember(url) { MediaPlayer() }
+    var prepared by remember(url) { mutableStateOf(false) }
+    var playing by remember(url) { mutableStateOf(false) }
+    var failed by remember(url) { mutableStateOf(false) }
+
+    DisposableEffect(player, url) {
+        player.setOnPreparedListener {
+            prepared = true
+            failed = false
+        }
+        player.setOnCompletionListener {
+            playing = false
+            runCatching { player.seekTo(0) }
+        }
+        player.setOnErrorListener { _, _, _ ->
+            failed = true
+            prepared = false
+            playing = false
+            true
+        }
+        runCatching {
+            player.setDataSource(context, Uri.parse(url))
+            player.prepareAsync()
+        }.onFailure {
+            failed = true
+        }
+        onDispose {
+            runCatching { player.stop() }
+            player.release()
+        }
+    }
+
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(
+                enabled = prepared && !failed,
+                onClick = {
+                    runCatching {
+                        if (player.isPlaying) {
+                            player.pause()
+                            playing = false
+                        } else {
+                            player.start()
+                            playing = true
+                        }
+                    }.onFailure { failed = true }
+                },
+            ) {
+                Icon(
+                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    contentDescription = if (playing) "Pause audio" else "Play audio",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            IconButton(
+                enabled = prepared && !failed,
+                onClick = {
+                    runCatching { player.pause(); player.seekTo(0) }
+                    playing = false
+                },
+            ) { Icon(Icons.Default.Stop, contentDescription = "Stop audio") }
+            Text(
+                when {
+                    failed -> "Playback unavailable"
+                    !prepared -> "Preparing audio…"
+                    playing -> "Playing audio"
+                    else -> "Audio ready"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun VideoResourcePreview(url: String) {
+    val context = LocalContext.current
+    val videoView = remember(url) { VideoView(context) }
+    var prepared by remember(url) { mutableStateOf(false) }
+    var playing by remember(url) { mutableStateOf(false) }
+    var failed by remember(url) { mutableStateOf(false) }
+    AndroidView(
+        factory = { parent ->
+            val controller = MediaController(parent.context)
+            videoView.apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                setMediaController(controller)
+                controller.setAnchorView(this)
+                setOnPreparedListener {
+                    prepared = true
+                    failed = false
+                }
+                setOnCompletionListener { playing = false }
+                setOnErrorListener { _, _, _ ->
+                    failed = true
+                    prepared = false
+                    playing = false
+                    true
+                }
+                setVideoURI(Uri.parse(url))
+            }
+        },
+        modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(12.dp)),
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(
+            enabled = prepared && !failed,
+            onClick = {
+                runCatching {
+                    if (videoView.isPlaying) {
+                        videoView.pause()
+                        playing = false
+                    } else {
+                        videoView.start()
+                        playing = true
+                    }
+                }.onFailure { failed = true }
+            },
+        ) {
+            Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "Pause video" else "Play video", tint = MaterialTheme.colorScheme.primary)
+        }
+        IconButton(
+            enabled = prepared && !failed,
+            onClick = {
+                runCatching { videoView.pause(); videoView.seekTo(0) }
+                playing = false
+            },
+        ) { Icon(Icons.Default.Stop, contentDescription = "Stop video") }
+        Text(
+            when {
+                failed -> "Playback unavailable"
+                !prepared -> "Preparing video…"
+                playing -> "Playing video"
+                else -> "Video ready"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    DisposableEffect(videoView) {
+        onDispose { runCatching { videoView.stopPlayback() } }
     }
 }
 
@@ -1157,6 +1538,7 @@ private fun BrowserDrawerQuickAction(
     icon: ImageVector,
     label: String,
     enabled: Boolean = true,
+    activeCount: Int = 0,
     onClick: () -> Unit,
 ) {
     IconButton(
@@ -1170,7 +1552,37 @@ private fun BrowserDrawerQuickAction(
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
             ),
     ) {
-        Icon(icon, contentDescription = label)
+        if (activeCount > 0) DownloadActivityIcon(activeCount) else Icon(icon, contentDescription = label)
+    }
+}
+
+@Composable
+private fun DownloadActivityIcon(activeCount: Int) {
+    val iconAlpha = if (activeCount > 0) {
+        val transition = rememberInfiniteTransition(label = "active-download-pulse")
+        val pulse by transition.animateFloat(
+            initialValue = 0.62f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(700), repeatMode = RepeatMode.Reverse),
+            label = "active-download-alpha",
+        )
+        pulse
+    } else {
+        1f
+    }
+    BadgedBox(
+        badge = {
+            if (activeCount > 0) {
+                Badge { Text(if (activeCount > 99) "99+" else activeCount.toString()) }
+            }
+        },
+    ) {
+        Icon(
+            imageVector = if (activeCount > 0) Icons.Default.Downloading else Icons.Default.Download,
+            contentDescription = if (activeCount > 0) "$activeCount active downloads" else "Downloads",
+            tint = if (activeCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.alpha(iconAlpha),
+        )
     }
 }
 
@@ -1226,10 +1638,72 @@ private fun DownloadsScreen(
 ) {
     var sort by remember { mutableStateOf(DownloadSort.DATE) }
     var sortMenuOpen by remember { mutableStateOf(false) }
+    var selectionActionsOpen by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var deleteConfirmationIds by remember { mutableStateOf<List<String>?>(null) }
+    var cancelConfirmationIds by remember { mutableStateOf<List<String>?>(null) }
+    val context = LocalContext.current
+    val liveIds = downloads.mapTo(mutableSetOf()) { it.id }
+    LaunchedEffect(liveIds) { selectedIds = selectedIds intersect liveIds }
     val ordered = when (sort) {
         DownloadSort.DATE -> downloads.sortedByDescending { it.timestamp }
         DownloadSort.NAME -> downloads.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
         DownloadSort.SIZE -> downloads.sortedByDescending { it.size.coerceAtLeast(it.downloadedBytes) }
+    }
+    val selected = ordered.filter { it.id in selectedIds }
+    val shareable = selected.filter { it.status == BrowserDownloadStatus.COMPLETED && it.available }
+    val running = selected.filter { it.status == BrowserDownloadStatus.DOWNLOADING }
+    val paused = selected.filter { it.status == BrowserDownloadStatus.PAUSED }
+
+    fun shareSelected() {
+        val items = shareable
+        if (items.isEmpty()) return
+        val intent = if (items.size == 1) {
+            browser.shareDownload(items.single().id)
+        } else {
+            val uris = items.map { Uri.parse(it.uri) }
+            Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = commonDownloadMimeType(items.map { it.mimeType })
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                clipData = ClipData.newUri(context.contentResolver, "Downloaded files", uris.first()).apply {
+                    uris.drop(1).forEach { addItem(ClipData.Item(it)) }
+                }
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+        if (intent == null) {
+            browser.reportError("One or more selected files are no longer available")
+            return
+        }
+        runCatching { context.startActivity(Intent.createChooser(intent, if (items.size == 1) "Share download" else "Share downloads")) }
+            .onFailure { browser.reportError("No application can share the selected file${if (items.size == 1) "" else "s"}") }
+    }
+
+    fun openSelected() {
+        val item = shareable.singleOrNull() ?: return
+        val intent = browser.openDownload(item.id)
+        if (intent == null) browser.reportError("The downloaded file is no longer available")
+        else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
+    }
+
+    fun confirmDelete(ids: List<String>) {
+        val targets = downloads.filter { it.id in ids }
+        targets.forEach { item ->
+            val removed = when {
+                item.status == BrowserDownloadStatus.DOWNLOADING || item.status == BrowserDownloadStatus.PAUSED -> browser.deleteDownload(item.id)
+                item.status == BrowserDownloadStatus.COMPLETED && item.available -> browser.deleteDownload(item.id)
+                else -> browser.removeUnavailableDownload(item.id)
+            }
+            if (!removed) browser.reportError("Could not remove ${item.name}")
+        }
+        selectedIds = emptySet()
+        deleteConfirmationIds = null
+    }
+
+    fun confirmCancel(ids: List<String>) {
+        ids.forEach { id -> browser.cancelDownload(id) }
+        selectedIds = selectedIds - ids.toSet()
+        cancelConfirmationIds = null
     }
 
     LazyColumn(
@@ -1238,19 +1712,95 @@ private fun DownloadsScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("All downloads · ${downloads.size}", style = MaterialTheme.typography.titleSmall)
-                Box {
-                    TextButton(onClick = { sortMenuOpen = true }) { Text("Sort: ${sort.label}") }
-                    DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                        DownloadSort.values().forEach { option ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        if (selectedIds.isEmpty()) "All downloads · ${downloads.size}" else "${selectedIds.size} selected",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (downloads.isNotEmpty()) {
+                            TextButton(onClick = {
+                                selectedIds = if (selectedIds.size == downloads.size) emptySet() else downloads.mapTo(mutableSetOf()) { it.id }
+                            }) { Text(if (selectedIds.size == downloads.size) "Deselect all" else "Select all") }
+                        }
+                        Box {
+                            TextButton(onClick = { sortMenuOpen = true }) { Text("Sort: ${sort.label}") }
+                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                                DownloadSort.values().forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        onClick = { sort = option; sortMenuOpen = false },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                if (selectedIds.isNotEmpty()) {
+                    val cancelable = (running + paused).distinctBy { it.id }
+                    val retryable = selected.singleOrNull()?.takeIf {
+                        it.status in setOf(BrowserDownloadStatus.FAILED, BrowserDownloadStatus.INTERRUPTED, BrowserDownloadStatus.CANCELED) &&
+                            it.sourceUrl.isNotBlank()
+                    }
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+                        IconButton(onClick = { selectionActionsOpen = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Selected download actions")
+                        }
+                        DropdownMenu(
+                            expanded = selectionActionsOpen,
+                            onDismissRequest = { selectionActionsOpen = false },
+                        ) {
+                            if (selected.size == 1 && shareable.size == 1) {
+                                DropdownMenuItem(
+                                    text = { Text("Open") },
+                                    leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; openSelected() },
+                                )
+                            }
+                            if (shareable.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Share (${shareable.size})") },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; shareSelected() },
+                                )
+                            }
+                            if (running.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Pause (${running.size})") },
+                                    leadingIcon = { Icon(Icons.Default.Pause, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; running.forEach { browser.pauseDownload(it.id) } },
+                                )
+                            }
+                            if (paused.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Resume (${paused.size})") },
+                                    leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; paused.forEach { browser.resumeDownload(it.id) } },
+                                )
+                            }
+                            if (cancelable.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Cancel (${cancelable.size})") },
+                                    leadingIcon = { Icon(Icons.Default.Cancel, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; cancelConfirmationIds = cancelable.map { it.id } },
+                                )
+                            }
+                            retryable?.let { item ->
+                                DropdownMenuItem(
+                                    text = { Text("Retry") },
+                                    leadingIcon = { Icon(Icons.Default.Replay, contentDescription = null) },
+                                    onClick = { selectionActionsOpen = false; browser.retryDownload(item.id) },
+                                )
+                            }
                             DropdownMenuItem(
-                                text = { Text(option.label) },
-                                onClick = { sort = option; sortMenuOpen = false },
+                                text = { Text("Delete (${selected.size})", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                onClick = { selectionActionsOpen = false; deleteConfirmationIds = selected.map { it.id } },
                             )
                         }
                     }
@@ -1268,15 +1818,73 @@ private fun DownloadsScreen(
                 }
             }
         }
-        items(ordered, key = { it.id }) { item -> DownloadRow(item, browser) }
+        items(ordered, key = { it.id }) { item ->
+            DownloadRow(
+                download = item,
+                browser = browser,
+                selected = item.id in selectedIds,
+                onSelectedChange = { checked -> selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id },
+                onCancel = { cancelConfirmationIds = listOf(item.id) },
+                onDelete = { deleteConfirmationIds = listOf(item.id) },
+            )
+        }
+    }
+
+    deleteConfirmationIds?.let { ids ->
+        val targets = downloads.filter { it.id in ids }
+        val activeCount = targets.count { it.status == BrowserDownloadStatus.DOWNLOADING || it.status == BrowserDownloadStatus.PAUSED }
+        AlertDialog(
+            onDismissRequest = { deleteConfirmationIds = null },
+            title = { Text(if (targets.size == 1) "Delete download?" else "Delete ${targets.size} downloads?") },
+            text = {
+                Text(buildString {
+                    append("This permanently removes the selected file${if (targets.size == 1) "" else "s"} from the device when present and removes ${if (targets.size == 1) "its" else "their"} entries from this list. This cannot be undone.")
+                    if (activeCount > 0) append(" $activeCount active transfer${if (activeCount == 1) " will" else "s will"} also be stopped.")
+                })
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete(ids) }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                    Text(if (targets.size == 1) "Delete" else "Delete all")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleteConfirmationIds = null }) { Text("Cancel") } },
+        )
+    }
+    cancelConfirmationIds?.let { ids ->
+        AlertDialog(
+            onDismissRequest = { cancelConfirmationIds = null },
+            title = { Text(if (ids.size == 1) "Cancel download?" else "Cancel ${ids.size} downloads?") },
+            text = { Text("The selected transfer${if (ids.size == 1) "" else "s"} will stop. Any partial file may remain in Downloads and can be removed separately.") },
+            confirmButton = {
+                TextButton(onClick = { confirmCancel(ids) }, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                    Text(if (ids.size == 1) "Cancel download" else "Cancel downloads")
+                }
+            },
+            dismissButton = { TextButton(onClick = { cancelConfirmationIds = null }) { Text("Keep downloading") } },
+        )
     }
 }
 
 private enum class DownloadSort(val label: String) { DATE("Date"), NAME("Name"), SIZE("Size") }
 
+private fun commonDownloadMimeType(values: List<String>): String {
+    val mimeTypes = values.map { it.substringBefore(';').trim().ifBlank { "*/*" } }.distinct()
+    if (mimeTypes.size == 1) return mimeTypes.single()
+    val topLevelTypes = mimeTypes.map { it.substringBefore('/') }.distinct()
+    return if (topLevelTypes.size == 1 && topLevelTypes.single() != "*") "${topLevelTypes.single()}/*" else "*/*"
+}
+
 @Composable
-private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {
+private fun DownloadRow(
+    download: BrowserDownload,
+    browser: BrowserViewModel,
+    selected: Boolean,
+    onSelectedChange: (Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val context = LocalContext.current
+    var rowActionsOpen by remember(download.id) { mutableStateOf(false) }
     val icon = when {
         download.mimeType.startsWith("image/") -> Icons.Default.ImageIcon
         download.mimeType.startsWith("video/") -> Icons.Default.VideoLibrary
@@ -1293,9 +1901,15 @@ private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {
     }
     val progress = if (download.totalBytes > 0L) (download.downloadedBytes.toFloat() / download.totalBytes.toFloat()).coerceIn(0f, 1f) else null
 
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        ),
+    ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Checkbox(checked = selected, onCheckedChange = onSelectedChange)
                 Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = download.mimeType, tint = MaterialTheme.colorScheme.primary)
                 }
@@ -1304,6 +1918,79 @@ private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {
                     Text(statusLabel, maxLines = 2, style = MaterialTheme.typography.bodySmall, color = if (download.status == BrowserDownloadStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                     val host = Uri.parse(download.sourceUrl).host
                     if (!host.isNullOrBlank()) Text(host, maxLines = 1, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Box {
+                    IconButton(onClick = { rowActionsOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Actions for ${download.name}")
+                    }
+                    DropdownMenu(expanded = rowActionsOpen, onDismissRequest = { rowActionsOpen = false }) {
+                        when (download.status) {
+                            BrowserDownloadStatus.DOWNLOADING -> {
+                                DropdownMenuItem(
+                                    text = { Text("Pause") },
+                                    leadingIcon = { Icon(Icons.Default.Pause, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; browser.pauseDownload(download.id) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Cancel") },
+                                    leadingIcon = { Icon(Icons.Default.Cancel, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; onCancel() },
+                                )
+                            }
+                            BrowserDownloadStatus.PAUSED -> {
+                                DropdownMenuItem(
+                                    text = { Text("Resume") },
+                                    leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; browser.resumeDownload(download.id) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Cancel") },
+                                    leadingIcon = { Icon(Icons.Default.Cancel, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; onCancel() },
+                                )
+                            }
+                            BrowserDownloadStatus.COMPLETED -> if (download.available) {
+                                DropdownMenuItem(
+                                    text = { Text("Open") },
+                                    leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                                    onClick = {
+                                        rowActionsOpen = false
+                                        val intent = browser.openDownload(download.id)
+                                        if (intent == null) browser.reportError("The downloaded file is no longer available")
+                                        else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share") },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                                    onClick = {
+                                        rowActionsOpen = false
+                                        val intent = browser.shareDownload(download.id)
+                                        if (intent == null) browser.reportError("The downloaded file is no longer available")
+                                        else runCatching { context.startActivity(Intent.createChooser(intent, "Share download")) }
+                                    },
+                                )
+                            } else if (download.sourceUrl.isNotBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("Retry") },
+                                    leadingIcon = { Icon(Icons.Default.Replay, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; browser.retryDownload(download.id) },
+                                )
+                            }
+                            BrowserDownloadStatus.FAILED, BrowserDownloadStatus.INTERRUPTED, BrowserDownloadStatus.CANCELED -> if (download.sourceUrl.isNotBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("Retry") },
+                                    leadingIcon = { Icon(Icons.Default.Replay, contentDescription = null) },
+                                    onClick = { rowActionsOpen = false; browser.retryDownload(download.id) },
+                                )
+                            }
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                            onClick = { rowActionsOpen = false; onDelete() },
+                        )
+                    }
                 }
             }
             if (download.status == BrowserDownloadStatus.DOWNLOADING || download.status == BrowserDownloadStatus.PAUSED) {
@@ -1314,48 +2001,7 @@ private fun DownloadRow(download: BrowserDownload, browser: BrowserViewModel) {
             } else if (download.status == BrowserDownloadStatus.COMPLETED && download.available) {
                 Text("${formatDownloadBytes(download.size)} · ${download.mimeType}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                when (download.status) {
-                    BrowserDownloadStatus.DOWNLOADING -> {
-                        DownloadAction(Icons.Default.Pause, "Pause") { browser.pauseDownload(download.id) }
-                        DownloadAction(Icons.Default.Cancel, "Cancel") { browser.cancelDownload(download.id) }
-                    }
-                    BrowserDownloadStatus.PAUSED -> {
-                        DownloadAction(Icons.Default.PlayArrow, "Resume") { browser.resumeDownload(download.id) }
-                        DownloadAction(Icons.Default.Cancel, "Cancel") { browser.cancelDownload(download.id) }
-                    }
-                    BrowserDownloadStatus.COMPLETED -> if (download.available) {
-                        DownloadAction(Icons.Default.OpenInNew, "Open") {
-                            val intent = browser.openDownload(download.id)
-                            if (intent == null) browser.reportError("The downloaded file is no longer available")
-                            else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
-                        }
-                        DownloadAction(Icons.Default.Share, "Share") {
-                            val intent = browser.shareDownload(download.id)
-                            if (intent == null) browser.reportError("The downloaded file is no longer available")
-                            else runCatching { context.startActivity(Intent.createChooser(intent, "Share download")) }
-                        }
-                        DownloadAction(Icons.Default.Delete, "Delete") { browser.deleteDownload(download.id) }
-                    } else {
-                        if (download.sourceUrl.isNotBlank()) DownloadAction(Icons.Default.Replay, "Retry") { browser.retryDownload(download.id) }
-                        DownloadAction(Icons.Default.Delete, "Remove") { browser.removeUnavailableDownload(download.id) }
-                    }
-                    BrowserDownloadStatus.FAILED, BrowserDownloadStatus.INTERRUPTED, BrowserDownloadStatus.CANCELED -> {
-                        if (download.sourceUrl.isNotBlank()) DownloadAction(Icons.Default.Replay, "Retry") { browser.retryDownload(download.id) }
-                        DownloadAction(Icons.Default.Delete, "Delete") { browser.removeUnavailableDownload(download.id) }
-                    }
-                }
-            }
         }
-    }
-}
-
-@Composable
-private fun DownloadAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 7.dp, vertical = 4.dp)) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(5.dp))
-        Text(label, style = MaterialTheme.typography.labelLarge)
     }
 }
 

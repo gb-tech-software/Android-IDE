@@ -149,6 +149,17 @@
                 android:value="Visible terminal session input and output" />
         </service>
 
+        <!-- Temporary camera output for browser file inputs; only the dedicated cache subdirectory is exposed. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.browser.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/browser_capture_paths" />
+        </provider>
+
         <!--
             User-files storage provider. This exposes only the durable Android
             IDE user-files root through SAF. The Termux bootstrap, package

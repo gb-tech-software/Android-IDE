@@ -667,7 +667,6 @@ require(['vs/editor/editor.main'], function () {
   var queuedMessages = pendingNativeMessages;
   pendingNativeMessages = [];
   queuedMessages.forEach(function (message) { window.androidIDE.receiveMessage(message); });
-  document.getElementById('loading').classList.add('hidden');
   postToNative({ type: 'ready' });
 
   // The native side explicitly enables optional language assistance after it
@@ -806,6 +805,8 @@ window.androidIDE = {
             theme = msg.theme;
           }
           monaco.editor.setTheme(theme);
+          document.getElementById('editor-root').style.visibility = 'visible';
+          document.getElementById('loading').classList.add('hidden');
         }
         break;
 

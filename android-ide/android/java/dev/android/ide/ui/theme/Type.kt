@@ -27,6 +27,13 @@ val IdeTypography = Typography(
         lineHeight = 20.sp,
         letterSpacing = 0.1.sp,
     ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.1.sp,
+    ),
     // Project name subtitle in top bar
     bodySmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
@@ -58,5 +65,12 @@ val IdeTypography = Typography(
         fontSize = 12.sp,
         lineHeight = 16.sp,
         letterSpacing = 0.sp,
+    ),
+    labelLarge = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+        letterSpacing = 0.1.sp,
     ),
 )

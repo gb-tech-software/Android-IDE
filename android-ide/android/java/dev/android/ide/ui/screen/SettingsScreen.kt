@@ -328,7 +328,7 @@ private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChange
     SettingsCard {
         Text("Interface text size", style = MaterialTheme.typography.titleSmall)
         Text("Affects menus, file lists, dialogs, and other interface text.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-        val pct = (s.uiFontScale * 100).toInt()
+        val pct = (s.uiFontScale * 100f + 0.5f).toInt()
         Text("$pct%", style = MaterialTheme.typography.bodyMedium)
         Slider(
             value = s.uiFontScale,

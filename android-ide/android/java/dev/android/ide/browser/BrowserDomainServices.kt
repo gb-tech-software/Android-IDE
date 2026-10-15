@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.ArrayDeque
 import java.util.UUID
 
 class StoredBrowserHistoryService(
@@ -90,6 +91,15 @@ class BrowserSessionRegistry(
     private val engine: BrowserEngine,
 ) : BrowserSessionService {
     private val sessions = linkedMapOf<String, BrowserEngineSession>()
+
+    override fun createUnopenedSession(
+        tabId: String,
+        settings: BrowserSessionSettings,
+        sink: BrowserEngineEventSink,
+    ): BrowserEngineSession {
+        check(tabId !in sessions) { "A popup session must use a fresh tab ID" }
+        return engine.createSession(tabId, settings, sink).also { sessions[tabId] = it }
+    }
 
     override fun ensureSession(
         tabId: String,
@@ -229,25 +239,44 @@ class ActiveBrowserNavigationService(
 class BrowserPermissionPromptService(
     private val storage: BrowserStorageService,
 ) : BrowserPermissionService {
+    private data class VisitGrant(val tabId: String, val origin: String, val permission: String)
+
     private val mutablePending = MutableStateFlow<BrowserPermissionRequest?>(null)
     private val mutableSitePermissions = MutableStateFlow(storage.readSitePermissions())
+    private val visitGrants = mutableSetOf<VisitGrant>()
+    private val tabOrigins = mutableMapOf<String, String>()
+    private val queued = ArrayDeque<BrowserPermissionRequest>()
     override val pending: StateFlow<BrowserPermissionRequest?> = mutablePending.asStateFlow()
     override val sitePermissions: StateFlow<List<BrowserSitePermission>> = mutableSitePermissions.asStateFlow()
 
     override fun request(request: BrowserPermissionRequest) {
+        val origin = permissionOrigin(request.origin)
+        if (visitGrants.contains(VisitGrant(request.tabId, origin, request.permission))) {
+            request.decision.complete(true)
+            return
+        }
         mutableSitePermissions.value.firstOrNull {
-            it.origin == request.origin && it.permission == request.permission
+            permissionOrigin(it.origin) == origin && it.permission == request.permission
         }?.let { stored ->
             request.decision.complete(stored.decision == BrowserPermissionDecision.ALLOW)
             return
         }
-        mutablePending.value?.decision?.complete(false)
-        mutablePending.value = request
+        if (mutablePending.value?.id == request.id || queued.any { it.id == request.id }) return
+        queued.addLast(request)
+        showNext()
     }
 
-    override fun answer(answer: BrowserPermissionAnswer) {
+    override fun answer(requestId: String, answer: BrowserPermissionAnswer) {
         val request = mutablePending.value ?: return
-        val allow = answer == BrowserPermissionAnswer.ALLOW_ONCE || answer == BrowserPermissionAnswer.ALLOW_ALWAYS
+        if (request.id != requestId) return
+        val allow = answer in setOf(
+            BrowserPermissionAnswer.ALLOW_ONCE,
+            BrowserPermissionAnswer.ALLOW_WHILE_VISITING,
+            BrowserPermissionAnswer.ALLOW_ALWAYS,
+        )
+        if (answer == BrowserPermissionAnswer.ALLOW_WHILE_VISITING) {
+            visitGrants += VisitGrant(request.tabId, permissionOrigin(request.origin), request.permission)
+        }
         val persists = answer == BrowserPermissionAnswer.ALLOW_ALWAYS || answer == BrowserPermissionAnswer.DENY_ALWAYS
         if (persists) {
             val record = BrowserSitePermission(
@@ -258,22 +287,91 @@ class BrowserPermissionPromptService(
             val next = (mutableSitePermissions.value.filterNot {
                 it.origin == record.origin && it.permission == record.permission
             } + record).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.origin })
-            storage.saveSitePermissions(next)
-            mutableSitePermissions.value = next
+            try {
+                storage.saveSitePermissions(next)
+                mutableSitePermissions.value = next
+            } catch (_: Exception) {
+                // Resolve the current request below even if a remembered decision cannot be saved.
+            }
         }
         request.decision.complete(allow)
         mutablePending.value = null
+        showNext()
     }
 
     override fun revoke(origin: String, permission: String?) {
         val next = mutableSitePermissions.value.filterNot {
-            it.origin == origin && (permission == null || it.permission == permission)
+            permissionOrigin(it.origin) == permissionOrigin(origin) && (permission == null || it.permission == permission)
         }
         storage.saveSitePermissions(next)
         mutableSitePermissions.value = next
     }
 
-    override fun cancel() = answer(BrowserPermissionAnswer.DENY_ONCE)
+    override fun cancel() {
+        mutablePending.value?.let { answer(it.id, BrowserPermissionAnswer.DENY_ONCE) }
+    }
+
+    override fun cancelAll() {
+        mutablePending.value?.decision?.complete(false)
+        mutablePending.value = null
+        queued.forEach { it.decision.complete(false) }
+        queued.clear()
+    }
+
+    override fun onTabDeselected(tabId: String) {
+        val hiddenQueued = queued.filter { it.tabId == tabId }
+        queued.removeAll(hiddenQueued.toSet())
+        hiddenQueued.forEach { it.decision.complete(false) }
+        mutablePending.value?.takeIf { it.tabId == tabId }?.let { pending ->
+            pending.decision.complete(false)
+            mutablePending.value = null
+        }
+        showNext()
+    }
+
+    override fun onTabNavigated(tabId: String, url: String) {
+        val nextOrigin = permissionOrigin(url)
+        val previousOrigin = tabOrigins.put(tabId, nextOrigin)
+        if (previousOrigin != null && previousOrigin != nextOrigin) {
+            visitGrants.removeAll { it.tabId == tabId }
+            val staleQueued = queued.filter { it.tabId == tabId && permissionOrigin(it.origin) != nextOrigin }
+            queued.removeAll(staleQueued.toSet())
+            staleQueued.forEach { it.decision.complete(false) }
+            mutablePending.value?.takeIf {
+                it.tabId == tabId && permissionOrigin(it.origin) != nextOrigin
+            }?.let { pending ->
+                pending.decision.complete(false)
+                mutablePending.value = null
+            }
+            showNext()
+        }
+    }
+
+    override fun onTabClosed(tabId: String) {
+        tabOrigins.remove(tabId)
+        visitGrants.removeAll { it.tabId == tabId }
+        val closedQueued = queued.filter { it.tabId == tabId }
+        queued.removeAll(closedQueued.toSet())
+        closedQueued.forEach { it.decision.complete(false) }
+        mutablePending.value?.takeIf { it.tabId == tabId }?.let { pending ->
+            pending.decision.complete(false)
+            mutablePending.value = null
+        }
+        showNext()
+    }
+
+    private fun showNext() {
+        if (mutablePending.value == null && queued.isNotEmpty()) {
+            mutablePending.value = queued.removeFirst()
+        }
+    }
+
+    private fun permissionOrigin(value: String): String = runCatching {
+        val uri = Uri.parse(value)
+        val host = uri.host ?: return value.trimEnd('/')
+        val authority = if (uri.port >= 0) "$host:${uri.port}" else host
+        "${uri.scheme ?: "https"}://$authority"
+    }.getOrDefault(value.trimEnd('/'))
 }
 
 /** Browser composition root: shared ownership of browser-specific services and persistence. */

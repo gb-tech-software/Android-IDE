@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -57,7 +58,12 @@ data class BrowserUiState(
     val browserDataClearMessage: String? = null,
 )
 
-data class BrowserPermissionPrompt(val origin: String, val permission: String)
+data class BrowserPermissionPrompt(
+    val id: String,
+    val tabId: String,
+    val origin: String,
+    val permission: String,
+)
 data class DuplicateDownloadPrompt(
     val name: String,
     val sourceUrl: String,
@@ -131,7 +137,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             permissionService.pending.collect { request ->
                 _uiState.value = _uiState.value.copy(
-                    permissionPrompt = request?.let { BrowserPermissionPrompt(it.origin, it.permission) },
+                    permissionPrompt = request?.let { BrowserPermissionPrompt(it.id, it.tabId, it.origin, it.permission) },
                 )
             }
         }
@@ -215,6 +221,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun engineEventSink(tab: BrowserTabRuntime) = object : BrowserEngineEventSink {
         override fun onNavigationChanged(event: BrowserNavigationChanged) {
             val changedUrl = event.url.ifBlank { DEFAULT_HOME }
+            permissionService.onTabNavigated(tab.id, changedUrl)
             if (tab.url != changedUrl) tab.visualRevision++
             tab.url = changedUrl
             tabService.update(tab.id) { it.copy(url = changedUrl) }
@@ -288,12 +295,32 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onDownloadRequested(event: BrowserDownloadRequest) = beginDownload(event)
 
         override fun onPermissionRequested(event: BrowserPermissionRequest) {
+            if (tabService.selectedTabId.value != event.tabId) {
+                event.decision.complete(false)
+                return
+            }
             permissionService.request(event)
         }
 
         override fun onWebsitePromptRequested(event: BrowserWebsitePromptRequest) {
+            if (tabService.selectedTabId.value != event.tabId) {
+                event.decision.complete(BrowserWebsitePromptAnswer(accepted = false))
+                return
+            }
             _uiState.value.websitePrompt?.decision?.complete(BrowserWebsitePromptAnswer(accepted = false))
             _uiState.value = _uiState.value.copy(websitePrompt = event)
+        }
+
+        override fun onWebsitePromptUpdated(event: BrowserWebsitePromptRequest) {
+            val current = _uiState.value.websitePrompt ?: return
+            if (current.id == event.id && current.tabId == event.tabId) {
+                _uiState.value = _uiState.value.copy(websitePrompt = event)
+            }
+        }
+
+        override fun onWebsitePromptDismissed(tabId: String, promptId: String) {
+            val current = _uiState.value.websitePrompt ?: return
+            if (current.tabId == tabId && current.id == promptId) dismissWebsitePrompt(promptId)
         }
 
         override fun onContextMenuRequested(event: BrowserContextMenuRequest) {
@@ -323,19 +350,56 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             tab.scrollListener?.invoke(tab.scrollY)
         }
 
-        override fun onNewTabRequested(url: String): BrowserEngineSession {
-            createTab(url)
-            val id = tabService.selectedTabId.value ?: error("The new browser tab was not selected")
-            return requireNotNull(sessions[id]?.session)
+        @Suppress("UNUSED_PARAMETER")
+        override fun onNewTabRequested(url: String): BrowserEngineSession? = try {
+            createPopupSession()
+        } catch (_: Exception) {
+            null
         }
     }
 
-    fun answerPermission(answer: BrowserPermissionAnswer) {
-        permissionService.answer(answer)
-        _uiState.value = _uiState.value.copy(permissionPrompt = null)
-        if (answer == BrowserPermissionAnswer.DENY_ONCE || answer == BrowserPermissionAnswer.DENY_ALWAYS) {
-            setError("The site permission was denied")
+    /**
+     * GeckoView supplies a new window session and performs its initial load itself.
+     * Keep it separate from createTab(), which opens and loads app-created tabs.
+     */
+    private fun createPopupSession(): BrowserEngineSession {
+        val id = tabService.create("about:blank")
+        val descriptor = tabService.tabs.value.firstOrNull { it.id == id }
+            ?: error("The popup tab was not registered")
+        val tab = BrowserTabRuntime(
+            id,
+            null,
+            descriptor.url,
+            descriptor.title,
+            reuseKey = null,
+            viewportWidth = descriptor.viewportWidth,
+        )
+        sessions[id] = tab
+        val session = try {
+            sessionService.createUnopenedSession(
+                tabId = id,
+                settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
+                sink = engineEventSink(tab),
+            )
+        } catch (error: Throwable) {
+            sessions.remove(id)
+            sessionService.closeSession(id)
+            tabService.close(id)
+            persistTabs()
+            throw error
         }
+        tab.session = session
+        selectTab(id)
+        persistTabs()
+        return session
+    }
+
+    fun answerPermission(requestId: String, answer: BrowserPermissionAnswer) {
+        permissionService.answer(requestId, answer)
+    }
+
+    fun cancelPermissionPrompts() {
+        permissionService.cancelAll()
     }
 
     fun revokeSitePermission(origin: String, permission: String? = null) {
@@ -349,10 +413,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (prompt.id != id) return
         if (prompt.kind == BrowserWebsitePromptKind.FILE && answer.accepted) {
             viewModelScope.launch {
-                val stagedUris = withContext(Dispatchers.IO) {
-                    answer.selectedFileUris.mapNotNull(::stageWebsiteUpload)
+                val stagedUris = try {
+                    withContext(Dispatchers.IO) {
+                        answer.selectedFileUris.mapNotNull { uri -> stageWebsiteUpload(uri, prompt.tabId) }
+                    }
+                } finally {
+                    answer.temporaryFileUris.forEach(::deleteTemporaryCameraFile)
                 }
-                if (_uiState.value.websitePrompt?.id != id) return@launch
+                if (_uiState.value.websitePrompt?.id != id) {
+                    stagedUris.forEach { staged -> Uri.parse(staged).path?.let(::File)?.delete() }
+                    return@launch
+                }
                 val stagedAnswer = answer.copy(
                     accepted = stagedUris.isNotEmpty() && stagedUris.size == answer.selectedFileUris.size,
                     selectedFileUris = stagedUris,
@@ -378,30 +449,63 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(websitePrompt = null)
     }
 
-    private fun stageWebsiteUpload(uriValue: String): String? = runCatching {
-        val source = Uri.parse(uriValue)
-        val displayName = context.contentResolver.query(
-            source,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null,
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) cursor.getString(0) else null
-        }.orEmpty()
-        val extension = displayName.substringAfterLast('.', "").takeIf {
-            it.isNotBlank() && it.length <= 16 && it.all { character -> character.isLetterOrDigit() }
+    private fun deleteTemporaryCameraFile(uriValue: String) {
+        runCatching {
+            val uri = Uri.parse(uriValue)
+            if (uri.authority != "${context.packageName}.browser.fileprovider") return
+            val root = File(context.cacheDir, "browser_form_captures").canonicalFile
+            val file = File(root, uri.lastPathSegment.orEmpty()).canonicalFile
+            if (file.parentFile == root) file.delete()
         }
-            ?.let { ".$it" } ?: ".upload"
-        val directory = File(context.cacheDir, "browser_form_uploads").apply { mkdirs() }
-        val staged = File.createTempFile("web-upload-", extension, directory)
-        val input = context.contentResolver.openInputStream(source) ?: run {
-            staged.delete()
-            return null
+    }
+
+    /** Upload staging stays available while its Gecko session is alive, then is removed. */
+    private fun cleanupStagedWebsiteUploads(tabId: String) {
+        val safeTabId = tabId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val root = File(context.cacheDir, "browser_form_uploads").canonicalFile
+        val directory = File(root, safeTabId).canonicalFile
+        if (directory.parentFile == root) {
+            directory.listFiles()?.forEach { it.delete() }
+            directory.delete()
         }
-        input.use { from -> FileOutputStream(staged).use { to -> from.copyTo(to) } }
-        Uri.fromFile(staged).toString()
-    }.getOrNull()
+    }
+
+    private fun stageWebsiteUpload(uriValue: String, tabId: String): String? {
+        var staged: File? = null
+        return try {
+            val source = Uri.parse(uriValue)
+            val displayName = context.contentResolver.query(
+                source,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }.orEmpty()
+            val extension = displayName.substringAfterLast('.', "").takeIf {
+                it.isNotBlank() && it.length <= 16 && it.all { character -> character.isLetterOrDigit() }
+            }
+                ?.let { ".$it" } ?: ".upload"
+            val safeTabId = tabId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            val directory = File(File(context.cacheDir, "browser_form_uploads"), safeTabId).apply { mkdirs() }
+            val stagedFile = File.createTempFile("web-upload-", extension, directory)
+            staged = stagedFile
+            val input = context.contentResolver.openInputStream(source)
+            if (input == null) {
+                stagedFile.delete()
+                return null
+            }
+            input.use { from -> FileOutputStream(stagedFile).use { to -> from.copyTo(to) } }
+            Uri.fromFile(stagedFile).toString()
+        } catch (cancelled: CancellationException) {
+            staged?.delete()
+            throw cancelled
+        } catch (_: Exception) {
+            staged?.delete()
+            null
+        }
+    }
 
     fun dismissNavigationFailure() {
         val tab = sessions[_uiState.value.selectedTabId] ?: return
@@ -485,15 +589,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         dismissContextMenu()
         navigationService.navigate(BrowserNavigation(url))
     }
-    /** Starts a resource request; Gecko routes downloadable responses to beginDownload. */
+    /** Fetches the resource with Gecko's cookie store and the originating page as Referer. */
     fun downloadContextResource(url: String?) {
         if (url.isNullOrBlank()) return
+        val menu = _uiState.value.contextMenu
+        val session = menu?.let { sessions[it.tabId]?.session }
+        if (session?.downloadResource(url, menu.pageUrl) != true) {
+            setError("This resource cannot be downloaded directly")
+        }
         dismissContextMenu()
-        navigationService.navigate(BrowserNavigation(url))
     }
 
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
+        permissionService.pending.value?.tabId?.takeIf { it != tabId }?.let(permissionService::onTabDeselected)
+        tabService.selectedTabId.value?.takeIf { it != tabId }?.let(permissionService::onTabDeselected)
         if (_uiState.value.websitePrompt?.tabId != null && _uiState.value.websitePrompt?.tabId != tabId) {
             dismissWebsitePrompt()
         }
@@ -507,6 +617,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     /** Returns true when closing this tab created a replacement because it was the last tab. */
     fun closeTab(tabId: String): Boolean {
         if (tabId !in sessions) return false
+        permissionService.onTabClosed(tabId)
         persistence.flush()
         _uiState.value.websitePrompt?.takeIf { it.tabId == tabId }?.let { prompt ->
             prompt.decision.complete(BrowserWebsitePromptAnswer(accepted = false))
@@ -514,6 +625,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         val closedTab = sessions.remove(tabId)
         sessionService.closeSession(tabId)
+        cleanupStagedWebsiteUploads(tabId)
         val replacement = tabService.close(tabId)
         closedTab?.session = null
         closedTab?.thumbnailPath?.let(::File)?.delete()
@@ -788,6 +900,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         persistence.flush()
         persistTabsNow()
         sessionService.closeAll()
+        File(context.cacheDir, "browser_form_uploads").deleteRecursively()
         super.onCleared()
     }
 }

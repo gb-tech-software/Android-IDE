@@ -56,6 +56,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -162,6 +163,7 @@ fun EditorPane(
     // ── Monaco WebView — created once, never recreated ─────────────────────
     val editorWebView = remember {
         WebView(context).apply {
+            setBackgroundColor(colors.background.toArgb())
             // isFocusable / isFocusableInTouchMode: required so that tapping the
             // editor requests native focus and the soft keyboard appears immediately.
             isFocusable              = true
@@ -247,6 +249,7 @@ fun EditorPane(
     }
 
     SideEffect {
+        editorWebView.setBackgroundColor(colors.background.toArgb())
         editorWebView.isEnabled = !modelIsLoading
         editorWebView.isFocusable = !modelIsLoading
         editorWebView.isFocusableInTouchMode = !modelIsLoading

@@ -11,13 +11,16 @@ import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.GeckoWebExecutor
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.GeckoSession.PermissionDelegate
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
+import org.mozilla.geckoview.WebRequest
 import org.mozilla.geckoview.WebRequestError
 import org.mozilla.geckoview.WebExtension
+import java.util.concurrent.atomic.AtomicReference
 
 /** Current implementation of the engine-neutral browser contract. */
 class GeckoViewBrowserEngine(
@@ -116,6 +119,9 @@ private class GeckoBrowserEngineSession(
             }
 
             override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession> {
+                // Gecko owns the initial navigation; uri is informational. Return a fresh,
+                // unopened session. Blocked unsolicited popups reach here only after approval;
+                // user-initiated new windows can reach this callback without PopupPrompt.
                 val engineSession = sink.onNewTabRequested(uri) as? GeckoBrowserEngineSession
                 return GeckoResult.fromValue(engineSession?.geckoSession)
             }
@@ -203,7 +209,13 @@ private class GeckoBrowserEngineSession(
             ): GeckoResult<Int> {
                 val decision = CompletableDeferred<Boolean>()
                 sink.onPermissionRequested(
-                    BrowserPermissionRequest(tabId, permission.uri, permissionName(permission.permission), decision),
+                    BrowserPermissionRequest(
+                        id = "$tabId-${System.nanoTime()}",
+                        tabId = tabId,
+                        origin = displayPermissionOrigin(permission.uri),
+                        permission = permissionName(permission.permission),
+                        decision = decision,
+                    ),
                 )
                 val result = GeckoResult<Int>()
                 decision.invokeOnCompletion { cause ->
@@ -234,7 +246,13 @@ private class GeckoBrowserEngineSession(
                 }
                 val decision = CompletableDeferred<Boolean>()
                 sink.onPermissionRequested(
-                    BrowserPermissionRequest(tabId, uri, permission, decision),
+                    BrowserPermissionRequest(
+                        id = "$tabId-${System.nanoTime()}",
+                        tabId = tabId,
+                        origin = displayPermissionOrigin(uri),
+                        permission = permission,
+                        decision = decision,
+                    ),
                 )
                 decision.invokeOnCompletion { cause ->
                     val allowed = cause == null && runCatching { decision.getCompleted() }.getOrDefault(false)
@@ -254,7 +272,8 @@ private class GeckoBrowserEngineSession(
                 kind = BrowserWebsitePromptKind.ALERT,
                 title = prompt.title,
                 message = prompt.message,
-                resolve = { prompt.dismiss() },
+                basePrompt = prompt,
+                resolve = { prompt.confirm() },
                 cancel = { prompt.dismiss() },
             )
 
@@ -265,6 +284,7 @@ private class GeckoBrowserEngineSession(
                 kind = BrowserWebsitePromptKind.CONFIRM,
                 title = prompt.title,
                 message = prompt.message,
+                basePrompt = prompt,
                 resolve = { answer ->
                     prompt.confirm(
                         if (answer.accepted) GeckoSession.PromptDelegate.ButtonPrompt.Type.POSITIVE
@@ -282,6 +302,7 @@ private class GeckoBrowserEngineSession(
                 title = prompt.title,
                 message = prompt.message,
                 defaultValue = prompt.defaultValue,
+                basePrompt = prompt,
                 resolve = { answer -> if (answer.accepted) prompt.confirm(answer.value.orEmpty()) else prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
@@ -291,8 +312,9 @@ private class GeckoBrowserEngineSession(
                 prompt: GeckoSession.PromptDelegate.BeforeUnloadPrompt,
             ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> = requestWebsitePrompt(
                 kind = BrowserWebsitePromptKind.BEFORE_UNLOAD,
-                title = "Leave this page?",
-                message = "This page may have changes that have not been saved.",
+                title = "Leave site?",
+                message = "Changes you made may not be saved.",
+                basePrompt = prompt,
                 resolve = { answer -> prompt.confirm(if (answer.accepted) AllowOrDeny.ALLOW else AllowOrDeny.DENY) },
                 cancel = { prompt.confirm(AllowOrDeny.DENY) },
             )
@@ -302,8 +324,9 @@ private class GeckoBrowserEngineSession(
                 prompt: GeckoSession.PromptDelegate.RepostConfirmPrompt,
             ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> = requestWebsitePrompt(
                 kind = BrowserWebsitePromptKind.REPOST,
-                title = "Resubmit form?",
-                message = "Reloading this page may submit the same form data again.",
+                title = "Confirm Form Resubmission",
+                message = "The page that you're looking for used information that you entered. Returning to that page might cause any action you took to be repeated. Do you want to continue?",
+                basePrompt = prompt,
                 resolve = { answer -> prompt.confirm(if (answer.accepted) AllowOrDeny.ALLOW else AllowOrDeny.DENY) },
                 cancel = { prompt.confirm(AllowOrDeny.DENY) },
             )
@@ -319,6 +342,7 @@ private class GeckoBrowserEngineSession(
                 defaultUsername = prompt.authOptions.username,
                 defaultPassword = prompt.authOptions.password,
                 passwordOnly = prompt.authOptions.flags and GeckoSession.PromptDelegate.AuthPrompt.AuthOptions.Flags.ONLY_PASSWORD != 0,
+                basePrompt = prompt,
                 resolve = { answer ->
                     if (!answer.accepted) prompt.dismiss()
                     else if (prompt.authOptions.flags and GeckoSession.PromptDelegate.AuthPrompt.AuthOptions.Flags.ONLY_PASSWORD != 0) {
@@ -338,6 +362,7 @@ private class GeckoBrowserEngineSession(
                 title = "Allow pop-up?",
                 message = "This page wants to open ${prompt.targetUri ?: "a new window"}.",
                 targetUri = prompt.targetUri,
+                basePrompt = prompt,
                 resolve = { answer -> prompt.confirm(if (answer.accepted) AllowOrDeny.ALLOW else AllowOrDeny.DENY) },
                 cancel = { prompt.confirm(AllowOrDeny.DENY) },
             )
@@ -346,15 +371,36 @@ private class GeckoBrowserEngineSession(
                 session: GeckoSession,
                 prompt: GeckoSession.PromptDelegate.ChoicePrompt,
             ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
-                val flattenedChoices = flattenChoices(prompt.choices)
+                val activePrompt = AtomicReference(prompt)
                 return requestWebsitePrompt(
                     kind = BrowserWebsitePromptKind.CHOICE,
                     title = prompt.title ?: "Choose an option",
                     message = prompt.message,
-                    choices = flattenedChoices,
+                    choices = flattenChoices(prompt.choices),
+                    choiceMode = when (prompt.type) {
+                        GeckoSession.PromptDelegate.ChoicePrompt.Type.MENU -> BrowserChoiceMode.MENU
+                        GeckoSession.PromptDelegate.ChoicePrompt.Type.MULTIPLE -> BrowserChoiceMode.MULTIPLE
+                        else -> BrowserChoiceMode.SINGLE
+                    },
                     multiple = prompt.type == GeckoSession.PromptDelegate.ChoicePrompt.Type.MULTIPLE,
-                    resolve = { answer -> prompt.confirm(answer.selectedIds.toTypedArray()) },
-                    cancel = { prompt.dismiss() },
+                    basePrompt = prompt,
+                    onPromptUpdate = { request, updated ->
+                        val updatedChoice = updated as? GeckoSession.PromptDelegate.ChoicePrompt ?: return@requestWebsitePrompt request
+                        activePrompt.set(updatedChoice)
+                        request.copy(
+                            title = updatedChoice.title ?: request.title,
+                            message = updatedChoice.message,
+                            choices = flattenChoices(updatedChoice.choices),
+                            choiceMode = when (updatedChoice.type) {
+                                GeckoSession.PromptDelegate.ChoicePrompt.Type.MENU -> BrowserChoiceMode.MENU
+                                GeckoSession.PromptDelegate.ChoicePrompt.Type.MULTIPLE -> BrowserChoiceMode.MULTIPLE
+                                else -> BrowserChoiceMode.SINGLE
+                            },
+                            multiple = updatedChoice.type == GeckoSession.PromptDelegate.ChoicePrompt.Type.MULTIPLE,
+                        )
+                    },
+                    resolve = { answer -> activePrompt.get().confirm(answer.selectedIds.toTypedArray()) },
+                    cancel = { activePrompt.get().dismiss() },
                 )
             }
 
@@ -367,6 +413,7 @@ private class GeckoBrowserEngineSession(
                 message = "Choose a color to share with this page.",
                 defaultValue = prompt.defaultValue,
                 predefinedValues = prompt.predefinedValues?.toList().orEmpty(),
+                basePrompt = prompt,
                 resolve = { answer -> if (answer.accepted) prompt.confirm(answer.value.orEmpty()) else prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
@@ -377,7 +424,6 @@ private class GeckoBrowserEngineSession(
             ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> = requestWebsitePrompt(
                 kind = BrowserWebsitePromptKind.DATE_TIME,
                 title = prompt.title ?: "Enter a value",
-                message = "Enter a date or time to share with this page.",
                 defaultValue = prompt.defaultValue,
                 inputType = when (prompt.type) {
                     GeckoSession.PromptDelegate.DateTimePrompt.Type.DATE -> "date"
@@ -388,6 +434,7 @@ private class GeckoBrowserEngineSession(
                 },
                 minValue = prompt.minValue,
                 maxValue = prompt.maxValue,
+                basePrompt = prompt,
                 resolve = { answer -> if (answer.accepted) prompt.confirm(answer.value.orEmpty()) else prompt.dismiss() },
                 cancel = { prompt.dismiss() },
             )
@@ -401,6 +448,7 @@ private class GeckoBrowserEngineSession(
                 message = "Select a file to upload to this page.",
                 multiple = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE,
                 mimeTypes = prompt.mimeTypes?.toList().orEmpty(),
+                basePrompt = prompt,
                 resolve = { answer ->
                     if (answer.accepted && answer.selectedFileUris.isNotEmpty()) {
                         prompt.confirm(context, answer.selectedFileUris.map(Uri::parse).toTypedArray())
@@ -431,6 +479,67 @@ private class GeckoBrowserEngineSession(
     override fun load(request: BrowserNavigation) {
         pendingHistoryAddress = request.historyAddress
         geckoSession.loadUri(request.value)
+    }
+
+    override fun downloadResource(url: String, referrer: String?): Boolean {
+        val parsed = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        if (parsed.scheme?.lowercase() !in setOf("http", "https") || parsed.host.isNullOrBlank()) return false
+        val requestBuilder = WebRequest.Builder(url)
+        resourceReferrer(referrer, parsed)?.let(requestBuilder::referrer)
+        return runCatching {
+            GeckoWebExecutor(runtime).fetch(requestBuilder.build()).accept(
+                { response ->
+                    val headers = response.headers
+                    val contentType = headers.entries.firstOrNull { it.key.equals("Content-Type", true) }
+                        ?.value?.substringBefore(';')?.trim().orEmpty().ifBlank { "application/octet-stream" }
+                    val contentDisposition = headers.entries.firstOrNull { it.key.equals("Content-Disposition", true) }?.value
+                    val contentLength = headers.entries.firstOrNull { it.key.equals("Content-Length", true) }
+                        ?.value?.toLongOrNull() ?: -1L
+                    val body = response.body?.takeIf { response.statusCode in 200..299 }
+                    if (body == null) runCatching { response.body?.close() }
+                    sink.onDownloadRequested(
+                        BrowserDownloadRequest(
+                            tabId = tabId,
+                            url = response.uri.ifBlank { url },
+                            mimeType = contentType,
+                            fileName = null,
+                            contentDisposition = contentDisposition,
+                            body = body,
+                            totalBytes = contentLength,
+                        ),
+                    )
+                },
+                {
+                    sink.onDownloadRequested(
+                        BrowserDownloadRequest(
+                            tabId = tabId,
+                            url = url,
+                            mimeType = "application/octet-stream",
+                            fileName = null,
+                            body = null,
+                        ),
+                    )
+                },
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    /** Uses the platform default strict-origin-when-cross-origin referrer behavior. */
+    private fun resourceReferrer(referrer: String?, target: Uri): String? {
+        val source = referrer?.let { runCatching { Uri.parse(it) }.getOrNull() } ?: return null
+        val sourceScheme = source.scheme?.lowercase() ?: return null
+        val targetScheme = target.scheme?.lowercase() ?: return null
+        if (sourceScheme !in setOf("http", "https") || source.host.isNullOrBlank()) return null
+        if (sourceScheme == "https" && targetScheme == "http") return null
+        val authority = buildString {
+            append(source.host)
+            if (source.port >= 0) append(':').append(source.port)
+        }
+        val sameOrigin = sourceScheme == targetScheme &&
+            source.host.equals(target.host, ignoreCase = true) && source.port == target.port
+        if (sameOrigin) return source.buildUpon().encodedAuthority(authority).fragment(null).build().toString()
+        return "$sourceScheme://$authority/"
     }
 
     override fun goBack() = geckoSession.goBack()
@@ -474,12 +583,15 @@ private class GeckoBrowserEngineSession(
         passwordOnly: Boolean = false,
         targetUri: String? = null,
         choices: List<BrowserWebsitePromptChoice> = emptyList(),
+        choiceMode: BrowserChoiceMode? = null,
         multiple: Boolean = false,
         mimeTypes: List<String> = emptyList(),
         inputType: String? = null,
         minValue: String? = null,
         maxValue: String? = null,
         predefinedValues: List<String> = emptyList(),
+        basePrompt: GeckoSession.PromptDelegate.BasePrompt? = null,
+        onPromptUpdate: ((BrowserWebsitePromptRequest, GeckoSession.PromptDelegate.BasePrompt) -> BrowserWebsitePromptRequest)? = null,
         resolve: (BrowserWebsitePromptAnswer) -> GeckoSession.PromptDelegate.PromptResponse,
         cancel: () -> GeckoSession.PromptDelegate.PromptResponse,
     ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
@@ -496,6 +608,7 @@ private class GeckoBrowserEngineSession(
             passwordOnly = passwordOnly,
             targetUri = targetUri,
             choices = choices,
+            choiceMode = choiceMode,
             multiple = multiple,
             mimeTypes = mimeTypes,
             inputType = inputType,
@@ -505,6 +618,18 @@ private class GeckoBrowserEngineSession(
             decision = CompletableDeferred(),
         )
         val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
+        var revision = request.revision
+        basePrompt?.setDelegate(object : GeckoSession.PromptDelegate.PromptInstanceDelegate {
+            override fun onPromptDismiss(prompt: GeckoSession.PromptDelegate.BasePrompt) {
+                sink.onWebsitePromptDismissed(tabId, request.id)
+            }
+
+            override fun onPromptUpdate(prompt: GeckoSession.PromptDelegate.BasePrompt) {
+                val refreshed = onPromptUpdate?.invoke(request, prompt) ?: request
+                revision += 1
+                sink.onWebsitePromptUpdated(refreshed.copy(revision = revision))
+            }
+        })
         sink.onWebsitePromptRequested(request)
         request.decision.invokeOnCompletion { cause ->
             val answer = if (cause == null) {
@@ -517,9 +642,19 @@ private class GeckoBrowserEngineSession(
         return result
     }
 
+    /** JS dialogs identify the site by host and port, without leaking its page path. */
     private fun displayOrigin(value: String): String = runCatching {
-        Uri.parse(value).host?.takeIf(String::isNotBlank)
-            ?: value.substringBefore('?').substringBefore('#').take(128)
+        val uri = Uri.parse(value)
+        val host = uri.host?.takeIf(String::isNotBlank) ?: return value.substringBefore('?').substringBefore('#').take(128)
+        if (uri.port >= 0) "$host:${uri.port}" else host
+    }.getOrDefault(value.substringBefore('?').substringBefore('#').take(128))
+
+    /** Site-permission copy includes the scheme, matching Chrome's permission prompts. */
+    private fun displayPermissionOrigin(value: String): String = runCatching {
+        val uri = Uri.parse(value)
+        val host = uri.host?.takeIf(String::isNotBlank) ?: return value.substringBefore('?').substringBefore('#').take(128)
+        val authority = if (uri.port >= 0) "$host:${uri.port}" else host
+        "${uri.scheme ?: "https"}://$authority"
     }.getOrDefault(value.substringBefore('?').substringBefore('#').take(128))
 
     private fun displayErrorAddress(value: String): String = runCatching {
