@@ -11,7 +11,7 @@ object LanguageServerRegistry {
     val definitions: List<LanguageServerDefinition> = listOf(
         LanguageServerDefinition(
             id = "typescript",
-            languageIds = setOf("javascript", "typescript", "javascriptreact", "typescriptreact"),
+            languageIds = setOf("javascript", "typescript"),
             command = listOf("typescript-language-server", "--stdio"),
             requiredExecutable = "typescript-language-server",
         ),
@@ -29,10 +29,9 @@ object LanguageServerRegistry {
         ),
         LanguageServerDefinition(
             id = "css",
-            // vscode-css-language-server handles the CSS-family dialects exposed
-            // by Monaco.  Keeping these IDs together prevents SCSS/Less/Sass
-            // from being silently downgraded to syntax-only editing.
-            languageIds = setOf("css", "scss", "less", "sass"),
+            // Match only Monaco's bundled CSS-family language IDs. Indented Sass
+            // has no matching grammar or language-server route in this bundle.
+            languageIds = setOf("css", "scss", "less"),
             command = listOf("vscode-css-language-server", "--stdio"),
             requiredExecutable = "vscode-css-language-server",
         ),

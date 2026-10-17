@@ -12,7 +12,12 @@ import dev.android.ide.contracts.ProjectRegistryAdapter
 import dev.android.ide.saf.DocumentPresence
 import dev.android.ide.saf.FileManagementService
 import dev.android.ide.saf.SafeMutationResult
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.time.Instant
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class ProjectMutationWorkflow(
     private val registry: ProjectRegistryAdapter,
@@ -77,7 +82,7 @@ class ProjectMutationWorkflow(
             )
         }
         files.delete(project.location.stableId)
-        when (storage.documentPresence(project.location.stableId)) {
+        when (presenceAfterDelete(project.location.stableId)) {
             DocumentPresence.EXISTS -> return failed(
                 "The project still exists after the delete request",
                 ErrorCategory.EXTERNAL_FILE_CHANGE,
@@ -320,7 +325,7 @@ class ProjectMutationWorkflow(
             return cleanupUnregisteredDestination(source.location.stableId, rootUri, destinationRegistered)
         }
         files.delete(source.location.stableId)
-        when (storage.documentPresence(source.location.stableId)) {
+        when (presenceAfterDelete(source.location.stableId)) {
             DocumentPresence.ABSENT -> Unit
             DocumentPresence.INACCESSIBLE -> return OperationReport(
                 outcome = OperationOutcome.PARTIAL,
@@ -341,7 +346,7 @@ class ProjectMutationWorkflow(
                     )
                 }
                 files.delete(rootUri)
-                val destinationAbsent = storage.documentPresence(rootUri) == DocumentPresence.ABSENT
+                val destinationAbsent = presenceAfterDelete(rootUri) == DocumentPresence.ABSENT
                 if (destinationAbsent) {
                     return failed("The original project was retained because source deletion failed", ErrorCategory.PERMISSION_LOST)
                 }
@@ -407,7 +412,7 @@ class ProjectMutationWorkflow(
                 is dev.android.ide.saf.ExactCreateResult.Created -> created.documentUri
                 is dev.android.ide.saf.ExactCreateResult.Partial -> {
                     files.delete(created.documentUri)
-                    if (storage.documentPresence(created.documentUri) != DocumentPresence.ABSENT) {
+                    if (presenceAfterDelete(created.documentUri) != DocumentPresence.ABSENT) {
                         orphanedUris += created.documentUri
                     }
                     failedIds += projectId
@@ -420,7 +425,7 @@ class ProjectMutationWorkflow(
             }
             if (storage.writeDirectoryArchive(project.location.stableId, destination) == null) {
                 files.delete(destination)
-                if (storage.documentPresence(destination) != DocumentPresence.ABSENT) orphanedUris += destination
+                if (presenceAfterDelete(destination) != DocumentPresence.ABSENT) orphanedUris += destination
                 failedIds += projectId
             } else {
                 exported += projectId
@@ -472,7 +477,7 @@ class ProjectMutationWorkflow(
     suspend fun deleteEntry(uri: String): OperationReport {
         if (!files.isLocalWorkspaceUri(uri)) return blocked(editOnlyNotice, ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY)
         files.delete(uri)
-        if (storage.documentPresence(uri) != DocumentPresence.ABSENT) {
+        if (presenceAfterDelete(uri) != DocumentPresence.ABSENT) {
             return failed("The item could not be deleted", ErrorCategory.PERMISSION_LOST)
         }
         return complete("Item deleted", uri)
@@ -484,7 +489,7 @@ class ProjectMutationWorkflow(
         val failedIds = mutableListOf<String>()
         uris.forEach { uri ->
             files.delete(uri)
-            if (storage.documentPresence(uri) != DocumentPresence.ABSENT) failedIds += uri
+            if (presenceAfterDelete(uri) != DocumentPresence.ABSENT) failedIds += uri
         }
         return if (failedIds.isEmpty()) {
             OperationReport(OperationOutcome.COMPLETE, "Deleted ${uris.size} item(s)", affectedIds = uris)
@@ -570,13 +575,32 @@ class ProjectMutationWorkflow(
     private suspend fun registered(projectId: String): ProjectIdentity? =
         registry.listRegistered().firstOrNull { it.id == projectId }
 
+    /**
+     * Project mutations decide success from the project-storage postcondition,
+     * not a provider's delete return value. Some local DocumentsProviders throw
+     * FileNotFoundException when queried after deletion, so use the adapter's
+     * approved native path when available; unrelated SAF consumers keep the
+     * generic provider semantics.
+     */
+    private suspend fun presenceAfterDelete(uri: String): DocumentPresence {
+        val localPath = files.localFilesystemPath(uri) ?: return storage.documentPresence(uri)
+        return withContext(Dispatchers.IO) {
+            val path = File(localPath).toPath()
+            when {
+                Files.exists(path, LinkOption.NOFOLLOW_LINKS) -> DocumentPresence.EXISTS
+                Files.notExists(path, LinkOption.NOFOLLOW_LINKS) -> DocumentPresence.ABSENT
+                else -> DocumentPresence.INACCESSIBLE
+            }
+        }
+    }
+
     private suspend fun cleanupUnregisteredDestination(
         sourceUri: String,
         destinationUri: String,
         failure: OperationReport,
     ): OperationReport {
         files.delete(destinationUri)
-        val absent = storage.documentPresence(destinationUri) == DocumentPresence.ABSENT
+        val absent = presenceAfterDelete(destinationUri) == DocumentPresence.ABSENT
         return if (absent) failure else OperationReport(
             outcome = OperationOutcome.PARTIAL,
             message = "The operation failed and cleanup of its unregistered destination could not be verified",

@@ -15,11 +15,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -40,6 +42,7 @@ class LanguageServerRuntimeAdapterImpl(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val nextRequestId = AtomicInteger(1)
     private val processes = ConcurrentHashMap<Key, LiveServer>()
+    private val startLocks = ConcurrentHashMap<Key, Mutex>()
 
     override suspend fun start(project: ProjectIdentity, languageId: String): LanguageServerStatus = withContext(Dispatchers.IO) {
         val definition = LanguageServerRegistry.forLanguage(languageId)
@@ -57,53 +60,83 @@ class LanguageServerRuntimeAdapterImpl(
                 resolution.explanation ?: "This project is on a storage path that language servers cannot access. Move it to Android IDE storage or Android external storage for full access.",
             )
         val key = Key(project.id, definition.id)
-        processes[key]?.let { live ->
-            return@withContext when (val initialization = live.initialization) {
-                null -> unavailable(project, languageId, "${definition.id} is still starting")
-                else -> live.status.copy(
-                    available = initialization.successful,
-                    initialized = initialization.successful,
-                    supportedFeatures = initialization.features,
-                    explanation = if (initialization.successful) null else "${definition.id} failed LSP initialization",
-                )
-            }
-        }
-
-        runCatching {
-            val executable = packageInstaller.executablePath(definition.requiredExecutable)
-            if (!executable.canExecute()) throw IOException("Pinned language-server command is missing: ${executable.name}")
-            val command = listOf(executable.absolutePath) + definition.command.drop(1)
-            val process = ProcessBuilder(command)
-                .directory(cwd)
-                .apply {
-                    environment()["HOME"] = installer.home().absolutePath
-                    environment()["PREFIX"] = installer.prefix().absolutePath
-                    environment()["PATH"] = "${File(installer.prefix(), "lib/android-ide/bin").absolutePath}:${File(installer.prefix(), "bin").absolutePath}:/system/bin:/system/xbin"
-                    environment()["TERM"] = "xterm-256color"
-                    environment()["LANG"] = "C.UTF-8"
+        val startLock = startLocks.computeIfAbsent(key) { Mutex() }
+        startLock.lock()
+        try {
+            val existing = processes[key]?.takeIf { it.process.isAlive }
+            if (existing != null) {
+                val initialization = existing.initialization
+                    ?: withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { existing.initialized.await() }
+                return@withContext if (initialization == null) {
+                    unavailable(project, languageId, "${definition.id} initialization is still pending")
+                } else if (!initialization.successful) {
+                    unavailable(project, languageId, initialization.explanation ?: "${definition.id} failed LSP initialization")
+                } else {
+                    existing.status.copy(
+                        available = true,
+                        initialized = true,
+                        supportedFeatures = initialization.features,
+                        explanation = null,
+                    )
                 }
-                .start()
-            val status = LanguageServerStatus(definition.id, project.id, languageId, available = true)
-            val initializeId = nextRequestId.getAndIncrement()
-            val transport = LanguageServerProtocolTransport(process.inputStream, process.outputStream)
-            val live = LiveServer(process, transport, status, initializeId)
-            processes[key] = live
-            scope.launch { readMessages(key, transport) }
-            scope.launch { process.errorStream.bufferedReader().useLines { lines -> lines.forEach { /* server diagnostics stay out of stdout */ } } }
-            transport.write(initializeRequest(initializeId, project, cwd))
-
-            val initialization = withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { live.initialized.await() }
-            if (initialization == null || !initialization.successful) {
-                processes.remove(key)
-                runCatching { process.destroy() }
-                onUnavailable(project.id, definition.id, "${definition.id} did not complete LSP initialization")
-                return@runCatching unavailable(project, languageId, "${definition.id} did not complete LSP initialization")
             }
-            transport.write(initializedNotification())
-            status.copy(initialized = true, supportedFeatures = initialization.features)
-        }.getOrElse { error ->
             processes.remove(key)
-            unavailable(project, languageId, "Could not start ${definition.id}: ${error.message ?: "unknown error"}")
+
+            var process: Process? = null
+            try {
+                val executable = packageInstaller.executablePath(definition.requiredExecutable)
+                if (!executable.isFile) throw IOException("Pinned language-server entrypoint is missing: ${executable.absolutePath}")
+                val node = File(installer.prefix(), "bin/node")
+                if (!node.canExecute()) throw IOException("Termux Node executable is missing: ${node.absolutePath}")
+                val command = listOf(node.absolutePath, executable.absolutePath) + definition.command.drop(1)
+                val startedProcess = ProcessBuilder(command)
+                    .directory(cwd)
+                    .apply {
+                        environment()["HOME"] = installer.home().absolutePath
+                        environment()["PREFIX"] = installer.prefix().absolutePath
+                        environment()["PATH"] = "${File(installer.prefix(), "lib/android-ide/bin").absolutePath}:${File(installer.prefix(), "bin").absolutePath}:${executable.parentFile?.absolutePath.orEmpty()}:/system/bin:/system/xbin"
+                        environment()["TERM"] = "xterm-256color"
+                        environment()["LANG"] = "C.UTF-8"
+                    }
+                    .start()
+                process = startedProcess
+                val status = LanguageServerStatus(definition.id, project.id, languageId, available = false)
+                val initializeId = nextRequestId.getAndIncrement()
+                val transport = LanguageServerProtocolTransport(startedProcess.inputStream, startedProcess.outputStream)
+                val live = LiveServer(startedProcess, transport, status, initializeId)
+                processes[key] = live
+                scope.launch { readMessages(key, transport) }
+                scope.launch {
+                    startedProcess.errorStream.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            if (live.stderrLines.size >= MAX_STDERR_LINES) live.stderrLines.pollFirst()
+                            live.stderrLines.addLast(line.take(MAX_STDERR_LINE_LENGTH))
+                        }
+                    }
+                }
+                transport.write(initializeRequest(initializeId, project, cwd))
+
+                val initialization = withTimeoutOrNull(INITIALIZE_TIMEOUT_MS) { live.initialized.await() }
+                    ?: InitializationResult(false, emptySet(), "${definition.id} initialization timed out")
+                if (!initialization.successful) {
+                    processes.remove(key, live)
+                    runCatching { startedProcess.destroy() }
+                    val details = initialization.explanation ?: diagnostics(live)
+                    val explanation = details?.let { "${definition.id} failed LSP initialization: $it" }
+                        ?: "${definition.id} failed LSP initialization"
+                    onUnavailable(project.id, definition.id, explanation)
+                    unavailable(project, languageId, explanation)
+                } else {
+                    transport.write(initializedNotification())
+                    status.copy(available = true, initialized = true, supportedFeatures = initialization.features)
+                }
+            } catch (error: Exception) {
+                processes.remove(key)?.let { live -> runCatching { live.process.destroy() } }
+                process?.let { runCatching { it.destroy() } }
+                unavailable(project, languageId, "Could not start ${definition.id}: ${error.message ?: "unknown error"}")
+            }
+        } finally {
+            startLock.unlock()
         }
     }
 
@@ -126,16 +159,23 @@ class LanguageServerRuntimeAdapterImpl(
 
     override suspend fun stop(projectId: String, serverId: String): OperationReport {
         val key = Key(projectId, serverId)
-        val live = processes.remove(key) ?: return OperationReport(OperationOutcome.COMPLETE, "Language server already stopped")
-        runCatching {
-            if (live.initialized.isCompleted) {
-                val shutdownId = nextRequestId.getAndIncrement()
-                live.transport.write(request(shutdownId, "shutdown", JSONObject()))
-                live.transport.write(notification("exit", JSONObject()))
+        val startLock = startLocks.computeIfAbsent(key) { Mutex() }
+        startLock.lock()
+        try {
+            val live = processes.remove(key)
+                ?: return OperationReport(OperationOutcome.COMPLETE, "Language server already stopped")
+            runCatching {
+                if (live.initialized.isCompleted && live.initialization?.successful == true) {
+                    val shutdownId = nextRequestId.getAndIncrement()
+                    live.transport.write(request(shutdownId, "shutdown", JSONObject()))
+                    live.transport.write(notification("exit", JSONObject()))
+                }
+                live.process.destroy()
             }
-            live.process.destroy()
+            return OperationReport(OperationOutcome.COMPLETE, "Language server stopped")
+        } finally {
+            startLock.unlock()
         }
-        return OperationReport(OperationOutcome.COMPLETE, "Language server stopped")
     }
 
     override suspend fun status(projectId: String): List<LanguageServerStatus> =
@@ -172,9 +212,12 @@ class LanguageServerRuntimeAdapterImpl(
                         val successful = !json.has("error")
                         val features = if (successful) serverFeatures(json.optJSONObject("result")?.optJSONObject("capabilities"))
                         else emptySet()
+                        val errorMessage = json.optJSONObject("error")?.optString("message")
+                            ?.takeIf { it.isNotBlank() }
+                        val initialization = InitializationResult(successful, features, errorMessage)
                         live.status = live.status.copy(initialized = successful, supportedFeatures = features)
-                        live.initialization = InitializationResult(successful, features)
-                        live.initialized.complete(InitializationResult(successful, features))
+                        live.initialization = initialization
+                        live.initialized.complete(initialization)
                         // initialize is an Android IDE transport concern. It is
                         // not a Monaco request and must never be correlated by
                         // the editor's JSON-RPC pending-request table.
@@ -186,6 +229,17 @@ class LanguageServerRuntimeAdapterImpl(
         } finally {
             val removed = processes.remove(key)
             if (removed != null) {
+                if (removed.initialization == null) {
+                    val exitCode = runCatching { removed.process.exitValue() }.getOrNull()
+                    val reason = buildString {
+                        append("Language server exited before initialization completed")
+                        if (exitCode != null) append(" (exit code $exitCode)")
+                        diagnostics(removed)?.let { append(": ").append(it) }
+                    }
+                    val failure = InitializationResult(false, emptySet(), reason)
+                    removed.initialization = failure
+                    removed.initialized.complete(failure)
+                }
                 val explanation = if (removed.initialization?.successful == true) {
                     "Language server process exited unexpectedly"
                 } else {
@@ -236,6 +290,7 @@ class LanguageServerRuntimeAdapterImpl(
                     put("references", JSONObject().put("dynamicRegistration", true))
                     put("rename", JSONObject())
                     put("formatting", JSONObject())
+                    put("rangeFormatting", JSONObject())
                     put("codeAction", JSONObject())
                     put("documentSymbol", JSONObject().put("dynamicRegistration", true))
                     put("semanticTokens", JSONObject().put("dynamicRegistration", true).put("requests", JSONObject().put("range", true).put("full", true)).put("tokenTypes", org.json.JSONArray()).put("tokenModifiers", org.json.JSONArray()))
@@ -315,10 +370,14 @@ class LanguageServerRuntimeAdapterImpl(
     private fun unavailableReport(message: String) =
         OperationReport(OperationOutcome.BLOCKED, message, ErrorCategory.UNAVAILABLE_RUNTIME)
 
+    private fun diagnostics(live: LiveServer): String? =
+        live.stderrLines.toList().takeLast(8).joinToString(" | ").takeIf { it.isNotBlank() }
+
     private data class Key(val projectId: String, val serverId: String)
     private data class InitializationResult(
         val successful: Boolean,
         val features: Set<LanguageServerFeature>,
+        val explanation: String? = null,
     )
     private data class LiveServer(
         val process: Process,
@@ -327,9 +386,13 @@ class LanguageServerRuntimeAdapterImpl(
         val initializeId: Int,
         val initialized: CompletableDeferred<InitializationResult> = CompletableDeferred(),
         @Volatile var initialization: InitializationResult? = null,
-    )
+    ) {
+        val stderrLines = ConcurrentLinkedDeque<String>()
+    }
 
     private companion object {
         const val INITIALIZE_TIMEOUT_MS = 10_000L
+        const val MAX_STDERR_LINES = 32
+        const val MAX_STDERR_LINE_LENGTH = 500
     }
 }

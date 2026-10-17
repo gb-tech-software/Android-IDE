@@ -308,10 +308,10 @@ internal object NativeWebsitePromptHost {
         val adapter = NativeChoiceAdapter(context, prompt.choices, selected, mode == BrowserChoiceMode.MULTIPLE)
         list.adapter = adapter
         val builder = AlertDialog.Builder(context).setView(content)
-        if (mode != BrowserChoiceMode.MENU) {
+        if (mode == BrowserChoiceMode.MULTIPLE) {
             prompt.title?.let { builder.setTitle(it) }
             builder.setNegativeButton("Cancel", null)
-                .setPositiveButton(if (mode == BrowserChoiceMode.MULTIPLE) "OK" else "OK") { _, _ ->
+                .setPositiveButton("OK") { _, _ ->
                     finish(BrowserWebsitePromptAnswer(accepted = true, selectedIds = selected.toList()))
                 }
         }
@@ -319,7 +319,7 @@ internal object NativeWebsitePromptHost {
         list.setOnItemClickListener { _, _, position, _ ->
             val choice = prompt.choices[position]
             if (choice.separator || choice.group || choice.disabled) return@setOnItemClickListener
-            if (mode == BrowserChoiceMode.MENU) {
+            if (mode == BrowserChoiceMode.MENU || mode == BrowserChoiceMode.SINGLE) {
                 selected.clear()
                 selected.add(choice.id)
                 finish(BrowserWebsitePromptAnswer(accepted = true, selectedIds = selected.toList()))

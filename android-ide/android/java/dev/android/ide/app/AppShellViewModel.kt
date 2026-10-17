@@ -742,6 +742,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun exit(onComplete: () -> Unit) {
         viewModelScope.launch {
+            services.projectLiveServer.stop()
             terminalRuntime.shutdown()
             lifecycle.onExplicitExit()
             onComplete()

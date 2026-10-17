@@ -552,9 +552,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun cancelDownload(downloadId: String): Boolean = downloadService.cancel(downloadId)
 
     /** Retry starts a fresh request in a new tab; an interrupted body is never resumed. */
-    fun retryDownload(downloadId: String) {
-        val source = downloadService.prepareRetry(downloadId) ?: return
+    fun retryDownload(downloadId: String): Boolean {
+        val source = downloadService.prepareRetry(downloadId) ?: return false
         openUrlInNewTab(source)
+        return true
     }
 
     /** Returns an ACTION_VIEW intent only for a file that is currently present. */

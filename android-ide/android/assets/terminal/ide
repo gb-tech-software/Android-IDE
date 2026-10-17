@@ -1,108 +1,166 @@
 #!/system/bin/sh
-# Android IDE first-party app-control CLI.
-# This file is packaged into the private Termux runtime by the app.
+# Android IDE first-party application-control CLI.
+# This package is bundled in the private Termux runtime; operations run only on user command.
 set -f
 
-IDE_TOOLS_VERSION=1.0.0
+IDE_TOOLS_VERSION=2.0.1
 IDE_PACKAGE="${IDE_PACKAGE:-com.termux}"
 IDE_RECEIPT_DIRECTORY="${IDE_RECEIPT_DIRECTORY:-${PREFIX:-/data/data/com.termux/files/usr}/../browser-navigation-receipts}"
-IDE_LOG_TAG="${IDE_LOG_TAG:-AndroidIde}"
+IDE_TOOLS_RECEIPT_DIRECTORY="${IDE_TOOLS_RECEIPT_DIRECTORY:-${PREFIX:-/data/data/com.termux/files/usr}/../ide-tools-receipts}"
+IDE_TOOLS_AUTH_TOKEN_CACHE="${IDE_TOOLS_AUTH_TOKEN:-}"
+unset IDE_TOOLS_AUTH_TOKEN
 JSON=false
 
 usage() {
     cat <<'USAGE'
-Usage: ide COMMAND [SUBCOMMAND] [OPTIONS]
+Usage: ide DOMAIN COMMAND [ARGUMENTS|OPTIONS] [INPUT...]
+       ide [--json] help [DOMAIN [COMMAND]]
 
-Android IDE inspection, testing, and app-control tools.
+Android IDE application-control and workspace tools. Commands perform real
+operations; package installation/removal is never automatic. Every domain has
+help, status, and test commands; use `ide help DOMAIN` for domain-specific help.
 
-Commands:
-  open [--current|--new-tab] URL       Open a URL; defaults to a new tab
-  browser open URL [OPTIONS]            Open a URL in Android IDE Browser
-  browser status [--json]               Show browser bridge status
-  browser tabs [--json]                 Inspect browser tab capability
-  browser permissions [--json]          Inspect permission capability
-  browser reload                        Reload the selected browser tab
-  browser clear-data --confirm          Clear browser history and downloads
-  editor status [--json]                Show editor bridge status
-  editor reload FILE                    Validate and request a project file reload
-  editor diagnostics [--json]           Show editor diagnostic capability
-  terminal status [--json]              Show terminal runtime status
-  terminal storage                      Request Android shared-storage setup
-  terminal doctor [--json]              Check terminal runtime health
-  app status [--json]                   Show app-control capabilities
-  app doctor [--json]                   Run non-destructive health checks
-  app logs [--lines N]                  Show recent Android IDE log lines
-  test NAME                             Run one safe integration/preflight check
-  test all                              Run every safe check
+Top-level:
+  ide help [DOMAIN [COMMAND]]
+  ide init [--manager pkg|apt] [--skip-storage] [--skip-packages]
+  ide status [--json]
+  ide test TARGET [--json]
 
-Tests:
-  browser-navigation  browser command and receipt bridge
-  browser-tabs        tab-inspection capability contract
-  browser-receipts    request-id and receipt-directory contract
-  editor-reopen       editor reload capability contract
-  terminal-storage    storage helper contract
-  terminal-renderer   shell and terminal environment contract
-  terminal            terminal-storage and terminal-renderer
-  all                 all safe checks
+Domains:
+  app       status|test|doctor|logs
+  terminal  status|test|sessions|storage
+  storage   status|test|setup|rebuild
+  browser   status|test|open|reload|back|forward|stop|tabs|downloads
+  editor    status|test|refresh|tabs|open|save|format
+  preview   status|test|start|stop
+  projects  status|test|list|open|close|create|import|rename|duplicate|relocate|unregister|delete|export
+  files     status|test|list|read|write|create|rename|copy|move|delete
+  search    status|test|files|content
+  tools     status|test|install|remove
 
-Options:
-  --json              Emit machine-readable JSON where supported
-  -h, --help          Show help
-  -v, --version       Show package version
+Package installation defaults: npm, global. `tools install web-preview`
+installs the npm `live-server` package globally; `tools install package PKG`
+manages other npm packages. `preview start` only starts the already-installed
+Live Server package in the active project at localhost:7468.
+`init` installs base terminal utilities only when explicitly invoked.
 
-Exit codes:
-  0 all checks or operations passed
-  1 operation/check failed
-  2 invalid command or arguments
-  3 capability unavailable
-  4 permission required
+Use `ide help DOMAIN` or `ide DOMAIN help` for exact arguments and safety
+requirements. `--json` emits JSON Lines for status and test results.
+Exit codes: 0 success, 1 operation failed, 2 invalid usage, 3 unavailable,
+4 permission/setup or explicit confirmation required.
 USAGE
 }
 
-error() {
-    printf 'ide: error: %s\n\n' "$*" >&2
-    usage >&2
-    exit 2
+domain_help() {
+    domain=${1:-}; command_name=${2:-}
+    if [ -n "$command_name" ]; then
+        case "$domain:$command_name" in
+            browser:open) printf 'Usage: ide browser open [--new-tab|--current-tab] -u URL\nOpens a validated HTTP(S) URL in Android IDE Browser.\n';;
+            projects:delete) printf 'Usage: ide projects delete PROJECT_ID --confirm PROJECT_ID [--dirty save|discard]\nPermanently deletes the registered project after service postcondition checks; dirty active-project buffers require an explicit policy.\n';;
+            projects:unregister) printf 'Usage: ide projects unregister PROJECT_ID --confirm PROJECT_ID\nRemoves the registry entry (and app-owned project metadata where permitted); does not delete project files.\n';;
+            files:write) printf 'Usage: ide files write PROJECT_RELATIVE_PATH --stdin\nWrites stdin bytes to an existing file (maximum 36 KB) and verifies the stored bytes; close its editor tab first.\n';;
+            files:delete) printf 'Usage: ide files delete PROJECT_RELATIVE_PATH --confirm PROJECT_RELATIVE_PATH\nDeletes only after exact path confirmation and verified absence; close affected editor tabs first.\n';;
+            files:read) printf 'Usage: ide files read PROJECT_RELATIVE_PATH\nReads up to 36 KB; normal mode writes exact bytes to stdout, --json includes dataBase64.\n';;
+            projects:open) printf 'Usage: ide projects open PROJECT_ID [--dirty save|discard|cancel]\nOpens a registered project; unsaved active editor buffers require an explicit policy.\n';;
+            projects:create) printf 'Usage: ide projects create --parent STORAGE_URI --name NAME [--description TEXT]\nCreates/registers a project through the project acquisition workflow.\n';;
+            projects:import-folder) printf 'Usage: ide projects import-folder PROJECT_URI [--name NAME] [--description TEXT]\nRegisters an existing folder without copying its contents.\n';;
+            projects:import-zip) printf 'Usage: ide projects import-zip ARCHIVE_URI PARENT_URI NAME [DESCRIPTION]\nImports a ZIP through the project acquisition workflow.\n';;
+            projects:rename) printf 'Usage: ide projects rename PROJECT_ID NAME [--dirty save|discard]\nRenames a registered project; an active workspace is reset after success.\n';;
+            projects:duplicate) printf 'Usage: ide projects duplicate PROJECT_ID --parent STORAGE_URI --name NAME [--description TEXT]\nCopies project data into a new registered project.\n';;
+            projects:relocate) printf 'Usage: ide projects relocate PROJECT_ID --parent STORAGE_URI --name NAME [--dirty save|discard]\nRelocates a project; an active workspace is reset after success.\n';;
+            projects:export) printf 'Usage: ide projects export PROJECT_ID --to DESTINATION_URI\nExports the project through the project mutation workflow.\n';;
+            projects:close) printf 'Usage: ide projects close [--dirty save|discard]\nCloses the active editor workspace and stops project-scoped preview, LSP, search, tabs, and terminal sessions.\n';;
+            files:list) printf 'Usage: ide files list [PROJECT_RELATIVE_DIRECTORY]\nLists the active project root or a bounded subdirectory.\n';;
+            files:create|files:mkdir) printf 'Usage: ide files %s PROJECT_RELATIVE_PATH\nCreates an empty file or directory; parent directories must already exist.\n' "$command_name";;
+            files:rename) printf 'Usage: ide files rename PROJECT_RELATIVE_PATH NEW_NAME\nRenames one project-relative item; close affected editor tabs first.\n';;
+            files:copy|files:move) printf 'Usage: ide files %s SOURCE_PATH DESTINATION_DIRECTORY\nCopies/moves an item within the active project; move requires affected tabs to be closed.\n' "$command_name";;
+            search:files|search:content) printf 'Usage: ide search %s QUERY [--regex] [--case-sensitive] [--whole-word]\nSearches only the active project; large scans report whether results were capped.\n' "$command_name";;
+            browser:test) printf 'Usage: ide browser test [--all|--tabs|--downloads|--permissions]\nChecks browser engine capabilities and the selected subsystem state.\n';;
+            browser:status) printf 'Usage: ide browser status\nReports tab selection, navigation, download count, pending permission prompt, and current error state.\n';;
+            browser:reload|browser:back|browser:forward|browser:stop) printf 'Usage: ide browser %s\nControls navigation in the selected browser tab; back/forward/stop fail if the action is unavailable.\n' "$command_name";;
+            editor:status) printf 'Usage: ide editor status\nReports editor bridge readiness, active project, selected tab, and tab count.\n';;
+            editor:test) printf 'Usage: ide editor test\nChecks active workspace availability and Monaco bridge readiness.\n';;
+            editor:refresh) printf 'Usage: ide editor refresh\nRefreshes the active project file tree.\n';;
+            editor:save) printf 'Usage: ide editor save [TAB_ID]\nSaves the selected tab or the requested tab and waits for the save result.\n';;
+            editor:save-all) printf 'Usage: ide editor save-all\nSaves all dirty editor tabs and reports any failed save.\n';;
+            preview:status) printf 'Usage: ide preview status\nReports whether the IDE-managed Live Server is running and its project root/URL.\n';;
+            preview:test) printf 'Usage: ide preview test\nChecks the running IDE-managed Live Server with a localhost HTTP probe.\n';;
+            preview:start) printf 'Usage: ide preview start\nStarts the already-installed global Live Server for the active local project at localhost:7468; it never installs packages.\n';;
+            preview:stop) printf 'Usage: ide preview stop\nStops the IDE-managed Live Server process.\n';;
+            terminal:status) printf 'Usage: ide terminal status\nReports shell/PTY availability and terminal session counts.\n';;
+            terminal:test|terminal:doctor) printf 'Usage: ide terminal %s\nCreates and closes a temporary PTY session to verify the terminal runtime.\n' "$command_name";;
+            terminal:storage) printf 'Usage: ide terminal storage\nRuns Termux shared-storage setup and may request Android permission.\n';;
+            storage:status) printf 'Usage: ide storage status\nInspects the standard Termux shared-storage links without changing them.\n';;
+            storage:test) printf 'Usage: ide storage test\nChecks shell availability and whether all standard shared-storage links exist.\n';;
+            tools:status) printf 'Usage: ide tools status [lsp|web-preview|package PACKAGE|base]\nReports app-managed LSP state, Live Server presence, base tools, or a named npm package.\n';;
+            tools:test) printf 'Usage: ide tools test\nChecks the terminal runtime and required base executables; optional LSP/preview packages are reported separately.\n';;
+            projects:status|projects:test|projects:list) printf 'Usage: ide projects %s\nReports active/registered project state and verifies readable storage for the health test.\n' "$command_name";;
+            files:status|files:test) printf 'Usage: ide files %s\nReports or verifies active-project file-service access.\n' "$command_name";;
+            search:status|search:test) printf 'Usage: ide search %s\nReports or verifies bounded active-project filename/content search access.\n' "$command_name";;
+            app:status) printf 'Usage: ide app status\nReports authenticated bridge, terminal shell/PTY, and preview service state.\n';;
+            app:test|app:doctor) printf 'Usage: ide app %s\nRuns the app/runtime health check; doctor runs the complete integration test set.\n' "$command_name";;
+            app:logs) printf 'Usage: ide app logs [--lines N]\nReads the most recent Android IDE logcat lines.\n';;
+            init:status) printf 'Usage: ide init status\nReports terminal package paths plus app/runtime status without installing anything.\n';;
+            init:test) printf 'Usage: ide init test\nRuns all app/runtime integration checks without installing packages.\n';;
+            test:all) printf 'Usage: ide test all [--json]\nRuns app, browser, editor, file/search, preview, project, storage, terminal, and tools health checks.\n';;
+            browser:tabs) printf 'Usage: ide browser tabs list|select TAB_ID|close TAB_ID\n';;
+            browser:downloads) printf 'Usage: ide browser downloads list|open [DOWNLOAD_ID]|pause|resume|cancel|retry|delete DOWNLOAD_ID\n';;
+            editor:tabs) printf 'Usage: ide editor tabs list|select TAB_ID|close TAB_ID [--dirty save|discard]\n';;
+            editor:open) printf 'Usage: ide editor open DOCUMENT_URI\nOpens a document URI already inside the active project.\n';;
+            editor:format) printf 'Usage: ide editor format [TAB_ID]\nDispatches Monaco formatDocument only when an installed language server advertises formatting support.\n';;
+            terminal:sessions) printf 'Usage: ide terminal sessions list|close SESSION_ID\n';;
+            storage:setup|storage:rebuild) printf 'Usage: ide storage %s\nInvokes Termux shared-storage setup and may request Android permission.\n' "$command_name";;
+            tools:package) printf 'Usage: ide tools install|status|remove package PACKAGE [--manager npm|pnpm] [--global|--local]\nDefaults to npm global; local operations use the current terminal directory.\n';;
+            tools:install|tools:remove) printf 'Usage: ide tools %s lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\nLSP is app-managed and pinned; web-preview manages live-server; package manages any valid npm package name.\n' "$command_name";;
+            *) domain_help "$domain"; return 2;;
+        esac
+        return 0
+    fi
+    case "$domain" in
+        status) printf 'Usage: ide status [--json]\nReports installed terminal tools plus authenticated app, terminal, and preview state.\n';;
+        test) printf 'Usage: ide test TARGET [--json]\nTARGET: all|app|browser|editor|files|preview|projects|search|storage|terminal|tools.\n';;
+        init) printf 'Usage: ide init [--manager pkg|apt] [--skip-storage] [--skip-packages]\n       ide init status|test|help\nBootstrap installs only the listed base packages when explicitly requested; test runs app/runtime health checks.\n';;
+        app) printf 'Usage: ide app status|test|doctor|logs [--lines N]\nstatus reports app/terminal/preview state; test probes app bridge and runtime capabilities.\n';;
+        terminal) printf 'Usage: ide terminal status|test|sessions list|close SESSION_ID|storage\nstatus reports runtime and session state; test starts and closes a temporary PTY.\n';;
+        storage) printf 'Usage: ide storage status|test|setup|rebuild\nsetup/rebuild invoke Termux storage setup and the Android permission flow; status/test inspect ~/storage links.\n';;
+        browser) printf 'Usage: ide browser status|test|open|reload|back|forward|stop|tabs [list|select|close]|downloads [list|open|cancel|pause|resume|retry|delete]\n';;
+        editor) printf 'Usage: ide editor status|test|refresh|tabs [list|select|close]|open DOCUMENT_URI|save [TAB_ID]|save-all|format [TAB_ID]\n';;
+        preview) printf 'Usage: ide preview status|test|start|stop\ntest requires the IDE-managed Live Server to be running and checks its HTTP response.\n';;
+        projects) printf 'Usage: ide projects status|test|list|open ID [--dirty save|discard|cancel]|close [--dirty save|discard]|create|import-folder|import-zip|rename|duplicate|relocate|unregister|delete|export\nLocations are provider URIs/paths. Destructive removals require exact --confirm PROJECT_ID.\n';;
+        files) printf 'Usage: ide files status|test|list [PATH]|read PATH|write PATH --stdin|create PATH|mkdir PATH|rename PATH NEW_NAME|copy PATH DEST_DIR|move PATH DEST_DIR|delete PATH --confirm PATH\nPaths are relative to the active project root; writes require confirmed local access, and destructive changes reject open editor tabs.\n';;
+        search) printf 'Usage: ide search status|test|files QUERY|content QUERY [--regex] [--case-sensitive] [--whole-word]\nSearch is scoped to the active project.\n';;
+        tools) printf 'Usage: ide tools status|test|install|remove lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\n       ide tools status base\nInstall/remove are explicit; LSP is pinned and app-managed; generic packages default to npm global.\n';;
+        *) usage >&2; return 2;;
+    esac
 }
+
+usage_error() { printf 'ide: error: %s\n' "$*" >&2; usage >&2; exit 2; }
+fail() { printf 'ide: %s\n' "$*" >&2; return 1; }
 
 json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]//g'
+    printf '%s' "$1" | awk '
+        {
+            if (NR > 1) printf "\\n"
+            gsub(/\\/, "\\\\")
+            gsub(/"/, "\\\"")
+            for (n = 1; n < 32; n++) {
+                if (n == 9 || n == 10 || n == 13) continue
+                gsub(sprintf("%c", n), sprintf("\\u%04x", n))
+            }
+            gsub(/\t/, "\\t")
+            gsub(/\r/, "\\r")
+            printf "%s", $0
+        }
+    '
 }
 
-emit_status() {
-    key=$1
-    value=$2
-    message=${3:-}
-    if [ "$JSON" = true ]; then
-        printf '{"command":"%s","status":"%s","message":"%s"}\n' \
-            "$(json_escape "$key")" "$(json_escape "$value")" "$(json_escape "$message")"
-    else
-        printf '%s\n' "$message"
-    fi
-}
-
-parse_json_flag() {
-    case "${1:-}" in
-        --json) JSON=true; return 0 ;;
-    esac
-    return 1
-}
-
-normalise_url() {
-    URL=$1
-    case "$URL" in
-        localhost:*|127.0.0.1:*) URL="http://$URL" ;;
-        *://*) : ;;
-        *.*|www.*) URL="https://$URL" ;;
-    esac
-    case "$URL" in
-        http://*|https://*) ;;
-        *) return 1 ;;
-    esac
-    case "$URL" in
-        http://*.*|https://*.*|http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*) return 0 ;;
-        *) return 1 ;;
-    esac
+json_array() {
+    result='['; separator=''
+    for value do
+        result="$result$separator\"$(json_escape "$value")\""
+        separator=,
+    done
+    printf '%s]' "$result"
 }
 
 request_id() {
@@ -111,247 +169,626 @@ request_id() {
     printf '%s' "$id"
 }
 
-browser_open() {
-    new_tab=true
-    while [ "$#" -gt 0 ]; do
-        case "$1" in
-            --new-tab) new_tab=true; shift ;;
-            --current) new_tab=false; shift ;;
-            --json) JSON=true; shift ;;
-            -h|--help)
-                printf 'Usage: ide browser open [--new-tab|--current] URL\n'
-                return 0
-                ;;
-            --*) error "unknown option: $1" ;;
-            -*) error "invalid option: $1" ;;
-            *) break ;;
-        esac
+app_request() {
+    command_name=$1
+    target=${2:-}
+    wait_limit=${3:-45}
+    payload=${4:-[]}
+    case "$wait_limit" in ''|*[!0-9]*) usage_error 'invalid internal command timeout' ;; esac
+    request=$(request_id)
+    result_file="$IDE_TOOLS_RECEIPT_DIRECTORY/$request.result"
+    output_file="${TMPDIR:-/tmp}/android-ide-tools-$request.log"
+    [ -n "$IDE_TOOLS_AUTH_TOKEN_CACHE" ] || { printf 'ide: app command bridge token is unavailable; initialize the terminal runtime first\n' >&2; return 4; }
+    mkdir -p "$IDE_TOOLS_RECEIPT_DIRECTORY" || { printf 'ide: cannot access the app command receipt directory\n' >&2; return 1; }
+    rm -f "$result_file"
+    if [ -n "$target" ]; then
+        case "$target" in *[!A-Za-z0-9._-]*) printf 'ide: invalid command target\n' >&2; return 2 ;; esac
+        am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" \
+            -a 'dev.android.ide.action.IDE_TOOLS_COMMAND' \
+            --es 'dev.android.ide.extra.IDE_TOOLS_COMMAND' "$command_name" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_REQUEST_ID' "$request" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_AUTH_TOKEN' "$IDE_TOOLS_AUTH_TOKEN_CACHE" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_TARGET' "$target" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_PAYLOAD' "$payload" >"$output_file" 2>&1
+    else
+        am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" \
+            -a 'dev.android.ide.action.IDE_TOOLS_COMMAND' \
+            --es 'dev.android.ide.extra.IDE_TOOLS_COMMAND' "$command_name" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_REQUEST_ID' "$request" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_AUTH_TOKEN' "$IDE_TOOLS_AUTH_TOKEN_CACHE" \
+            --es 'dev.android.ide.extra.IDE_TOOLS_PAYLOAD' "$payload" >"$output_file" 2>&1
+    fi
+    result=$?
+    if [ "$result" -ne 0 ]; then
+        [ ! -s "$output_file" ] || cat "$output_file" >&2
+        rm -f "$output_file"
+        return "$result"
+    fi
+    attempt=0
+    while [ "$attempt" -lt "$wait_limit" ]; do
+        if [ -f "$result_file" ]; then
+            exec 3<"$result_file"
+            IFS= read -r result_code <&3
+            IFS= read -r result_message <&3
+            IFS= read -r result_data <&3 || result_data=''
+            exec 3<&-
+            rm -f "$result_file" "$output_file"
+            if [ "$JSON" = true ]; then
+                if [ "$command_name" = files.read ]; then
+                    printf '{"command":"%s","status":%s,"message":"%s","dataBase64":"%s"}\n' \
+                        "$(json_escape "$command_name")" "${result_code:-1}" "$(json_escape "${result_message:-no result message}")" "$result_data"
+                else
+                    printf '{"command":"%s","status":%s,"message":"%s"}\n' \
+                        "$(json_escape "$command_name")" "${result_code:-1}" "$(json_escape "${result_message:-no result message}")"
+                fi
+            elif [ "$command_name" = files.read ] && [ "${result_code:-1}" -eq 0 ]; then
+                decoded_file="${TMPDIR:-/tmp}/android-ide-tools-$request.data"
+                if printf '%s' "$result_data" | base64 -d >"$decoded_file"; then cat "$decoded_file"; else rm -f "$decoded_file"; return 1; fi
+                rm -f "$decoded_file"
+            else
+                printf '%s\n' "${result_message:-no result message}"
+            fi
+            case "$result_code" in 0|1|2|3|4) return "$result_code" ;; *) return 1 ;; esac
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
     done
-    [ "$#" -eq 1 ] || error 'browser open requires exactly one URL'
-    normalise_url "$1" || error "invalid URL '$1'; use http://, https://, localhost:PORT, or 127.0.0.1:PORT"
+    rm -f "$output_file"
+    printf 'ide: Android IDE did not complete %s (request %s) within %s seconds\n' "$command_name" "$request" "$wait_limit" >&2
+    return 1
+}
+
+app_request_args() {
+    command_name=$1; target=${2:-}; wait_limit=${3:-45}
+    [ "$#" -ge 3 ] || usage_error 'internal command argument list is malformed'
+    shift 3
+    payload=$(json_array "$@") || return 1
+    app_request "$command_name" "$target" "$wait_limit" "$payload"
+}
+
+normalize_url() {
+    URL=$1
+    case "$URL" in
+        localhost:*|127.0.0.1:*) URL="http://$URL" ;;
+        *://*) : ;;
+        *.*|www.*) URL="https://$URL" ;;
+    esac
+    case "$URL" in
+        http://*|https://*) : ;;
+        *) return 1 ;;
+    esac
+    case "$URL" in
+        http://*.*|https://*.*|http://localhost*|https://localhost*|http://127.0.0.1*|https://127.0.0.1*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+browser_open() {
+    mode=new-tab
+    if [ "$1" = --current-tab ]; then mode=current-tab; shift
+    elif [ "$1" = --new-tab ]; then shift
+    fi
+    [ "$1" = -u ] || usage_error 'browser open requires -u URL'
+    shift
+    [ "$#" -eq 1 ] || usage_error 'browser open requires exactly one URL after -u'
+    normalize_url "$1" || usage_error "invalid URL '$1'; use http://, https://, localhost:PORT, or 127.0.0.1:PORT"
     url=$URL
     id=$(request_id)
-    receipt_directory=${IDE_RECEIPT_DIRECTORY}
-    receipt="$receipt_directory/$id.status"
+    receipt="$IDE_RECEIPT_DIRECTORY/$id.status"
     output_file="${TMPDIR:-/tmp}/android-ide-open-url-$id.log"
-    if ! mkdir -p "$receipt_directory"; then
-        printf 'ide: unable to create request receipt directory: %s\n' "$receipt_directory" >&2
-        exit 1
-    fi
+    mkdir -p "$IDE_RECEIPT_DIRECTORY" || return 1
     rm -f "$receipt"
+    new_tab=true; [ "$mode" = new-tab ] || new_tab=false
     am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" \
         -a 'dev.android.ide.action.OPEN_URL_REQUEST' \
         --es 'dev.android.ide.extra.OPEN_URL' "$url" \
         --es 'dev.android.ide.extra.OPEN_URL_REQUEST_ID' "$id" \
         --ez 'dev.android.ide.extra.OPEN_URL_NEW_TAB' "$new_tab" >"$output_file" 2>&1
     result=$?
-    if [ "$result" -ne 0 ]; then
-        [ ! -s "$output_file" ] || cat "$output_file" >&2
-        rm -f "$output_file" "$receipt"
-        exit "$result"
-    fi
+    if [ "$result" -ne 0 ]; then [ ! -s "$output_file" ] || cat "$output_file" >&2; rm -f "$output_file" "$receipt"; return "$result"; fi
     attempt=0
-    while [ "$attempt" -lt 10 ]; do
+    while [ "$attempt" -lt 15 ]; do
         if [ -f "$receipt" ]; then
             status=$(cat "$receipt" 2>/dev/null)
+            rm -f "$output_file"
             case "$status" in
-                dispatched)
-                    rm -f "$output_file"
-                    mode=new-tab; [ "$new_tab" = true ] || mode=current-tab
-                    if [ "$JSON" = true ]; then
-                        printf '{"command":"browser.open","status":"dispatched","url":"%s","mode":"%s","request_id":"%s"}\n' "$(json_escape "$url")" "$mode" "$id"
-                    else
-                        printf 'Opened %s in Android IDE Browser (%s). Request %s was dispatched.\n' "$url" "$mode" "$id"
-                    fi
-                    return 0
-                    ;;
-                rejected)
-                    rm -f "$output_file"
-                    printf 'ide: Android IDE rejected the URL navigation request (request %s).\n' "$id" >&2
-                    return 1
-                    ;;
+                dispatched) [ "$JSON" = true ] && printf '{"command":"browser.open","status":"dispatched","url":"%s","mode":"%s"}\n' "$(json_escape "$url")" "$mode" || printf 'Opened %s in Android IDE Browser (%s).\n' "$url" "$mode"; return 0 ;;
+                rejected) printf 'ide: Android IDE rejected the URL request\n' >&2; return 1 ;;
             esac
         fi
-        sleep 1
-        attempt=$((attempt + 1))
+        sleep 1; attempt=$((attempt + 1))
     done
-    status=unconfirmed
-    [ ! -f "$receipt" ] || status=$(cat "$receipt" 2>/dev/null)
     rm -f "$output_file"
-    printf 'ide: URL request %s was not confirmed (status=%s).\n' "$id" "$status" >&2
+    printf 'ide: browser navigation was not confirmed (receipt=%s)\n' "$(cat "$receipt" 2>/dev/null)" >&2
     return 1
 }
 
-browser_status() {
-    message="bridge: available\nrequest protocol: intent + receipt confirmation\nreceipt directory: $IDE_RECEIPT_DIRECTORY"
-    if [ ! -d "$IDE_RECEIPT_DIRECTORY" ]; then message="$message\nreceipt directory state: not created until first request"; fi
+run_package_manager() {
+    manager=$1; shift
+    case "$manager" in
+        pkg) command -v pkg >/dev/null 2>&1 || { printf 'ide: pkg is unavailable\n' >&2; return 3; }; pkg "$@" ;;
+        apt) command -v apt >/dev/null 2>&1 || { printf 'ide: apt is unavailable\n' >&2; return 3; }; apt "$@" ;;
+        *) usage_error "unsupported system package manager '$manager' (use pkg or apt)" ;;
+    esac
+}
+
+storage_setup() {
+    helper=$(command -v termux-setup-storage 2>/dev/null)
+    [ -n "$helper" ] || { printf 'ide: termux-setup-storage is unavailable; initialize the terminal runtime first\n' >&2; return 3; }
+    "$helper"
+}
+
+init_command() {
+    manager=pkg; do_storage=true; do_packages=true
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --manager) [ "$#" -ge 2 ] || usage_error '--manager requires pkg or apt'; manager=$2; shift 2 ;;
+            --skip-storage) do_storage=false; shift ;;
+            --skip-packages) do_packages=false; shift ;;
+            -h|--help) printf 'Usage: ide init [--manager pkg|apt] [--skip-storage] [--skip-packages]\n'; return 0 ;;
+            *) usage_error "unknown init option '$1'" ;;
+        esac
+    done
+    case "$manager" in pkg|apt) :;; *) usage_error "unsupported system package manager '$manager' (use pkg or apt)";; esac
+    if [ "$do_storage" = false ] && [ "$do_packages" = false ]; then
+        usage_error 'init has no requested actions; use ide init status or ide init test for checks'
+    fi
+    if [ "$do_storage" = true ]; then
+        printf 'Setting up Android shared-storage links (Android may ask for permission)…\n'
+        storage_setup || { printf 'ide: storage setup did not complete\n' >&2; return 4; }
+    fi
+    if [ "$do_packages" = true ]; then
+        printf 'Updating the %s package index…\n' "$manager"
+        if [ "$manager" = pkg ]; then run_package_manager pkg update -y || return 1
+        else run_package_manager apt update || return 1; fi
+        printf 'Installing base packages: git, nodejs-lts, zip, unzip…\n'
+        if [ "$manager" = pkg ]; then run_package_manager pkg install -y git nodejs-lts zip unzip || return 1
+        else run_package_manager apt install -y git nodejs-lts zip unzip || return 1; fi
+        if command -v npm >/dev/null 2>&1; then
+            printf 'Installing pnpm globally with npm…\n'
+            npm install --global pnpm || return 1
+        else
+            printf 'ide: Node.js package installed but npm is unavailable\n' >&2
+            return 3
+        fi
+    fi
+    printf 'Android IDE terminal bootstrap completed. Optional tools such as Live Server and LSP packages are installed separately with `ide tools install`.\n'
+}
+
+status_command() {
     if [ "$JSON" = true ]; then
-        printf '{"command":"browser.status","bridge":"available","request_protocol":"intent+receipt","receipt_directory":"%s"}\n' "$(json_escape "$IDE_RECEIPT_DIRECTORY")"
+        printf '{"command":"status","tools":{"git":"%s","node":"%s","npm":"%s","pnpm":"%s","live_server":"%s","zip":"%s","unzip":"%s"}}\n' \
+            "$(json_escape "$(command -v git 2>/dev/null || printf missing)")" "$(json_escape "$(command -v node 2>/dev/null || printf missing)")" \
+            "$(json_escape "$(command -v npm 2>/dev/null || printf missing)")" "$(json_escape "$(command -v pnpm 2>/dev/null || printf missing)")" \
+            "$(json_escape "$(command -v live-server 2>/dev/null || printf missing)")" "$(json_escape "$(command -v zip 2>/dev/null || printf missing)")" \
+            "$(json_escape "$(command -v unzip 2>/dev/null || printf missing)")"
+        app_request app.status
     else
-        printf 'Android IDE Browser\n%s\n' "$message"
+        printf 'Android IDE terminal tools\n'
+        for tool in git node npm pnpm live-server zip unzip; do
+            path=$(command -v "$tool" 2>/dev/null) || path=missing
+            printf '  %-12s %s\n' "$tool" "$path"
+        done
+        app_request app.status || return $?
     fi
 }
 
-browser_tabs() {
-    message='Tab inspection requires the app tab-state bridge; URL dispatch is available.'
-    if [ "$JSON" = true ]; then printf '{"command":"browser.tabs","status":"unavailable","message":"%s"}\n' "$(json_escape "$message")"; else printf '%s\n' "$message"; fi
-    return 3
-}
-
-browser_permissions() {
-    message='Permission broker is app-owned; this command never grants permissions silently.'
-    if [ "$JSON" = true ]; then printf '{"command":"browser.permissions","status":"available","mutation":"user-confirmed-only","message":"%s"}\n' "$(json_escape "$message")"; else printf 'Android IDE Browser permissions\n  broker: available\n  policy: user-confirmed-only\n'; fi
-}
-
-browser_reload() {
-    am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" -a 'dev.android.ide.action.RELOAD_BROWSER' >/dev/null 2>&1 || return 1
-    printf 'Requested reload of the selected Android IDE Browser tab.\n'
-}
-
-browser_clear_data() {
-    confirmed=false
-    [ "${1:-}" = --confirm ] && confirmed=true
-    [ "$confirmed" = true ] || { printf 'ide: refusing destructive browser clear-data without --confirm.\n' >&2; return 4; }
-    am start -W -n "$IDE_PACKAGE/dev.android.ide.MainActivity" -a 'dev.android.ide.action.CLEAR_BROWSER_DATA' >/dev/null 2>&1 || return 1
-    printf 'Requested clearing Android IDE Browser history, downloads, and site data.\n'
-}
-
-terminal_status() {
-    shell_state=unavailable
-    [ -x "${PREFIX:-}/bin/sh" ] && shell_state=ready
-    if [ "$JSON" = true ]; then printf '{"command":"terminal.status","prefix":"%s","home":"%s","shell":"%s"}\n' "$(json_escape "${PREFIX:-unavailable}")" "$(json_escape "${HOME:-unavailable}")" "$shell_state"; else printf 'Android IDE Terminal\n  prefix: %s\n  home: %s\n  shell: %s\n' "${PREFIX:-unavailable}" "${HOME:-unavailable}" "$shell_state"; fi
-    [ "$shell_state" = ready ]
-}
-
-terminal_storage() {
-    command -v termux-setup-storage >/dev/null 2>&1 || { printf 'ide: termux-setup-storage is unavailable.\n' >&2; return 3; }
-    exec termux-setup-storage
-}
-
-terminal_doctor() {
-    failures=0
-    [ -x "${PREFIX:-}/bin/sh" ] || failures=$((failures + 1))
-    [ -x "${PREFIX:-}/bin/am" ] || command -v am >/dev/null 2>&1 || failures=$((failures + 1))
-    [ -n "${HOME:-}" ] || failures=$((failures + 1))
-    if [ "$JSON" = true ]; then printf '{"command":"terminal.doctor","status":"%s","failures":%s}\n' "$( [ "$failures" -eq 0 ] && printf ready || printf failed )" "$failures"; else printf 'Terminal doctor: %s (%s failed checks)\n' "$( [ "$failures" -eq 0 ] && printf PASS || printf FAIL )" "$failures"; fi
-    [ "$failures" -eq 0 ]
-}
-
-editor_status() {
-    message='Editor is app-owned; external file state is intentionally not exposed as private paths.'
-    if [ "$JSON" = true ]; then printf '{"command":"editor.status","bridge":"app-owned","external_file_state":"protected","message":"%s"}\n' "$(json_escape "$message")"; else printf 'Android IDE Editor\n  bridge: app-owned\n  external file state: protected\n'; fi
-}
-
-editor_reload() {
-    [ "$#" -eq 1 ] || error 'editor reload requires FILE'
-    file=$1
-    case "$file" in
-        /*|*..*) printf 'ide: editor path must be a project-relative path without traversal.\n' >&2; return 4 ;;
-    esac
-    [ -n "$file" ] || return 2
-    printf 'ide: editor reload is validated for project-relative path %s, but the app editor bridge does not expose external mutation.\n' "$file" >&2
-    return 3
-}
-
-editor_diagnostics() {
-    if [ "$JSON" = true ]; then printf '{"command":"editor.diagnostics","status":"available","bridge":"handshake-and-timeout"}\n'; else printf 'Editor diagnostics bridge: available\n  readiness: handshake-and-timeout\n'; fi
-}
-
-app_status() {
-    if [ "$JSON" = true ]; then printf '{"command":"app.status","package":"%s","version":"%s","browser":"available","terminal":"available","editor":"app-owned"}\n' "$(json_escape "$IDE_PACKAGE")" "$IDE_TOOLS_VERSION"; else printf 'Android IDE tools\n  package: android-ide-tools\n  version: %s\n  browser control: available\n  terminal runtime: available\n  editor state: app-owned\n'; fi
-}
-
-app_doctor() {
-    failures=0
-    [ -x "${PREFIX:-}/bin/sh" ] || failures=$((failures + 1))
-    [ -n "${IDE_PACKAGE:-}" ] || failures=$((failures + 1))
-    [ -n "${IDE_RECEIPT_DIRECTORY:-}" ] || failures=$((failures + 1))
-    status=PASS; [ "$failures" -eq 0 ] || status=FAIL
-    if [ "$JSON" = true ]; then printf '{"command":"app.doctor","status":"%s","failures":%s,"browser_bridge":"available","editor_bridge":"available"}\n' "$status" "$failures"; else printf 'Android IDE diagnostics\n  runtime: %s\n  browser bridge: available\n  editor bridge: available\n  failures: %s\n' "$status" "$failures"; fi
-    [ "$failures" -eq 0 ]
-}
-
-app_logs() {
-    lines=100
-    if [ "${1:-}" = --lines ]; then lines=${2:-100}; case "$lines" in *[!0-9]*|'') error '--lines requires a positive integer' ;; esac; fi
-    command -v logcat >/dev/null 2>&1 || { printf 'ide: logcat is unavailable.\n' >&2; return 3; }
-    logcat -d -t "$lines" -s "$IDE_LOG_TAG":V '*:S'
-}
-
-test_one() {
-    name=$1
-    case "$name" in
-        browser-navigation)
-            [ -n "$IDE_PACKAGE" ] && [ -n "$IDE_RECEIPT_DIRECTORY" ] && printf 'PASS browser-navigation: URL command and receipt bridge are installed\n' ;;
-        browser-tabs)
-            printf 'PASS browser-tabs: command contract is installed; live tab state remains app-owned\n' ;;
-        browser-receipts)
-            mkdir -p "$IDE_RECEIPT_DIRECTORY" || return 1
-            id=$(request_id); file="$IDE_RECEIPT_DIRECTORY/$id.status"; printf accepted >"$file"; [ "$(cat "$file")" = accepted ]; result=$?; rm -f "$file"; [ "$result" -eq 0 ] && printf 'PASS browser-receipts: request IDs and receipt writes are safe\n'; return "$result" ;;
-        editor-reopen)
-            printf 'PASS editor-reopen: protected project-relative reload contract is installed\n' ;;
-        terminal-storage)
-            command -v termux-setup-storage >/dev/null 2>&1 || return 3; printf 'PASS terminal-storage: storage helper is installed\n' ;;
-        terminal-renderer)
-            [ -n "${TERM:-}" ] && [ -n "${HOME:-}" ] || return 1; printf 'PASS terminal-renderer: shell environment is present\n' ;;
-        terminal) test_one terminal-storage && test_one terminal-renderer ;;
+test_command() {
+    target=$1
+    case "$target" in
+        help|-h|--help) domain_help test; return $? ;;
+        terminal) app_request terminal.test ;;
+        storage) app_request storage.test ;;
+        tools) app_request tools.test ;;
+        projects|project) app_request projects.test ;;
+        files) app_request files.test ;;
+        search) app_request search.test ;;
+        preview) app_request preview.test ;;
+        browser) app_request browser.test ;;
+        editor) app_request editor.test ;;
+        app) app_request app.test ;;
         all)
-            test_one browser-navigation && test_one browser-tabs && test_one browser-receipts && test_one editor-reopen && test_one terminal ;;
-        *) printf 'ide: unknown test %s\n' "$name" >&2; return 2 ;;
+            failures=0
+            for test_name in app terminal storage browser editor preview tools projects files search; do
+                test_command "$test_name" || failures=$((failures+1))
+            done
+            if [ "$JSON" = true ]; then
+                printf '{"command":"test.all","status":%s,"message":"%s integration check(s) failed"}\n' \
+                    "$([ "$failures" -eq 0 ] && printf 0 || printf 1)" "$failures"
+            fi
+            [ "$failures" -eq 0 ] || { [ "$JSON" = true ] || printf 'ide: %s integration check(s) failed\n' "$failures" >&2; return 1; } ;;
+        *) usage_error "unknown test '$target' (use all, app, browser, editor, files, preview, projects, search, storage, terminal, or tools)" ;;
+    esac
+}
+
+browser_command() {
+    [ "$#" -gt 0 ] || usage_error 'browser requires a command; use ide help browser'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help browser "${1:-}"; return $? ;;
+        status) [ "$#" -eq 0 ] || usage_error 'browser status accepts no arguments'; app_request browser.status ;;
+        test)
+            [ "$#" -le 1 ] || usage_error 'usage: ide browser test [--all|--tabs|--downloads|--permissions]'
+            case "${1:---all}" in --all) app_request browser.test;; --tabs) app_request browser.test.tabs;; --downloads) app_request browser.test.downloads;; --permissions) app_request browser.test.permissions;; *) usage_error 'usage: ide browser test [--all|--tabs|--downloads|--permissions]' ;; esac ;;
+        open)
+            mode=--new-tab
+            if [ "${1:-}" = --current-tab ]; then mode=--current-tab; shift
+            elif [ "${1:-}" = --new-tab ]; then shift; fi
+            [ "${1:-}" = -u ] || usage_error 'usage: ide browser open [--new-tab|--current-tab] -u URL'
+            browser_open "$mode" "$@" ;;
+        reload|back|forward|stop) [ "$#" -eq 0 ] || usage_error "browser $sub accepts no arguments"; app_request "browser.$sub" ;;
+        tabs)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide browser tabs list|select TAB_ID|close TAB_ID'
+            tab_action=$1; shift
+            case "$tab_action" in
+                list) [ "$#" -eq 0 ] || usage_error 'browser tabs list accepts no arguments'; app_request browser.tabs.list;;
+                select|close) [ "$#" -eq 1 ] || usage_error "browser tabs $tab_action requires exactly one TAB_ID"; app_request "browser.tabs.$tab_action" "$1";;
+                *) usage_error "unknown browser tabs command '$tab_action'";;
+            esac ;;
+        downloads)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide browser downloads list|open|pause|resume|cancel|retry|delete [DOWNLOAD_ID]'
+            case "$1" in
+                list|--list) [ "$#" -eq 1 ] || usage_error 'downloads list accepts no ID'; app_request browser.downloads.list ;;
+                open|--open) [ "$#" -le 2 ] || usage_error 'downloads open accepts at most one ID'; if [ "$#" -eq 2 ]; then app_request browser.downloads.open-file "$2"; else app_request browser.downloads.open; fi ;;
+                pause|resume|cancel|retry|delete) [ "$#" -eq 2 ] || usage_error "downloads $1 requires DOWNLOAD_ID"; app_request "browser.downloads.$1" "$2" ;;
+                *) usage_error "unknown downloads option '$1'" ;;
+            esac ;;
+        *) usage_error "unknown browser command '$sub'" ;;
+    esac
+}
+
+editor_command() {
+    [ "$#" -ge 1 ] || usage_error 'editor requires a command; use ide help editor'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help editor "${1:-}"; return $? ;;
+        status|test|refresh) [ "$#" -eq 0 ] || usage_error "editor $sub accepts no arguments"; app_request "editor.$sub" ;;
+        tabs)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide editor tabs list|select TAB_ID|close TAB_ID [--dirty save|discard]'
+            action=$1; shift
+            case "$action" in
+                list) [ "$#" -eq 0 ] || usage_error 'editor tabs list accepts no arguments'; app_request editor.tabs.list;;
+                select) [ "$#" -eq 1 ] || usage_error 'editor tabs select requires TAB_ID'; app_request editor.tabs.select "$1";;
+                close)
+                    [ "$#" -ge 1 ] || usage_error 'editor tabs close requires TAB_ID'
+                    id=$1; shift; dirty=''
+                    if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --dirty ] || usage_error 'usage: ide editor tabs close TAB_ID [--dirty save|discard]'; dirty=$2; fi
+                    case "$dirty" in ''|save|discard) :;; *) usage_error '--dirty must be save or discard';; esac
+                    app_request_args editor.tabs.close "$id" 45 "$dirty";;
+                *) usage_error "unknown editor tabs command '$action'";;
+            esac ;;
+        open) [ "$#" -eq 1 ] || usage_error 'usage: ide editor open DOCUMENT_URI'; app_request_args editor.open '' 30 "$1" ;;
+        save) [ "$#" -le 1 ] || usage_error 'usage: ide editor save [TAB_ID]'; app_request editor.save "${1:-}" 30 ;;
+        save-all) [ "$#" -eq 0 ] || usage_error 'editor save-all accepts no arguments'; app_request editor.save-all '' 30 ;;
+        format) [ "$#" -le 1 ] || usage_error 'usage: ide editor format [TAB_ID]'; app_request editor.format "${1:-}" 20 ;;
+        *) usage_error "unknown editor command '$sub'" ;;
+    esac
+}
+
+preview_command() {
+    [ "$#" -ge 1 ] || usage_error 'preview requires a command; use ide help preview'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help preview "${1:-}"; return $? ;;
+        start|status|test|stop) [ "$#" -eq 0 ] || usage_error "preview $sub accepts no arguments"; app_request "preview.$sub" ;;
+        *) usage_error "unknown preview command '$sub'" ;;
+    esac
+}
+
+tools_command() {
+    [ "$#" -ge 1 ] || usage_error 'tools requires a command; use ide help tools'
+    action=$1; shift
+    case "$action" in
+        help|-h|--help) domain_help tools "${1:-}"; return $? ;;
+        status|test) if [ "$#" -eq 0 ]; then app_request "tools.$action"; return $?; fi ;;
+    esac
+    [ "$#" -ge 1 ] || usage_error 'usage: ide tools install|status|remove lsp|web-preview|package PACKAGE [options]'
+    tool=$1; shift
+    package_name=''
+    if [ "$tool" = package ]; then
+        case "${1:-}" in -h|--help) domain_help tools package; return $? ;; esac
+        [ "$#" -ge 1 ] || usage_error "tools $action package requires a package name"
+        package_name=$1; shift
+        case "$package_name" in ''|-*|*[!A-Za-z0-9@._/-]*) usage_error "invalid npm package name '$package_name'";; esac
+        case "$package_name" in *..*|*/../*|*/..) usage_error "invalid npm package name '$package_name'";; esac
+    fi
+    manager=npm; scope=global
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --manager) [ "$#" -ge 2 ] || usage_error '--manager requires npm or pnpm'; manager=$2; shift 2 ;;
+            --global) scope=global; shift ;;
+            --local) scope=local; shift ;;
+            -h|--help) printf 'Usage: ide tools %s %s [--manager npm|pnpm] [--global|--local]\n' "$action" "$tool"; return 0 ;;
+            *) usage_error "unknown tools option '$1'" ;;
+        esac
+    done
+    case "$manager" in npm|pnpm) :;; *) usage_error "unsupported package manager '$manager' (use npm or pnpm)";; esac
+    case "$scope" in global|local) :;; *) usage_error "unsupported install scope '$scope'";; esac
+    case "$action:$tool" in
+        status:lsp|install:lsp|remove:lsp)
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'LSP tools use the app-managed pinned npm package set; manager/scope options apply to npm tool packages such as web-preview'
+            case "$action" in status) app_request tools.lsp.status ;; install) app_request tools.lsp.install '' 200 ;; remove) app_request tools.lsp.remove ;; esac ;;
+        status:web-preview|status:servers)
+            if [ "$scope" = local ]; then
+                executable="$PWD/node_modules/.bin/live-server"
+                [ -x "$executable" ] || { printf 'Live Server is not installed locally in %s\n' "$PWD"; return 3; }
+                printf 'Live Server local executable: %s\n' "$executable"
+            elif command -v live-server >/dev/null 2>&1; then
+                live-server --version 2>/dev/null || npm list --global live-server --depth=0
+            elif [ "$manager" = pnpm ] && command -v pnpm >/dev/null 2>&1; then
+                PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm list --global live-server
+            else
+                printf 'Live Server is not installed globally\n'; return 3
+            fi ;;
+        install:web-preview|install:servers)
+            case "$manager:$scope" in
+                npm:global) command -v npm >/dev/null 2>&1 || { printf 'ide: npm is unavailable; install Node.js first with ide init\n' >&2; return 3; }; npm install --global live-server ;;
+                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm install --save-dev live-server ;;
+                pnpm:global) command -v pnpm >/dev/null 2>&1 || { printf 'ide: pnpm is unavailable; run ide init or choose npm\n' >&2; return 3; }; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm add --global live-server ;;
+                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm add --save-dev live-server ;;
+                *) usage_error "unsupported package manager '$manager' (use npm or pnpm)" ;;
+            esac ;;
+        remove:web-preview|remove:servers)
+            case "$manager:$scope" in
+                npm:global) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --global live-server ;;
+                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --save-dev live-server ;;
+                pnpm:global) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm remove --global live-server ;;
+                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm remove --save-dev live-server ;;
+                *) usage_error "unsupported package manager '$manager' (use npm or pnpm)" ;;
+            esac ;;
+        status:package)
+            case "$manager:$scope" in
+                npm:global) command -v npm >/dev/null 2>&1 || return 3; npm list --global "$package_name" --depth=0 ;;
+                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm list "$package_name" --depth=0 ;;
+                pnpm:global) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm list --global "$package_name" ;;
+                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm list "$package_name" ;;
+            esac ;;
+        install:package)
+            case "$manager:$scope" in
+                npm:global) command -v npm >/dev/null 2>&1 || return 3; npm install --global "$package_name" ;;
+                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm install --save-dev "$package_name" ;;
+                pnpm:global) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm add --global "$package_name" ;;
+                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm add --save-dev "$package_name" ;;
+            esac ;;
+        remove:package)
+            case "$manager:$scope" in
+                npm:global) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --global "$package_name" ;;
+                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --save-dev "$package_name" ;;
+                pnpm:global) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm remove --global "$package_name" ;;
+                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm remove --save-dev "$package_name" ;;
+            esac ;;
+        install:base)
+            [ "$scope" = global ] || usage_error 'base package-manager setup installs pnpm globally; use `ide tools install web-preview --local` for project-local tools'
+            case "$manager" in npm) command -v npm >/dev/null 2>&1 || return 3; npm install --global pnpm ;;
+                pnpm) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm add --global pnpm ;;
+                *) usage_error "unsupported package manager '$manager'" ;; esac ;;
+        status:base)
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'base status does not use package-manager/scope options'
+            for tool in git node npm pnpm zip unzip; do path=$(command -v "$tool" 2>/dev/null) || path=missing; printf '%-10s %s\n' "$tool" "$path"; done ;;
+        *) usage_error "unsupported tools operation '$action $tool'" ;;
+    esac
+}
+
+files_command() {
+    [ "$#" -ge 1 ] || usage_error 'files requires a command; use ide help files'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help files "${1:-}"; return $? ;;
+        status|test) [ "$#" -eq 0 ] || usage_error "files $sub accepts no arguments"; app_request "files.$sub" ;;
+        list) [ "$#" -le 1 ] || usage_error 'usage: ide files list [PROJECT_RELATIVE_PATH]'; app_request_args files.list '' 45 "${1:-}" ;;
+        read) [ "$#" -eq 1 ] || usage_error 'usage: ide files read PROJECT_RELATIVE_PATH'; app_request_args files.read '' 45 "$1" ;;
+        write)
+            [ "$#" -eq 2 ] && [ "$2" = --stdin ] || usage_error 'usage: ide files write PROJECT_RELATIVE_PATH --stdin'
+            umask 077
+            token=$(request_id)
+            input_file="${TMPDIR:-/tmp}/android-ide-write-$token.bin"
+            encoded_file="${TMPDIR:-/tmp}/android-ide-write-$token.base64"
+            if ! cat >"$input_file"; then rm -f "$input_file" "$encoded_file"; return 1; fi
+            input_size=$(wc -c <"$input_file" | tr -d '[:space:]')
+            case "$input_size" in ''|*[!0-9]*) rm -f "$input_file"; printf 'ide: could not measure stdin size\n' >&2; return 1;; esac
+            if [ "$input_size" -gt 36000 ]; then rm -f "$input_file" "$encoded_file"; printf 'ide: stdin exceeds the 36 KB write limit\n' >&2; return 4; fi
+            if ! base64 <"$input_file" | tr -d '\n' >"$encoded_file"; then rm -f "$input_file" "$encoded_file"; return 1; fi
+            encoded=$(cat "$encoded_file") || { rm -f "$input_file" "$encoded_file"; return 1; }
+            rm -f "$input_file" "$encoded_file"
+            expected_encoded_size=$(( (input_size + 2) / 3 * 4 ))
+            [ "${#encoded}" -eq "$expected_encoded_size" ] || { printf 'ide: stdin could not be encoded completely\n' >&2; return 1; }
+            [ "${#encoded}" -le 48000 ] || { printf 'ide: encoded stdin exceeds the app receipt limit\n' >&2; return 4; }
+            app_request_args files.write '' 60 "$1" "$encoded" ;;
+        create|mkdir) [ "$#" -eq 1 ] || usage_error "usage: ide files $sub PROJECT_RELATIVE_PATH"; app_request_args "files.$sub" '' 45 "$1" ;;
+        rename) [ "$#" -eq 2 ] || usage_error 'usage: ide files rename PROJECT_RELATIVE_PATH NEW_NAME'; app_request_args files.rename '' 45 "$1" "$2" ;;
+        copy|move) [ "$#" -eq 2 ] || usage_error "usage: ide files $sub SOURCE_PATH DESTINATION_DIRECTORY"; app_request_args "files.$sub" '' 60 "$1" "$2" ;;
+        delete)
+            [ "$#" -eq 3 ] && [ "$2" = --confirm ] || usage_error 'usage: ide files delete PROJECT_RELATIVE_PATH --confirm PROJECT_RELATIVE_PATH'
+            [ "$1" = "$3" ] || usage_error 'delete confirmation must exactly match the path'
+            app_request_args files.delete '' 60 "$1" "$3" ;;
+        *) usage_error "unknown files command '$sub'" ;;
+    esac
+}
+
+search_command() {
+    [ "$#" -ge 1 ] || usage_error 'search requires a command; use ide help search'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help search "${1:-}"; return $? ;;
+        status|test) [ "$#" -eq 0 ] || usage_error "search $sub accepts no arguments"; app_request "search.$sub" ;;
+        files|content)
+            [ "$#" -ge 1 ] || usage_error "usage: ide search $sub QUERY [--regex] [--case-sensitive] [--whole-word]"
+            query=$1; shift
+            for option do case "$option" in --regex|--case-sensitive|--whole-word) :;; *) usage_error "unknown search option '$option'";; esac; done
+            app_request_args "search.$sub" '' 90 "$query" "$@" ;;
+        *) usage_error "unknown search command '$sub'" ;;
+    esac
+}
+
+projects_command() {
+    [ "$#" -ge 1 ] || usage_error 'projects requires a command; use ide help projects'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help projects "${1:-}"; return $? ;;
+        status|test|list)
+            [ "$#" -eq 0 ] || usage_error "projects $sub accepts no arguments"
+            case "$sub" in status) app_request projects.status ;; test) app_request projects.test ;; list) app_request projects.list ;; esac ;;
+        open)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide projects open PROJECT_ID [--dirty save|discard|cancel]'
+            id=$1; shift; dirty=cancel
+            while [ "$#" -gt 0 ]; do
+                case "$1" in --dirty) [ "$#" -ge 2 ] || usage_error '--dirty requires save, discard, or cancel'; dirty=$2; shift 2;; -h|--help) domain_help projects open; return;; *) usage_error "unknown projects open option '$1'";; esac
+            done
+            case "$dirty" in save|discard|cancel) :;; *) usage_error '--dirty must be save, discard, or cancel';; esac
+            app_request_args projects.open "$id" 45 "$dirty" ;;
+        close)
+            dirty=''
+            if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --dirty ] || usage_error 'usage: ide projects close [--dirty save|discard]'; dirty=$2; fi
+            case "$dirty" in ''|save|discard) :;; *) usage_error '--dirty must be save or discard';; esac
+            app_request_args projects.close '' 45 "$dirty" ;;
+        create)
+            parent=''; name=''; description=''
+            while [ "$#" -gt 0 ]; do
+                case "$1" in --parent) [ "$#" -ge 2 ] || usage_error '--parent requires a storage URI/path'; parent=$2; shift 2;; --name) [ "$#" -ge 2 ] || usage_error '--name requires a project name'; name=$2; shift 2;; --description) [ "$#" -ge 2 ] || usage_error '--description requires text'; description=$2; shift 2;; -h|--help) domain_help projects create; return;; *) usage_error "unknown projects create option '$1'";; esac
+            done
+            [ -n "$parent" ] && [ -n "$name" ] || usage_error 'usage: ide projects create --parent STORAGE_URI --name NAME [--description TEXT]'
+            app_request_args projects.create '' 60 "$parent" "$name" "$description" ;;
+        import-folder)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide projects import-folder PROJECT_URI [--name NAME] [--description TEXT]'
+            source=$1; shift; name=''; description=''
+            while [ "$#" -gt 0 ]; do case "$1" in --name) [ "$#" -ge 2 ] || usage_error '--name requires a value'; name=$2; shift 2;; --description) [ "$#" -ge 2 ] || usage_error '--description requires a value'; description=$2; shift 2;; -h|--help) domain_help projects import-folder; return;; *) usage_error "unknown import-folder option '$1'";; esac; done
+            app_request_args projects.import-folder '' 60 "$source" "$name" "$description" ;;
+        import-zip)
+            [ "$#" -ge 3 ] || usage_error 'usage: ide projects import-zip ARCHIVE_URI PARENT_URI NAME [DESCRIPTION]'
+            archive=$1; parent=$2; name=$3; description=${4:-}; [ "$#" -le 4 ] || usage_error 'import-zip accepts at most a description'
+            app_request_args projects.import-zip '' 90 "$archive" "$parent" "$name" "$description" ;;
+        rename)
+            [ "$#" -ge 2 ] || usage_error 'usage: ide projects rename PROJECT_ID NAME [--dirty save|discard]'
+            id=$1; name=$2; shift 2; dirty=''
+            if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --dirty ] || usage_error 'invalid rename options'; dirty=$2; fi
+            case "$dirty" in ''|save|discard) :;; *) usage_error '--dirty must be save or discard';; esac
+            app_request_args projects.rename "$id" 60 "$name" "$dirty" ;;
+        duplicate|relocate)
+            [ "$#" -ge 5 ] || usage_error "usage: ide projects $sub PROJECT_ID --parent STORAGE_URI --name NAME [--description TEXT] [--dirty save|discard]"
+            id=$1; shift; [ "$1" = --parent ] && [ "$#" -ge 4 ] || usage_error '--parent STORAGE_URI is required'; parent=$2; shift 2
+            [ "$1" = --name ] && [ "$#" -ge 2 ] || usage_error '--name NAME is required'; name=$2; shift 2
+            description=''; dirty=''
+            while [ "$#" -gt 0 ]; do case "$1" in --description) [ "$#" -ge 2 ] || usage_error '--description requires text'; description=$2; shift 2;; --dirty) [ "$#" -ge 2 ] || usage_error '--dirty requires save or discard'; dirty=$2; shift 2;; -h|--help) domain_help projects "$sub"; return;; *) usage_error "unknown projects $sub option '$1'";; esac; done
+            case "$dirty" in ''|save|discard) :;; *) usage_error '--dirty must be save or discard';; esac
+            if [ "$sub" = duplicate ]; then app_request_args projects.duplicate "$id" 120 "$parent" "$name" "$description" "$dirty"
+            else app_request_args projects.relocate "$id" 120 "$parent" "$name" "$dirty"; fi ;;
+        unregister|delete)
+            [ "$#" -ge 2 ] || usage_error "usage: ide projects $sub PROJECT_ID --confirm PROJECT_ID [--dirty save|discard]"
+            id=$1; shift; [ "$1" = --confirm ] && [ "$#" -ge 2 ] || usage_error "projects $sub requires --confirm PROJECT_ID"; confirm=$2; shift 2
+            [ "$confirm" = "$id" ] || usage_error 'the --confirm value must exactly match PROJECT_ID'
+            dirty=''
+            if [ "$#" -gt 0 ]; then [ "$#" -eq 2 ] && [ "$1" = --dirty ] || usage_error 'invalid dirty-buffer option'; dirty=$2; fi
+            case "$dirty" in ''|save|discard) :;; *) usage_error '--dirty must be save or discard';; esac
+            if [ "$sub" = delete ]; then app_request_args projects.delete "$id" 90 "$confirm" "$dirty"
+            else app_request_args projects.unregister "$id" 60 "$confirm" "$dirty"; fi ;;
+        export)
+            [ "$#" -eq 3 ] && [ "$2" = --to ] || usage_error 'usage: ide projects export PROJECT_ID --to DESTINATION_URI'
+            app_request_args projects.export "$1" 90 "$3" ;;
+        *) usage_error "unknown projects command '$sub'" ;;
+    esac
+}
+
+storage_command() {
+    [ "$#" -ge 1 ] || usage_error 'storage requires status, test, setup, or rebuild'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help storage; return;;
+        status) [ "$#" -eq 0 ] || usage_error 'storage status accepts no arguments'; app_request storage.status;;
+        test) [ "$#" -eq 0 ] || usage_error 'storage test accepts no arguments'; app_request storage.test;;
+        setup|rebuild|--setup|--rebuild) [ "$#" -eq 0 ] || usage_error "storage $sub accepts no arguments"; storage_setup;;
+        *) usage_error "unknown storage command '$sub'";;
+    esac
+}
+
+terminal_command() {
+    [ "$#" -ge 1 ] || usage_error 'terminal requires a command; use ide help terminal'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help terminal "${1:-}"; return $? ;;
+        status|test|doctor) [ "$#" -eq 0 ] || usage_error "terminal $sub accepts no arguments"; if [ "$sub" = doctor ]; then app_request terminal.test; else app_request "terminal.$sub"; fi ;;
+        sessions)
+            [ "$#" -ge 1 ] || usage_error 'usage: ide terminal sessions list|close SESSION_ID'
+            action=$1; shift
+            case "$action" in
+                list) [ "$#" -eq 0 ] || usage_error 'terminal sessions list accepts no arguments'; app_request terminal.sessions.list;;
+                close) [ "$#" -eq 1 ] || usage_error 'terminal sessions close requires SESSION_ID'; app_request terminal.sessions.close "$1";;
+                *) usage_error "unknown terminal sessions command '$action'";;
+            esac ;;
+        storage) [ "$#" -eq 0 ] || usage_error 'terminal storage accepts no arguments'; storage_setup ;;
+        *) usage_error "unknown terminal command '$sub'" ;;
+    esac
+}
+
+app_command() {
+    [ "$#" -ge 1 ] || usage_error 'app requires status, test, doctor, or logs'
+    sub=$1; shift
+    case "$sub" in
+        help|-h|--help) domain_help app "${1:-}"; return $? ;;
+        status|test) [ "$#" -eq 0 ] || usage_error "app $sub accepts no arguments"; app_request "app.$sub" ;;
+        doctor) [ "$#" -eq 0 ] || usage_error 'app doctor accepts no arguments'; test_command all ;;
+        logs)
+            lines=100
+            if [ "$#" -gt 0 ]; then [ "$1" = --lines ] && [ "$#" -eq 2 ] || usage_error 'usage: ide app logs [--lines N]'; lines=$2; case "$lines" in ''|*[!0-9]*) usage_error '--lines must be a positive integer' ;; esac; [ "$lines" -gt 0 ] || usage_error '--lines must be positive'; fi
+            command -v logcat >/dev/null 2>&1 || { printf 'ide: logcat is unavailable\n' >&2; return 3; }
+            logcat -d -t "$lines" -s AndroidIde:V '*:S' ;;
+        *) usage_error "unknown app command '$sub'" ;;
     esac
 }
 
 [ "$#" -gt 0 ] || { usage; exit 0; }
+[ "$1" = --json ] && { JSON=true; shift; }
+[ "$#" -gt 0 ] || usage_error '--json requires a command'
 case "$1" in
     -h|--help) usage; exit 0 ;;
-    -v|-V|--version) printf 'android-ide-tools %s\n' "$IDE_TOOLS_VERSION"; exit 0 ;;
+    help) shift; if [ "$#" -eq 0 ]; then usage; exit 0; fi; domain_help "$1" "${2:-}"; exit $? ;;
+    -v|--version) printf 'android-ide-tools %s\n' "$IDE_TOOLS_VERSION"; exit 0 ;;
 esac
-case "$1" in
-    http://*|https://*|localhost:*|127.0.0.1:*|www.*) set -- browser open --new-tab "$@" ;;
-esac
-case "$1" in
-    open) shift; exec "$0" browser open "$@" ;;
-    browser)
-        shift; [ "$#" -gt 0 ] || error 'missing browser subcommand'
-        sub=$1; shift
-        case "$sub" in
-            open) browser_open "$@" ;;
-            status) [ "$#" -le 1 ] || error 'browser status accepts only --json'; parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser status accepts only --json'; browser_status ;;
-            tabs) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser tabs accepts only --json'; browser_tabs ;;
-            permissions) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'browser permissions accepts only --json'; browser_permissions ;;
-            reload) [ "$#" -eq 0 ] || error 'browser reload accepts no arguments'; browser_reload ;;
-            clear-data) browser_clear_data "$@" ;;
-            *) error "unknown browser command '$sub'" ;;
-        esac
-        ;;
-    editor)
-        shift; [ "$#" -gt 0 ] || error 'missing editor subcommand'; sub=$1; shift
-        case "$sub" in
-            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'editor status accepts only --json'; editor_status ;;
-            reload) editor_reload "$@" ;;
-            diagnostics) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'editor diagnostics accepts only --json'; editor_diagnostics ;;
-            *) error "unknown editor command '$sub'" ;;
-        esac
-        ;;
-    terminal)
-        shift; [ "$#" -gt 0 ] || error 'missing terminal subcommand'; sub=$1; shift
-        case "$sub" in
-            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'terminal status accepts only --json'; terminal_status ;;
-            storage) [ "$#" -eq 0 ] || error 'terminal storage accepts no arguments'; terminal_storage ;;
-            doctor) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'terminal doctor accepts only --json'; terminal_doctor ;;
-            *) error "unknown terminal command '$sub'" ;;
-        esac
-        ;;
-    app)
-        shift; [ "$#" -gt 0 ] || error 'missing app subcommand'; sub=$1; shift
-        case "$sub" in
-            status) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'app status accepts only --json'; app_status ;;
-            doctor) parse_json_flag "${1:-}" || [ "$#" -eq 0 ] || error 'app doctor accepts only --json'; app_doctor ;;
-            logs) app_logs "$@" ;;
-            *) error "unknown app command '$sub'" ;;
-        esac
-        ;;
+
+# Keep the original convenient URL form as an alias.
+case "$1" in http://*|https://*|localhost:*|127.0.0.1:*|www.*) set -- browser open --new-tab -u "$1" ;; esac
+
+domain=$1; shift
+if [ "$JSON" = true ]; then
+    case "$domain" in
+        status|test|browser|editor|preview|projects|files|search) ;;
+        storage) case "${1:-}" in status|test) :;; *) usage_error 'JSON mode supports only ide storage status|test';; esac ;;
+        terminal) case "${1:-}" in status|test|doctor|sessions) :;; *) usage_error 'JSON mode supports terminal status/test/sessions';; esac ;;
+        tools)
+            case "${1:-}:$#:${2:-}" in status:1:|test:1:|status:2:lsp) :;; *) usage_error 'JSON mode supports only ide tools status, ide tools test, or ide tools status lsp';; esac ;;
+        app) [ "${1:-}" != logs ] || usage_error 'app logs does not support JSON mode' ;;
+        *) usage_error "JSON mode is not supported for '$domain'" ;;
+    esac
+fi
+case "$domain" in
+    init)
+        case "${1:-}" in
+            help|-h|--help) domain_help init ;;
+            status) shift; [ "$#" -eq 0 ] || usage_error 'init status accepts no arguments'; status_command ;;
+            test) shift; [ "$#" -eq 0 ] || usage_error 'init test accepts no arguments'; test_command all ;;
+            *) init_command "$@" ;;
+        esac ;;
+    status)
+        case "${1:-}" in help|-h|--help) [ "$#" -eq 1 ] || usage_error 'status help accepts no arguments'; domain_help status;;
+            --json) [ "$#" -eq 1 ] || usage_error 'status accepts only --json'; JSON=true; status_command;;
+            '') status_command;;
+            *) usage_error 'usage: ide status [--json]' ;;
+        esac ;;
     test)
-        shift; [ "$#" -eq 1 ] || error 'test requires one test name'; test_one "$1" ;;
-    *) error "unknown command '$1'" ;;
+        [ "$#" -ge 1 ] || usage_error 'test requires a target: all, app, browser, editor, preview, projects, storage, terminal, or tools'
+        target=$1; shift
+        [ "$#" -le 1 ] || usage_error 'test accepts only an optional --json'
+        [ "${1:-}" = --json ] && JSON=true
+        test_command "$target" ;;
+    storage) storage_command "$@" ;;
+    browser) browser_command "$@" ;;
+    editor) editor_command "$@" ;;
+    projects|project) projects_command "$@" ;;
+    files) files_command "$@" ;;
+    search) search_command "$@" ;;
+    preview) preview_command "$@" ;;
+    tools) tools_command "$@" ;;
+    terminal) terminal_command "$@" ;;
+    app) app_command "$@" ;;
+    open) browser_open --new-tab -u "$@" ;;
+    *) usage_error "unknown domain '$domain'" ;;
 esac

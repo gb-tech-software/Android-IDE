@@ -107,6 +107,7 @@ var contentRevision = 0;
 var lspRequestId = 1;
 var lspPending = Object.create(null);
 var lspProviderDisposables = [];
+var localLanguageProvidersRegistered = false;
 var languageProvidersRegistered = false;
 var languageFeaturesRequested = false;
 var lspDiagnosticsByPath = Object.create(null);
@@ -271,13 +272,9 @@ function localSnippetItems(language) {
       ['case', 'case ${1:value} in\n\t${2:pattern})\n\t\t$0\n\t\t;;\nesac', 'Case statement'],
       ['fn', '${1:name}() {\n\t$0\n}', 'Shell function'],
     ],
-    groovy: [
-      ['plugins', 'plugins {\n\tid ${1:"plugin.id"} version ${2:"1.0"}\n}', 'Gradle plugins block'],
-      ['dependency', '${1:implementation}(${2:"group:artifact:version"})', 'Gradle dependency'],
-    ],
   };
-  snippets.javascriptreact = snippets.javascript;
-  snippets.typescriptreact = snippets.typescript;
+  snippets.scss = snippets.css;
+  snippets.less = snippets.css;
   snippets.jsonc = snippets.json;
   return (snippets[language] || []).map(function (item) {
     return {
@@ -330,32 +327,51 @@ function handleLanguageServerMessage(raw) {
   }
 }
 
+function registerLocalLanguageProviders() {
+  if (localLanguageProvidersRegistered) return;
+  localLanguageProvidersRegistered = true;
+  var available = Object.create(null);
+  monaco.languages.getLanguages().forEach(function (entry) { available[entry.id] = true; });
+  ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'sql', 'markdown', 'shell']
+    .filter(function (language) { return available[language] && localSnippetItems(language).length > 0; })
+    .forEach(function (language) {
+      lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
+        triggerCharacters: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split(''),
+        provideCompletionItems: function (model, position) {
+          var prefix = model.getWordUntilPosition(position).word || '';
+          var local = localSnippetItems(language).filter(function (item) {
+            return !prefix || item.label.toLowerCase().indexOf(prefix.toLowerCase()) === 0;
+          });
+          return Promise.resolve({ suggestions: local });
+        },
+      }));
+    });
+}
+
 function registerLanguageProviders() {
   if (languageProvidersRegistered) return;
   languageProvidersRegistered = true;
-  var languages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'sql', 'markdown', 'shell', 'groovy'];
-  var lspCompletionLanguages = ['javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'python', 'html', 'css', 'json', 'jsonc'];
-  var localCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('');
+  var available = Object.create(null);
+  monaco.languages.getLanguages().forEach(function (entry) { available[entry.id] = true; });
+  // These IDs correspond to LanguageServerRegistry and the installed, pinned
+  // server packages. XML/SVG keeps Monaco's local XML grammar/snippets only.
+  var languages = ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json', 'markdown']
+    .filter(function (language) { return available[language]; });
+  var lspCompletionLanguages = ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json'];
+  var lspCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('').concat(['.', ':', '/', '<', '"', "'"]);
   languages.forEach(function (language) {
-    lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
-      triggerCharacters: localCompletionTriggers,
-      provideCompletionItems: function (model, position) {
-        var prefix = model.getWordUntilPosition(position).word || '';
-        var local = localSnippetItems(language).filter(function (item) {
-          return !prefix || item.label.toLowerCase().indexOf(prefix.toLowerCase()) === 0;
-        });
-        return Promise.resolve({ suggestions: local });
-      },
-    }));
     if (lspCompletionLanguages.indexOf(language) !== -1) {
       lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
-        triggerCharacters: ['.', ':', '/', '<', '"', "'"],
-        provideCompletionItems: function (model, position) {
+        triggerCharacters: lspCompletionTriggers,
+        provideCompletionItems: function (model, position, context) {
         return requestLsp('textDocument/completion', {
           textDocument: { uri: model.uri.toString() },
           position: lspPosition(position),
-          context: { triggerKind: 1 },
-        }, 600).then(function (result) {
+          context: {
+            triggerKind: context && context.triggerKind || 1,
+            triggerCharacter: context && context.triggerCharacter,
+          },
+        }, 1500).then(function (result) {
           return { suggestions: normalizeCompletionItems(result) };
         }).catch(function () {
           return { suggestions: [] };
@@ -490,12 +506,20 @@ function registerLanguageProviders() {
 
 require.config({ paths: { vs: 'vs' } });
 
-// Load only Monaco's core editor before announcing readiness. Monaco 0.55.1's
-// Vite bundle does not expose the old AMD contribution paths for SQL/XML; an
-// unresolved dependency prevents this callback, leaving the native side stuck
-// behind its renderer timeout. Language registration and assistance providers
-// are deliberately installed after the editor is usable below.
+// Core editor load remains independent from the language bundle. The aggregate
+// contribution registers Monaco's bundled languages and lazily loads their
+// tokenizers/configurations. If it is unavailable, the editor still becomes
+// usable and logs the reason rather than hanging ready.
 require(['vs/editor/editor.main'], function () {
+  require(['vs/basic-languages/monaco.contribution'], function () {
+    initializeMonacoEditor();
+  }, function (error) {
+    console.warn('[androidIDE] Monaco basic-language contributions unavailable:', error);
+    initializeMonacoEditor();
+  });
+});
+
+function initializeMonacoEditor() {
 
   // Define AndroidIDE dark theme
   monaco.editor.defineTheme('androidide-dark', {
@@ -564,14 +588,13 @@ require(['vs/editor/editor.main'], function () {
     // context menu is slow and duplicates functionality.
     contextmenu: false,
 
-    // Keep the first usable editor pass independent of suggestions, signature
-    // help, diagnostics, and language-server traffic. These options are
-    // enabled after the ready event, once the user can edit the document.
-    quickSuggestions: false,
-    suggestOnTriggerCharacters: false,
-    acceptSuggestionOnCommitCharacter: false,
-    acceptSuggestionOnEnter: 'off',
-    snippetSuggestions: 'none',
+    // Local completions work even when optional LSP packages are not installed.
+    // Language-specific providers are registered only for actual Monaco IDs.
+    quickSuggestions: { other: true, comments: false, strings: true },
+    suggestOnTriggerCharacters: true,
+    acceptSuggestionOnCommitCharacter: true,
+    acceptSuggestionOnEnter: 'smart',
+    snippetSuggestions: 'inline',
     parameterHints: { enabled: false },
 
     folding: false,
@@ -587,14 +610,12 @@ require(['vs/editor/editor.main'], function () {
     // Bracket pair colorization is purely cosmetic — disable for less render work.
     'bracketPairColorization.enabled': false,
 
-    // formatOnPaste: true (default) passes pasted content through the language
-    // formatter, which can silently corrupt indentation. Disabled here.
-    formatOnPaste: false,
-
-    // autoIndent 'advanced' runs expensive token-based analysis on every Enter
-    // key press. 'brackets' is lightweight and handles 95% of real-world cases
-    // (matching open/close brackets) without the overhead.
-    autoIndent: 'brackets',
+    // Formatting is effective only where Monaco or a registered LSP provides a
+    // formatter. Full indentation uses each loaded language's rules for Enter,
+    // closing brackets/tags, and outdent.
+    formatOnPaste: true,
+    autoIndent: 'full',
+    detectIndentation: true,
 
     // Glyph margin (left gutter for breakpoints, fold arrows etc.) allocates
     // a DOM element per visible line. Not needed without a debugger in Phase 1.
@@ -604,6 +625,7 @@ require(['vs/editor/editor.main'], function () {
     // next to line numbers without spending DOM/paint budget.
     lineDecorationsWidth: 5,
   });
+  registerLocalLanguageProviders();
 
   // Initial layout — best-effort.
   applyLayout();
@@ -669,9 +691,8 @@ require(['vs/editor/editor.main'], function () {
   queuedMessages.forEach(function (message) { window.androidIDE.receiveMessage(message); });
   postToNative({ type: 'ready' });
 
-  // The native side explicitly enables optional language assistance after it
-  // has checked the user's LSP setting. Keep this work off the core startup
-  // path and yield once more so the first model/layout can paint.
+  // Optional LSP requests remain behind the user's setting. Local snippets,
+  // Monaco language rules, auto-indent and available formatters are already live.
   window.androidIDE.enableLanguageFeatures = function () {
     setTimeout(function () {
       registerLanguageProviders();
@@ -687,7 +708,7 @@ require(['vs/editor/editor.main'], function () {
     }, 0);
   };
   if (languageFeaturesRequested) window.androidIDE.enableLanguageFeatures();
-});
+}
 
 // ---------------------------------------------------------------------------
 // Public API — called by Kotlin via evaluateJavascript

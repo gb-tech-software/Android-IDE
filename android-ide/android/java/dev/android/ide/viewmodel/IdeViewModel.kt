@@ -49,6 +49,8 @@ import dev.android.ide.project.ProjectDetailsResult
 import dev.android.ide.viewmodel.model.ancestorsOf
 import org.json.JSONObject
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.io.File
 import dev.android.ide.viewmodel.model.findNode
 import dev.android.ide.viewmodel.model.pathTo
@@ -197,6 +199,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         fileSearchJob?.cancel()
         projectSearchJob?.cancel()
+        services.projectLiveServer.stop()
         languageServers.shutdown()
         super.onCleared()
         lifecycleStore.markExplicitExit()
@@ -458,6 +461,12 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.retry()
     }
 
+    suspend fun removeLanguageServerTools(): Boolean {
+        setEditorSettings(_uiState.value.editorSettings.copy(languageServerEnabled = false))
+        languageServers.stopAll()
+        return languageServerPackageInstaller.removePackages()
+    }
+
     fun setVolumeKeyMode(mode: VolumeKeyMode) {
         editorSettingsRepo.setVolumeKeyMode(mode)
         _uiState.update { it.copy(volumeKeyMode = mode) }
@@ -512,6 +521,70 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         switchProjectNow(treeUriString)
+    }
+
+    /** CLI workspace switch with an explicit policy for unsaved editor buffers. */
+    suspend fun openProjectFromTools(treeUriString: String, dirtyDisposition: String): String? {
+        if (treeUriString.isBlank()) return "A project location is required"
+        val current = _uiState.value
+        if (treeUriString == current.projectRootUri) return null
+        if (current.openTabs.any { it.isDirty }) {
+            when (dirtyDisposition) {
+                "save" -> if (!saveDirtyTabsForProject()) return current.statusMessage ?: "Unsaved changes could not be saved; workspace was not switched"
+                "discard" -> {
+                    current.projectRootUri?.let(crashRecovery::clearProject)
+                    current.openTabs.forEach { pendingContent.remove(it.id) }
+                }
+                "cancel" -> return "Workspace has unsaved changes; rerun with --dirty save or --dirty discard"
+                else -> return "Choose --dirty save, --dirty discard, or --dirty cancel"
+            }
+        }
+        workspaceSaveJob?.cancel()
+        saveCurrentProjectSession()
+        _uiState.update { it.copy(projectSwitchRequest = null) }
+        openProjectInternal(treeUriString)
+        return if (_uiState.value.projectRootUri == treeUriString) null
+        else _uiState.value.statusMessage ?: "The requested project could not be opened"
+    }
+
+    /** CLI close path; dirty buffers are saved or discarded only by explicit choice. */
+    suspend fun closeProjectFromTools(dirtyDisposition: String): String? {
+        val current = _uiState.value
+        val rootUri = current.projectRootUri ?: return "No editor project is active"
+        if (current.openTabs.any { it.isDirty }) {
+            when (dirtyDisposition) {
+                "save" -> if (!saveDirtyTabsForProject()) return current.statusMessage ?: "Unsaved changes could not be saved; project remains open"
+                "discard" -> {
+                    crashRecovery.clearProject(rootUri)
+                    current.openTabs.forEach { pendingContent.remove(it.id) }
+                }
+                else -> return "Workspace has unsaved changes; choose --dirty save or --dirty discard"
+            }
+        }
+        workspaceSaveJob?.cancel()
+        stopWorkspaceLiveWork(rootUri)
+        saveCurrentProjectSession()
+        sendEditorCommand(EditorOutbound.CloseAllModels)
+        _uiState.value.openTabs.forEach { pendingContent.remove(it.id) }
+        _uiState.update {
+            it.copy(
+                projectName = "",
+                projectRootUri = null,
+                localStorageConfirmed = false,
+                localWorkspaceAvailable = false,
+                localWorkspaceExplanation = null,
+                defaultPreviewPath = null,
+                fileTree = emptyList(),
+                openTabs = emptyList(),
+                activeTabId = null,
+                languageIntelligenceAvailable = false,
+                languageServerFeatures = emptySet(),
+                currentScreen = AppScreen.PROJECTS,
+                projectSwitchRequest = null,
+            )
+        }
+        saveSession()
+        return null
     }
 
     fun cancelProjectSwitch() {
@@ -580,10 +653,18 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    suspend fun saveDirtyTabsFromTools(): String? =
+        if (saveDirtyTabsForProject()) null
+        else _uiState.value.statusMessage ?: "One or more dirty editor buffers could not be saved"
+
     private suspend fun openProjectInternal(
         treeUriString: String,
         restoreAtHome: Boolean = false,
     ) {
+        val previousRootUri = _uiState.value.projectRootUri
+        if (previousRootUri != null && previousRootUri != treeUriString) {
+            stopWorkspaceLiveWork(previousRootUri)
+        }
         val name = extractProjectName(treeUriString)
         val registeredProject = projectRepository.getAll().firstOrNull { it.uri == treeUriString }
         val displayName = registeredProject?.name ?: name
@@ -743,6 +824,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeCurrentProject() {
         viewModelScope.launch {
+            _uiState.value.projectRootUri?.let { stopWorkspaceLiveWork(it) }
             saveCurrentProjectSession()
             _uiState.value.openTabs.forEach { pendingContent.remove(it.id) }
             _uiState.update { state ->
@@ -770,6 +852,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { refreshProjectNow() }
     }
 
+    suspend fun refreshProjectFromTools(): Boolean = refreshProjectNow()
+
     private suspend fun visibleFileTreeChildren(parentUri: String): List<FileNode> =
         fileMutations.listChildren(parentUri).filterNot { node ->
             (node.displayName == ".git" && _uiState.value.editorSettings.hideGitFolder) ||
@@ -779,10 +863,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 ) && _uiState.value.editorSettings.hideProjectMetadataFolder)
         }
 
-    private suspend fun refreshProjectNow() {
-        val rootUri = _uiState.value.projectRootUri ?: return
+    private suspend fun refreshProjectNow(): Boolean {
+        val rootUri = _uiState.value.projectRootUri ?: return false
         _uiState.update { it.copy(fileTreeLoading = true) }
-        try {
+        return try {
             when (val inspection = fileMutations.inspectChildren(rootUri)) {
                 is ChildrenInspectionResult.Success -> {
                     val settings = _uiState.value.editorSettings
@@ -795,9 +879,12 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     }.sortedForTree()
                     val merged = mergeRefreshedTree(_uiState.value.fileTree, refreshed)
                     _uiState.update { it.copy(fileTree = merged) }
+                    true
                 }
-                is ChildrenInspectionResult.Failed ->
+                is ChildrenInspectionResult.Failed -> {
                     _uiState.update { it.copy(statusMessage = "Could not refresh the project tree") }
+                    false
+                }
             }
         } finally {
             _uiState.update { it.copy(fileTreeLoading = false) }
@@ -1596,6 +1683,14 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
      * content or dirty state.
      */
     fun resetWorkspaceAfterProjectRemoval() {
+        val departingRoot = _uiState.value.projectRootUri
+        services.projectLiveServer.stop()
+        departingRoot?.let(crashRecovery::clearProject)
+        if (departingRoot != null) viewModelScope.launch { stopWorkspaceLiveWork(departingRoot) }
+        fileSearchJob?.cancel()
+        projectSearchJob?.cancel()
+        openFileGeneration++
+        projectSearchGeneration++
         workspaceSaveJob?.cancel()
         sendEditorCommand(EditorOutbound.CloseAllModels)
         _uiState.value.openTabs.forEach { pendingContent.remove(it.id) }
@@ -1621,6 +1716,27 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 editorBindRevision = it.editorBindRevision + 1,
             )
         }
+    }
+
+    private suspend fun stopWorkspaceLiveWork(rootUri: String) {
+        workspaceSaveJob?.cancel()
+        val rootPath = safRepository.localFilesystemPath(rootUri)
+        if (rootPath != null) services.projectLiveServer.stopForRoot(rootPath)
+        else services.projectLiveServer.stop()
+        fileSearchJob?.cancel()
+        projectSearchJob?.cancel()
+        openFileGeneration++
+        projectSearchGeneration++
+        languageServers.stopAll()
+        val root = rootPath?.let { runCatching { File(it).canonicalFile.toPath() }.getOrNull() } ?: return
+        val sessions = runCatching { services.terminalRuntime.listSessions() }.getOrDefault(emptyList())
+        sessions
+            .filter { it.availability == dev.android.ide.contracts.SessionAvailability.AVAILABLE }
+            .filter { descriptor ->
+                val workingDirectory = descriptor.workingDirectory ?: return@filter false
+                runCatching { File(workingDirectory).canonicalFile.toPath().startsWith(root) }.getOrDefault(false)
+            }
+            .forEach { descriptor -> runCatching { services.terminalRuntime.closeSession(descriptor.id) } }
     }
 
     fun saveAllFiles() {
@@ -2790,7 +2906,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun pasteFromKotlinClipboard() {
         val clipboard = getApplication<Application>()
             .getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(getApplication())?.toString()
+        val text = clipboard.primaryClip?.getItemAt(0)?.coerceToText(getApplication())?.toString()?.trim()
         if (!text.isNullOrEmpty()) {
             sendEditorCommand(EditorOutbound.InsertText(text))
         }
@@ -2919,6 +3035,20 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Editor-specific delete postcondition for the active local workspace. */
+    private suspend fun editorFilePresenceAfterDelete(uri: String): DocumentPresence {
+        val localPath = fileMutations.localFilesystemPath(uri)
+            ?: return fileMutations.presence(uri)
+        return withContext(Dispatchers.IO) {
+            val path = File(localPath).toPath()
+            when {
+                Files.exists(path, LinkOption.NOFOLLOW_LINKS) -> DocumentPresence.EXISTS
+                Files.notExists(path, LinkOption.NOFOLLOW_LINKS) -> DocumentPresence.ABSENT
+                else -> DocumentPresence.INACCESSIBLE
+            }
+        }
+    }
+
     fun deleteNode(node: FileNode, selectedNodes: List<FileNode> = emptyList()) {
         if (!requireConfirmedLocalStorageForMutation()) return
         val nodes = if (selectedNodes.isEmpty()) listOf(node) else selectedNodes
@@ -2930,9 +3060,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             val deletedUris = mutableSetOf<String>()
             val deletedProjectPaths = mutableSetOf<String>()
             nodes.forEachIndexed { index, selectedNode ->
-                if (fileMutations.delete(selectedNode.documentUri) &&
-                    !fileMutations.exists(selectedNode.documentUri)
-                ) {
+                fileMutations.delete(selectedNode.documentUri)
+                if (editorFilePresenceAfterDelete(selectedNode.documentUri) == DocumentPresence.ABSENT) {
                     deletedCount++
                     deletedUris += allAffectedUris.intersect(affectedUris(selectedNode))
                     deletedProjectPaths += targetPaths[index].removePrefix("/")
@@ -3176,7 +3305,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             return null
         }
         val url = try {
-            services.projectStaticPreviewServer.urlFor(root.path, target.path)
+            withContext(Dispatchers.IO) { services.projectLiveServer.start(root.path, target.path) }
         } catch (error: Exception) {
             _uiState.update { it.copy(statusMessage = "Could not start the local preview server: ${error.message ?: "project path unavailable"}") }
             return null

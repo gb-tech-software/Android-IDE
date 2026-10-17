@@ -42,6 +42,7 @@ internal fun editorSymbolBarContent(
     val isMarkup = language in setOf("html", "xml", "svg", "javascriptreact", "typescriptreact")
     val isJson = language == "json" || language == "jsonc"
     val isJsLike = language in setOf("javascript", "typescript", "javascriptreact", "typescriptreact")
+    val isCssLike = language in setOf("css", "scss", "less")
     val isMarkdown = language == "markdown" || language == "mdx"
 
     val pairLabels = when {
@@ -72,7 +73,7 @@ internal fun editorSymbolBarContent(
         language == "python" -> listOf(":", "=", "->", ".")
         language == "kotlin" || language == "java" -> listOf("=", ":", ";", "->", ".")
         isJsLike -> listOf("=", "=>", ".", "?.", ";", ":", "/")
-        language == "css" -> listOf(":", ";", "#", ".", "-")
+        isCssLike -> listOf(":", ";", "#", ".", "-")
         else -> listOf("=", ":", ";", ".")
     }
 
@@ -194,6 +195,39 @@ except ${ '$' }{1:Exception} as error:
                 snippet("aria-label", "aria", """aria-label="${ '$' }{1:description}""""),
             ),
         )
+        language == "javascript" -> SnippetContexts(
+            declarations = listOf(
+                snippet("function", "function", """function ${'$'}{1:name}(${ '$' }{2:args}) {
+	${'$'}0
+}"""),
+                snippet("arrow", "const", """const ${ '$' }{1:name} = (${ '$' }{2:args}) => {
+	${'$'}0
+}"""),
+                snippet("class", "class", """class ${'$'}{1:Name} {
+	${'$'}0
+}"""),
+            ),
+            block = listOf(
+                snippet("if", "if", """if (${ '$' }{1:condition}) {
+	${'$'}0
+}"""),
+                snippet("for", "for", """for (const ${ '$' }{1:item} of ${ '$' }{2:items}) {
+	${'$'}0
+}"""),
+                snippet("try", "try", """try {
+	${'$'}0
+} catch (${ '$' }{1:error}) {
+	${'$'}0
+}"""),
+            ),
+            expression = listOf(
+                snippet("log", "console", """console.log(${ '$' }{1:value});"""),
+                snippet("async", "async", """async function ${'$'}{1:name}(${ '$' }{2:args}) {
+	${'$'}0
+}"""),
+                snippet("template", "template", """`${ '$' }{1:value}`"""),
+            ),
+        )
         language == "typescript" -> SnippetContexts(
             declarations = listOf(
                 snippet("function", "function", """function ${'$'}{1:name}(${ '$' }{2:args}): ${ '$' }{3:void} {
@@ -225,7 +259,7 @@ except ${ '$' }{1:Exception} as error:
                 snippet("type assertion", "as", """${ '$' }{1:value} as ${ '$' }{2:Type}"""),
             ),
         )
-        language == "css" -> SnippetContexts(
+        isCssLike -> SnippetContexts(
             declarations = listOf(
                 snippet("rule", "rule", """${ '$' }{1:.selector} {
 	${ '$' }{2:property}: ${ '$' }{3:value};
@@ -296,39 +330,7 @@ ${'$'}0
                 snippet("bold", "bold", """**${'$'}{1:text}**"""),
             ),
         )
-        else -> SnippetContexts(
-            declarations = listOf(
-                snippet("function", "function", """function ${'$'}{1:name}() {
-	${'$'}0
-}"""),
-                snippet("if", "if", """if (${ '$' }{1:condition}) {
-	${'$'}0
-}"""),
-                snippet("for", "for", """for (${ '$' }{1:item} of ${ '$' }{2:items}) {
-	${'$'}0
-}"""),
-            ),
-            block = listOf(
-                snippet("if", "if", """if (${ '$' }{1:condition}) {
-	${'$'}0
-}"""),
-                snippet("for", "for", """for (${ '$' }{1:item} of ${ '$' }{2:items}) {
-	${'$'}0
-}"""),
-                snippet("try", "try", """try {
-	${'$'}0
-} catch (${ '$' }{1:error}) {
-	${'$'}0
-}"""),
-            ),
-            expression = listOf(
-                snippet("arrow", "=>", """(${ '$' }{1:args}) => {
-	${'$'}0
-}"""),
-                snippet("log", "console", """console.log(${ '$' }{1:value});"""),
-                snippet("template", "template", """`${ '$' }{1:value}`"""),
-            ),
-        )
+        else -> SnippetContexts(emptyList(), emptyList(), emptyList())
     }
 
     val withinMarkupTag = isMarkup && linePrefix.lastIndexOf('<') > linePrefix.lastIndexOf('>')

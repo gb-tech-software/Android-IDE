@@ -352,5 +352,4 @@ interface BrowserDeveloperToolsService {
     fun open()
     fun close()
     fun setEnabled(enabled: Boolean)
-    fun setInteractionListener(listener: ((Boolean) -> Unit)?) {}
 }

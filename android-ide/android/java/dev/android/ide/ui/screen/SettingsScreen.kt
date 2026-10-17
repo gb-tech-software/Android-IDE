@@ -392,7 +392,7 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         Text("Language intelligence", style = MaterialTheme.typography.titleSmall)
         VisibilitySettingRow(
             "Enable language servers",
-            "Optional pinned TypeScript, Python, HTML, CSS, and JSON tools are installed only when enabled and internet is available.",
+            "Install pinned language tools with `ide tools install lsp`. This setting only enables tools already installed.",
             s.languageServerEnabled,
             { ideViewModel.setEditorSettings(s.copy(languageServerEnabled = it)) },
         )
@@ -767,44 +767,40 @@ private fun SitePermissionsSettingsScreen(
     onBack: () -> Unit,
     onRevoke: (String, String?) -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 16.dp),
+    // This content is hosted inside SettingsCategoryContent's LazyColumn item.
+    // Keep it non-scrollable so the parent list owns vertical scrolling; a nested
+    // LazyColumn is measured with an infinite max height and crashes Compose.
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
-                Text("Site permissions", style = MaterialTheme.typography.headlineSmall)
-            }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
+            Text("Site permissions", style = MaterialTheme.typography.headlineSmall)
         }
-        item {
-            Text(
-                "Saved website decisions are listed here. One-time decisions are discarded after the request. Android may separately show device-level choices such as while using the app or limited access.",
-                style = MaterialTheme.typography.bodySmall,
-                color = LocalIdeColors.current.textSecondary,
-            )
-        }
+        Text(
+            "Saved website decisions are listed here. One-time decisions are discarded after the request. Android may separately show device-level choices such as while using the app or limited access.",
+            style = MaterialTheme.typography.bodySmall,
+            color = LocalIdeColors.current.textSecondary,
+        )
         if (state.sitePermissions.isEmpty()) {
-            item { Text("No site permissions have been saved.", style = MaterialTheme.typography.bodyMedium) }
+            Text("No site permissions have been saved.", style = MaterialTheme.typography.bodyMedium)
         } else {
             state.sitePermissions.groupBy { it.origin }.forEach { (origin, permissions) ->
-                item(key = origin) {
-                    SettingsCard {
-                        Text(origin, style = MaterialTheme.typography.titleSmall)
-                        permissions.forEach { permission ->
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${permission.permission}: ${permission.decision.name.lowercase().replaceFirstChar(Char::uppercase)}",
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = LocalIdeColors.current.textSecondary,
-                                )
-                                TextButton(onClick = { onRevoke(permission.origin, permission.permission) }) { Text("Revoke") }
-                            }
+                SettingsCard {
+                    Text(origin, style = MaterialTheme.typography.titleSmall)
+                    permissions.forEach { permission ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${permission.permission}: ${permission.decision.name.lowercase().replaceFirstChar(Char::uppercase)}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = LocalIdeColors.current.textSecondary,
+                            )
+                            TextButton(onClick = { onRevoke(permission.origin, permission.permission) }) { Text("Revoke") }
                         }
-                        TextButton(onClick = { onRevoke(origin, null) }) { Text("Revoke all for site") }
                     }
+                    TextButton(onClick = { onRevoke(origin, null) }) { Text("Revoke all for site") }
                 }
             }
         }

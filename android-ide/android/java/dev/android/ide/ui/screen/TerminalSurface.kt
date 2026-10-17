@@ -7,7 +7,9 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
@@ -47,11 +50,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -66,6 +74,7 @@ import dev.android.ide.contracts.SessionAvailability
 import dev.android.ide.data.model.TerminalSettings
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
+import dev.android.ide.ui.components.EditorToolbarGlyph
 
 @Composable
 fun TerminalSurface(
@@ -267,13 +276,13 @@ fun TerminalSurface(
                 onCtrlToggle = { ctrlLatched = !ctrlLatched },
                 onAltToggle = { altLatched = !altLatched },
                 onEscapeToggle = { escapeLatched = !escapeLatched },
+                onClearModifiers = ::clearLatchedKeys,
                 onSend = { key ->
                     if (key.keyCode != null) {
                         activeTerminalView?.handleKeyCode(key.keyCode, terminalKeyModifiers(ctrlLatched, altLatched, escapeLatched))
                     } else {
                         viewModel.sendTerminalInput(encodeTerminalShortcut(key, ctrlLatched, altLatched, escapeLatched))
                     }
-                    clearLatchedKeys()
                 },
             )
         }
@@ -312,23 +321,25 @@ private data class TerminalShortcut(
     val sequence: String,
     val forceCtrl: Boolean = false,
     val keyCode: Int? = null,
+    val repeatable: Boolean = false,
+    val glyphActionId: String? = null,
 )
 
 private val TERMINAL_NAVIGATION_SHORTCUTS = listOf(
     TerminalShortcut("Esc key", "\u001B"),
     TerminalShortcut("Tab", "\t"),
     TerminalShortcut("Enter", "\r"),
-    TerminalShortcut("Backspace", "\u007F"),
-    TerminalShortcut("↑", "", keyCode = KeyEvent.KEYCODE_DPAD_UP),
-    TerminalShortcut("↓", "", keyCode = KeyEvent.KEYCODE_DPAD_DOWN),
-    TerminalShortcut("←", "", keyCode = KeyEvent.KEYCODE_DPAD_LEFT),
-    TerminalShortcut("→", "", keyCode = KeyEvent.KEYCODE_DPAD_RIGHT),
-    TerminalShortcut("Home", "", keyCode = KeyEvent.KEYCODE_MOVE_HOME),
-    TerminalShortcut("End", "", keyCode = KeyEvent.KEYCODE_MOVE_END),
+    TerminalShortcut("Backspace", "\u007F", repeatable = true),
+    TerminalShortcut("Up", "", keyCode = KeyEvent.KEYCODE_DPAD_UP, repeatable = true, glyphActionId = "cursorUp"),
+    TerminalShortcut("Down", "", keyCode = KeyEvent.KEYCODE_DPAD_DOWN, repeatable = true, glyphActionId = "cursorDown"),
+    TerminalShortcut("Left", "", keyCode = KeyEvent.KEYCODE_DPAD_LEFT, repeatable = true, glyphActionId = "cursorLeft"),
+    TerminalShortcut("Right", "", keyCode = KeyEvent.KEYCODE_DPAD_RIGHT, repeatable = true, glyphActionId = "cursorRight"),
+    TerminalShortcut("Home", "", keyCode = KeyEvent.KEYCODE_MOVE_HOME, repeatable = true),
+    TerminalShortcut("End", "", keyCode = KeyEvent.KEYCODE_MOVE_END, repeatable = true),
     TerminalShortcut("Ins", "", keyCode = KeyEvent.KEYCODE_INSERT),
-    TerminalShortcut("Del", "", keyCode = KeyEvent.KEYCODE_FORWARD_DEL),
-    TerminalShortcut("PgUp", "", keyCode = KeyEvent.KEYCODE_PAGE_UP),
-    TerminalShortcut("PgDn", "", keyCode = KeyEvent.KEYCODE_PAGE_DOWN),
+    TerminalShortcut("Del", "", keyCode = KeyEvent.KEYCODE_FORWARD_DEL, repeatable = true),
+    TerminalShortcut("PgUp", "", keyCode = KeyEvent.KEYCODE_PAGE_UP, repeatable = true),
+    TerminalShortcut("PgDn", "", keyCode = KeyEvent.KEYCODE_PAGE_DOWN, repeatable = true),
 )
 
 private val TERMINAL_CONTROL_SHORTCUTS = listOf(
@@ -346,6 +357,7 @@ private fun TerminalShortcutToolbar(
     onCtrlToggle: () -> Unit,
     onAltToggle: () -> Unit,
     onEscapeToggle: () -> Unit,
+    onClearModifiers: () -> Unit,
     onSend: (TerminalShortcut) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -360,7 +372,11 @@ private fun TerminalShortcutToolbar(
                 TerminalShortcutButton(
                     label = shortcut.label,
                     selected = false,
-                    onClick = { onSend(shortcut) },
+                    onClick = { onSend(shortcut); onClearModifiers() },
+                    repeatable = shortcut.repeatable,
+                    onRepeat = { onSend(shortcut) },
+                    onRepeatEnd = onClearModifiers,
+                    glyphActionId = shortcut.glyphActionId,
                 )
             }
         }
@@ -371,8 +387,11 @@ private fun TerminalShortcutToolbar(
             TERMINAL_NAVIGATION_SHORTCUTS.forEach { shortcut ->
                 TerminalShortcutButton(
                     label = shortcut.label,
-                    onClick = { onSend(shortcut) },
-                    onLongClick = shortcut.keyCode?.let { { onSend(shortcut) } },
+                    onClick = { onSend(shortcut); onClearModifiers() },
+                    repeatable = shortcut.repeatable,
+                    onRepeat = { onSend(shortcut) },
+                    onRepeatEnd = onClearModifiers,
+                    glyphActionId = shortcut.glyphActionId,
                 )
             }
         }
@@ -385,12 +404,54 @@ private fun TerminalShortcutButton(
     label: String,
     selected: Boolean = false,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null,
+    repeatable: Boolean = false,
+    onRepeat: (() -> Unit)? = null,
+    onRepeatEnd: (() -> Unit)? = null,
+    glyphActionId: String? = null,
 ) {
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnRepeat by rememberUpdatedState(onRepeat)
+    val currentOnRepeatEnd by rememberUpdatedState(onRepeatEnd)
+    var suppressNextClick by remember(label) { mutableStateOf(false) }
     val modifier = Modifier
         .height(38.dp)
-        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-        .semantics { this.selected = selected }
+        .widthIn(min = if (glyphActionId != null) 42.dp else 38.dp)
+        .pointerInput(label, repeatable) {
+            if (!repeatable) return@pointerInput
+            kotlinx.coroutines.coroutineScope {
+                val gestureScope = this
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var repeated = false
+                        val repeatJob = gestureScope.launch {
+                            delay(android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                            repeated = true
+                            suppressNextClick = true
+                            (currentOnRepeat ?: currentOnClick).invoke()
+                            while (true) {
+                                delay(70L)
+                                (currentOnRepeat ?: currentOnClick).invoke()
+                            }
+                        }
+                        val released = waitForUpOrCancellation(pass = PointerEventPass.Initial) != null
+                        repeatJob.cancel()
+                        if (repeated) {
+                            currentOnRepeatEnd?.invoke()
+                            suppressNextClick = released
+                        }
+                    }
+                }
+            }
+        }
+        .combinedClickable(
+            onClick = { if (suppressNextClick) suppressNextClick = false else currentOnClick() },
+            onLongClick = null,
+        )
+        .semantics {
+            this.selected = selected
+            contentDescription = label
+        }
     Box(
         modifier = modifier
             .padding(vertical = 1.dp)
@@ -405,12 +466,20 @@ private fun TerminalShortcutButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 12.dp),
-            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
-            style = MaterialTheme.typography.labelMedium,
-        )
+        if (glyphActionId != null) {
+            EditorToolbarGlyph(
+                actionId = glyphActionId,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp),
+            )
+        } else {
+            Text(
+                label,
+                modifier = Modifier.padding(horizontal = 12.dp),
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
     }
 }
 

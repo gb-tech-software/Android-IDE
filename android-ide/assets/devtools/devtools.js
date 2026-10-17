@@ -19,7 +19,7 @@
     if (!message || message.source !== SOURCE || message.channel !== channel) return;
     if (message.type === "ready") {
       bridgeReady = true;
-      postToPage("visibility", { open: visibilityOpen });
+      syncVisibility();
     } else if (message.type === "error") {
       console.error("Android IDE developer tools could not initialize:", message.message);
     }
@@ -36,28 +36,36 @@
     });
   }
 
-  function reportInteraction(active) {
-    if (interactionActive === active) return;
-    interactionActive = active;
-    contentPort.postMessage({ type: "developer-tools-interaction", active });
+  function syncVisibility() {
+    if (!visibilityOpen) {
+      interactionActive = false;
+      if (bridgeReady) postToPage("visibility", { open: false, destroy: true });
+      return;
+    }
+    if (document.visibilityState !== "visible") {
+      interactionActive = false;
+      if (bridgeReady) postToPage("visibility", { open: false, destroy: false });
+      return;
+    }
+    if (bridgeReady) postToPage("visibility", { open: true });
+    else injectPageBridge();
   }
 
-  document.addEventListener("touchstart", event => reportInteraction(isDevtoolsTarget(event)), true);
+  document.addEventListener("visibilitychange", syncVisibility);
+
+  document.addEventListener("touchstart", event => {
+    interactionActive = isDevtoolsTarget(event);
+  }, true);
   document.addEventListener("touchmove", event => {
     if (interactionActive) event.stopPropagation();
   }, true);
-  document.addEventListener("touchend", () => reportInteraction(false), true);
-  document.addEventListener("touchcancel", () => reportInteraction(false), true);
+  document.addEventListener("touchend", () => { interactionActive = false; }, true);
+  document.addEventListener("touchcancel", () => { interactionActive = false; }, true);
 
   contentPort.onMessage.addListener(message => {
     if (!message || message.type !== "developer-tools") return;
     visibilityOpen = message.open === true;
-    if (visibilityOpen) {
-      if (bridgeReady) postToPage("visibility", { open: true });
-      else injectPageBridge();
-    } else if (bridgeReady) {
-      postToPage("visibility", { open: false });
-    }
+    syncVisibility();
   });
 
   function injectPageBridge() {

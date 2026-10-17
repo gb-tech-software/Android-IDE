@@ -29,6 +29,10 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     }
 
     init {
+        // Compose drawers and floating DevTools controls must be composited above
+        // the page. GeckoView defaults to SurfaceView, which is a separate layer
+        // and can paint over or blank Compose overlays while they animate.
+        engineView.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
         addView(engineView, ViewGroup.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 

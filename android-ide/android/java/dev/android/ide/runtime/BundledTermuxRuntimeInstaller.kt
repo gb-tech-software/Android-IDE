@@ -82,6 +82,8 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         "BROWSER=${File(prefix, "lib/android-ide/bin/ide").absolutePath}",
         "IDE_PACKAGE=${context.packageName}",
         "IDE_RECEIPT_DIRECTORY=${File(context.filesDir, "browser-navigation-receipts").absolutePath}",
+        "IDE_TOOLS_RECEIPT_DIRECTORY=${File(context.filesDir, "ide-tools-receipts").absolutePath}",
+        "IDE_TOOLS_AUTH_TOKEN=${dev.android.ide.contracts.IdeToolsCommandProtocol.Receipts(context).authToken}",
         "IDE_LOG_TAG=AndroidIde",
         "LD_LIBRARY_PATH=${File(prefix, "lib").absolutePath}",
         "TMPDIR=${File(prefix, "tmp").absolutePath}",
@@ -295,11 +297,7 @@ if ! mkdir -p "${'$'}result_dir"; then
     exit 1
 fi
 rm -f "${'$'}result_file" "${'$'}accepted_file" "${'$'}result_dir/${'$'}request_id.tmp"
-user_id="${'$'}{TERMUX__USER_ID:-0}"
-case "${'$'}user_id" in
-    ''|*[!0-9]*|0[0-9]*) user_id=0 ;;
-esac
-broadcast_output=${'$'}(am broadcast --user "${'$'}user_id" -a "$action" -p "$packageName" --es "$requestKindExtra" "$requestKind" --es "$requestIdExtra" "${'$'}request_id" 2>&1)
+broadcast_output=${'$'}(am broadcast -n "$packageName/dev.android.ide.runtime.TerminalStorageSetupReceiver" -a "$action" --es "$requestKindExtra" "$requestKind" --es "$requestIdExtra" "${'$'}request_id" 2>&1)
 result=${'$'}?
 if [ "${'$'}result" -ne 0 ]; then
     printf 'Android IDE did not receive the storage setup request (exit %s).\n' "${'$'}result"
@@ -307,18 +305,19 @@ if [ "${'$'}result" -ne 0 ]; then
     exit "${'$'}result"
 fi
 accepted_wait_seconds=0
-while [ ! -f "${'$'}accepted_file" ]; do
+while [ ! -f "${'$'}accepted_file" ] && [ ! -f "${'$'}result_file" ]; do
     if [ "${'$'}accepted_wait_seconds" -ge 15 ]; then
-        printf 'Android IDE did not open the storage setup flow. Open Android IDE and run the command again.\n' >&2
+        printf 'Android IDE did not acknowledge the storage setup request. Ensure the app is installed for this Android user, then retry.\n' >&2
+        [ -z "${'$'}broadcast_output" ] || printf '%s\n' "${'$'}broadcast_output" >&2
         exit 1
     fi
     sleep 1
     accepted_wait_seconds=${'$'}((accepted_wait_seconds + 1))
 done
 rm -f "${'$'}accepted_file"
-printf 'Waiting for Android IDE storage setup to finish…\n'
 wait_seconds=0
 while [ ! -f "${'$'}result_file" ]; do
+    if [ "${'$'}wait_seconds" -eq 0 ]; then printf 'Waiting for Android IDE storage setup to finish…\n'; fi
     if [ "${'$'}wait_seconds" -ge 300 ]; then
         printf 'Timed out waiting for Android IDE to finish storage setup. Run the command again.\n' >&2
         exit 1
@@ -350,7 +349,7 @@ if [ "${'$'}result_code" != "0" ]; then exit 1; fi
         ensureDirectory(packageRoot, PREFIX_DIRECTORY_MODE, "android-ide-tools package")
         File(packageRoot, "package.conf").writeText(
             """name=android-ide-tools
-version=1.0.0
+version=2.0.1
 command=ide
 description=Android IDE inspection, testing, and app-control tools
 """.trimIndent() + "\n",

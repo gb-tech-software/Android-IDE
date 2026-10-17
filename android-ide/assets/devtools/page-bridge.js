@@ -15,8 +15,9 @@
     try {
       if (!window.eruda) throw new Error("The Eruda page script did not load");
       if (!initialized) {
+        // Eruda applies id="eruda" and style.all="initial" to its container.
+        // Let it create a dedicated host; using document.body here resets the site's styles.
         window.eruda.init({
-          container: document.body || document.documentElement,
           tool: ["console", "elements", "network", "resources", "sources", "info", "snippets"],
           useShadowDom: true,
           inline: false,
@@ -28,6 +29,12 @@
     } catch (error) {
       post("error", { message: String(error && error.message || error) });
     }
+  }
+
+  function hideTools() {
+    if (!initialized || !window.eruda) return;
+    try { window.eruda.hide(); }
+    catch (error) { post("error", { message: String(error && error.message || error) }); }
   }
 
   function closeTools() {
@@ -53,7 +60,8 @@
 
     if (message.type === "visibility") {
       if (message.open === true) openTools();
-      else closeTools();
+      else if (message.destroy === true) closeTools();
+      else hideTools();
     }
   });
 })();

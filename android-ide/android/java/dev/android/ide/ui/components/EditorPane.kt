@@ -42,6 +42,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
@@ -540,7 +541,7 @@ private fun SymbolBar(
     val colors = LocalIdeColors.current
     Row(
         modifier = Modifier
-            .height(36.dp)
+            .height(48.dp)
             .fillMaxWidth()
             .background(colors.surface)
             .horizontalScroll(rememberScrollState())
@@ -550,61 +551,63 @@ private fun SymbolBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Spacer(Modifier.width(4.dp))
-        Text("Pairs", style = MaterialTheme.typography.labelSmall, color = colors.textSecondary)
         shortcuts.pairs.forEach { pair ->
             TextButton(
                 onClick        = { onInsertPair(pair.opening, pair.closing) },
-                modifier       = Modifier.height(32.dp).widthIn(min = 36.dp).semantics {
+                modifier       = Modifier.height(44.dp).widthIn(min = 44.dp).semantics {
                     contentDescription = if (hasSelection) {
                         "Wrap selection with ${pair.opening} and ${pair.closing}"
                     } else {
                         "Insert ${pair.opening} and ${pair.closing} with cursor between"
                     }
                 },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
             ) {
                 Text(
                     text  = pair.label,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.titleMedium,
                     color = colors.primary,
                 )
             }
         }
-        Spacer(Modifier.width(3.dp))
-        Text("Symbols", style = MaterialTheme.typography.labelSmall, color = colors.textSecondary)
+        Spacer(Modifier.width(2.dp))
         shortcuts.punctuation.forEach { symbol ->
             TextButton(
                 onClick = { onInsertSymbol(symbol) },
-                modifier = Modifier.height(32.dp).widthIn(min = 30.dp),
-                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                modifier = Modifier.height(44.dp).widthIn(min = 40.dp).semantics {
+                    contentDescription = "Insert $symbol"
+                },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
             ) {
-                Text(symbol, style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                Text(symbol, style = MaterialTheme.typography.titleMedium, color = colors.primary)
             }
         }
         if (shortcuts.snippets.isNotEmpty()) {
-            Spacer(Modifier.width(3.dp))
-            Text("Templates", style = MaterialTheme.typography.labelSmall, color = colors.textSecondary)
+            Spacer(Modifier.width(2.dp))
             shortcuts.snippets.forEach { template ->
                 TextButton(
                     onClick = { onInsertSnippet(template.trigger, template.body) },
-                    modifier = Modifier.height(32.dp).widthIn(min = 38.dp).semantics {
-                        contentDescription = "Insert ${shortcuts.languageLabel} ${template.label} template"
+                    modifier = Modifier.height(44.dp).widthIn(min = 44.dp).semantics {
+                        contentDescription = "${shortcuts.languageLabel} ${template.label} quick suggestion"
                     },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 ) {
-                    Text(template.label, style = MaterialTheme.typography.labelMedium, color = colors.primary)
+                    Text(template.label, style = MaterialTheme.typography.labelLarge, color = colors.primary)
                 }
             }
         }
         if (languageIntelligenceAvailable) {
-            TextButton(
+            IconButton(
                 onClick = onShowCompletions,
-                modifier = Modifier.height(32.dp).widthIn(min = 48.dp).semantics {
+                modifier = Modifier.size(48.dp).semantics {
                     contentDescription = "Show language-server suggestions for ${shortcuts.languageLabel} at the cursor"
                 },
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
             ) {
-                Text("Suggest", style = MaterialTheme.typography.labelMedium, color = colors.secondary)
+                EditorToolbarGlyph(
+                    actionId = "triggerSuggest",
+                    tint = colors.secondary,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
         Spacer(Modifier.width(4.dp))
@@ -746,47 +749,40 @@ private fun ToolbarIconButton(
         }
     }
 
-    TooltipBox(
-            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-        tooltip = {
-            PlainTooltip {
-                Text(description, style = MaterialTheme.typography.labelSmall)
-            }
-        },
-        state = tooltipState,
-    ) {
+    val buttonModifier = Modifier
+        .size(44.dp)
+        .semantics { contentDescription = description }
+    if (action.repeatable) {
         IconButton(
             onClick = {
                 if (suppressNextClick) suppressNextClick = false else performAction()
             },
             enabled = enabled,
-            modifier = Modifier
-                .size(44.dp)
-                .semantics { contentDescription = description }
-                .pointerInput(action.id, enabled, action.repeatable) {
-                    if (!enabled || !currentAction.repeatable) return@pointerInput
-                    kotlinx.coroutines.coroutineScope {
-                        val gestureScope = this
-                        awaitPointerEventScope {
-                            while (true) {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                var repeated = false
-                                val repeatJob = gestureScope.launch {
-                                    delay(ViewConfiguration.getLongPressTimeout().toLong())
-                                    repeated = true
-                                    suppressNextClick = true
-                                    while (true) {
-                                        performAction()
-                                        delay(70L)
-                                    }
+            modifier = buttonModifier.pointerInput(action.id, enabled, action.repeatable) {
+                if (!enabled || !currentAction.repeatable) return@pointerInput
+                kotlinx.coroutines.coroutineScope {
+                    val gestureScope = this
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            var repeated = false
+                            val repeatJob = gestureScope.launch {
+                                delay(ViewConfiguration.getLongPressTimeout().toLong())
+                                repeated = true
+                                suppressNextClick = true
+                                performAction()
+                                while (true) {
+                                    delay(70L)
+                                    performAction()
                                 }
-                                val released = waitForUpOrCancellation() != null
-                                repeatJob.cancel()
-                                if (repeated) suppressNextClick = released
                             }
+                            val released = waitForUpOrCancellation(pass = PointerEventPass.Initial) != null
+                            repeatJob.cancel()
+                            if (repeated) suppressNextClick = released
                         }
                     }
-                },
+                }
+            },
         ) {
             EditorToolbarGlyph(
                 actionId = action.id,
@@ -794,6 +790,29 @@ private fun ToolbarIconButton(
                 modifier = Modifier.size(24.dp),
                 keyboardShowing = action.isKeyboardToggle && keyboardShowing,
             )
+        }
+    } else {
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = {
+                PlainTooltip {
+                    Text(description, style = MaterialTheme.typography.labelSmall)
+                }
+            },
+            state = tooltipState,
+        ) {
+            IconButton(
+                onClick = { performAction() },
+                enabled = enabled,
+                modifier = buttonModifier,
+            ) {
+                EditorToolbarGlyph(
+                    actionId = action.id,
+                    tint = if (enabled) colors.textSecondary else colors.textDisabled,
+                    modifier = Modifier.size(24.dp),
+                    keyboardShowing = action.isKeyboardToggle && keyboardShowing,
+                )
+            }
         }
     }
 }

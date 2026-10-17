@@ -40,11 +40,6 @@
     if (port.name !== CONTENT_PORT_NAME) return;
     contentPorts.add(port);
     port.onDisconnect.addListener(() => contentPorts.delete(port));
-    port.onMessage.addListener(message => {
-      if (message && message.type === "developer-tools-interaction") {
-        try { nativePort?.postMessage(message); } catch (_) { /* reconnect path handles it */ }
-      }
-    });
     try {
       port.postMessage(visibility);
     } catch (_) {

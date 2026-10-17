@@ -29,6 +29,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.AddBox
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CheckBox
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
@@ -51,12 +54,15 @@ import androidx.compose.material.icons.filled.IndeterminateCheckBox
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -1176,21 +1182,34 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.PHP -> SimpleIcons.Php
         FileIconKind.HTML -> SimpleIcons.Html5
         FileIconKind.CSS -> SimpleIcons.Css3
+        FileIconKind.XML -> SimpleIcons.Xml
+        FileIconKind.SVG -> SimpleIcons.Svg
+        FileIconKind.YAML -> SimpleIcons.Yaml
+        FileIconKind.TOML -> Icons.Default.Settings
+        FileIconKind.ENV -> Icons.Default.Settings
+        FileIconKind.PROTO -> Icons.Default.Code
         FileIconKind.SQL -> SimpleIcons.Sqlite
         FileIconKind.SHELL -> SimpleIcons.Gnubash
         FileIconKind.DOCKER -> SimpleIcons.Docker
         FileIconKind.GIT -> SimpleIcons.Git
+        FileIconKind.CONFIG -> Icons.Default.Settings
         FileIconKind.DATABASE -> SimpleIcons.Sqlite
         FileIconKind.IMAGE -> Icons.Default.Image
+        FileIconKind.ARCHIVE -> Icons.Default.Archive
+        FileIconKind.FONT -> Icons.Default.FontDownload
+        FileIconKind.AUDIO -> Icons.Default.AudioFile
+        FileIconKind.VIDEO -> Icons.Default.VideoFile
+        FileIconKind.PDF -> Icons.Default.PictureAsPdf
         FileIconKind.TEXT -> Icons.Default.Article
+        FileIconKind.CODE -> Icons.Default.Code
         FileIconKind.GENERIC -> Icons.Default.InsertDriveFile
-        else -> Icons.Default.Code
         }
     }
     val label = when (kind) {
         FileIconKind.KOTLIN -> "KT"
         FileIconKind.JAVA -> "JAVA"
         FileIconKind.XML -> "XML"
+        FileIconKind.SVG -> "SVG"
         FileIconKind.JSON -> "JSON"
         FileIconKind.YAML -> "YML"
         FileIconKind.MARKDOWN -> "MD"
@@ -1239,6 +1258,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.KOTLIN -> Color(0xFF7F52FF)
         FileIconKind.JAVA -> Color(0xFFB07219)
         FileIconKind.XML -> Color(0xFFE44D26)
+        FileIconKind.SVG -> Color(0xFFFFB13B)
         FileIconKind.JSON -> Color(0xFFB8860B)
         FileIconKind.YAML -> Color(0xFFCB171E)
         FileIconKind.MARKDOWN -> Color(0xFF6B7280)

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Android IDE Developer Tools",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Built-in page developer tools for Android IDE browser tabs.",
   "browser_specific_settings": {
     "gecko": {
@@ -16,6 +16,6 @@
   "content_scripts": [{
     "matches": ["<all_urls>"],
     "js": ["devtools.js"],
-    "run_at": "document_start"
+    "run_at": "document_idle"
   }]
 }

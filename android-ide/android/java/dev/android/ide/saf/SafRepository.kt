@@ -24,7 +24,7 @@ import android.os.FileObserver
 import android.provider.DocumentsContract
 import android.util.Log
 import dev.android.ide.editor.EditorLanguageRegistry
-import dev.android.ide.editor.FileIconKind
+import dev.android.ide.editor.FileContentKind
 import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.StorageCapabilities
 import dev.android.ide.contracts.StorageLocation
@@ -1293,7 +1293,7 @@ class SafRepository(private val context: Context) {
 
     private fun languageLabel(path: String): String {
         val fileName = path.substringAfterLast('/')
-        return if (EditorLanguageRegistry.iconKindForFileName(fileName) == FileIconKind.IMAGE) {
+        return if (EditorLanguageRegistry.contentKindForFileName(fileName) == FileContentKind.RASTER_IMAGE) {
             "Images"
         } else {
             when (EditorLanguageRegistry.languageForFileName(fileName)) {

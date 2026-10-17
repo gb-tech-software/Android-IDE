@@ -63,8 +63,15 @@ class ApplicationServices private constructor(application: Application) {
     val browserEngine: BrowserEngine by lazy { GeckoViewBrowserEngine(browserRuntime, context) }
     val browserDeveloperTools by lazy { GeckoBrowserDeveloperToolsService(browserRuntime) }
     private val browserApplicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    val projectStaticPreviewServer by lazy { ProjectStaticPreviewServer() }
+    val projectLiveServer by lazy {
+        ProjectLiveServerService(
+            bundledRuntimeInstaller.prefix(),
+            bundledRuntimeInstaller.home(),
+            bundledRuntimeInstaller.sessionEnvironment(),
+        )
+    }
     val browserNavigationReceipts by lazy { BrowserNavigationReceiptStore(context) }
+    val ideToolsCommandReceipts by lazy { dev.android.ide.contracts.IdeToolsCommandProtocol.Receipts(context) }
     val browserPersistenceCoordinator by lazy { BrowserPersistenceCoordinator(browserApplicationScope) }
     val browserApplicationService by lazy {
         BrowserApplicationService(

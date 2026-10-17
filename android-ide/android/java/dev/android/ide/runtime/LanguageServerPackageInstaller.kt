@@ -25,8 +25,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Installs only the editor's pinned language-server tools, and only after the
  * user enables LSP. The terminal bootstrap remains independent and minimal.
- * The persisted editor preference plus an Android validated-network callback
- * makes an offline enable request resume after connectivity returns or the app restarts.
+ * Enabling the editor preference only validates existing packages. Installation
+ * is authorized separately by the authenticated `ide tools install lsp` command;
+ * an explicitly requested offline install may resume when validated connectivity returns.
  */
 class LanguageServerPackageInstaller(
     private val context: Context,
@@ -46,6 +47,7 @@ class LanguageServerPackageInstaller(
     private val installMutex = Mutex()
     private val callbackLock = Any()
     @Volatile private var enabled = false
+    @Volatile private var explicitInstallRequested = false
     @Volatile private var activeProcess: Process? = null
     private var networkCallbackRegistered = false
 
@@ -68,7 +70,7 @@ class LanguageServerPackageInstaller(
         }
     }
 
-    /** Called only from the persisted editor preference or an explicit retry action. */
+    /** Enables editor LSP use and checks installed packages, but never installs them. */
     fun setEnabled(value: Boolean) {
         if (enabled == value) {
             if (value) scheduleAttempt()
@@ -76,11 +78,20 @@ class LanguageServerPackageInstaller(
         }
         enabled = value
         if (!value) {
-            activeProcess?.destroyForcibly()
-            unregisterNetworkCallback()
-            mutableState.value = Snapshot(State.DISABLED, null)
+            if (!explicitInstallRequested) {
+                activeProcess?.destroyForcibly()
+                unregisterNetworkCallback()
+                mutableState.value = Snapshot(State.DISABLED, null)
+            }
             return
         }
+        mutableState.value = Snapshot(State.QUEUED, CHECKING_MESSAGE)
+        scheduleAttempt()
+    }
+
+    /** Invoked only by the authenticated `ide tools install lsp` command. */
+    fun installExplicitly() {
+        explicitInstallRequested = true
         mutableState.value = Snapshot(State.QUEUED, CHECKING_MESSAGE)
         registerNetworkCallback()
         scheduleAttempt()
@@ -89,12 +100,23 @@ class LanguageServerPackageInstaller(
     fun retry() {
         if (!enabled) return
         mutableState.value = Snapshot(State.QUEUED, CHECKING_MESSAGE)
-        registerNetworkCallback()
         scheduleAttempt()
     }
 
     fun refresh() {
         if (enabled && mutableState.value.state != State.FAILED) scheduleAttempt()
+    }
+
+    /** Remove the app-managed pinned LSP package set after an explicit tools command. */
+    fun removePackages(): Boolean {
+        explicitInstallRequested = false
+        activeProcess?.destroyForcibly()
+        unregisterNetworkCallback()
+        setEnabled(false)
+        mutableState.value = Snapshot(State.DISABLED, null)
+        val root = packageInstallRoot()
+        if (!root.exists()) return true
+        return root.deleteRecursively()
     }
 
     suspend fun arePackagesInstalled(): Boolean = withContext(Dispatchers.IO) {
@@ -111,16 +133,22 @@ class LanguageServerPackageInstaller(
     private fun scheduleAttempt() {
         scope.launch {
             installMutex.withLock {
-                if (!enabled) return@withLock
+                if (!enabled && !explicitInstallRequested) return@withLock
                 val alreadyInstalled = validateInstalledPackages()
-                if (!enabled) return@withLock
+                if (!enabled && !explicitInstallRequested) return@withLock
                 if (alreadyInstalled) {
+                    explicitInstallRequested = false
                     mutableState.value = Snapshot(State.READY, READY_MESSAGE)
                     unregisterNetworkCallback()
                     return@withLock
                 }
+                if (!explicitInstallRequested) {
+                    mutableState.value = Snapshot(State.FAILED, INSTALL_REQUIRED_MESSAGE)
+                    unregisterNetworkCallback()
+                    return@withLock
+                }
                 if (!hasValidatedInternet()) {
-                    mutableState.value = Snapshot(State.QUEUED, WAITING_MESSAGE, canRetry = true)
+                    mutableState.value = Snapshot(State.QUEUED, WAITING_MESSAGE)
                     registerNetworkCallback()
                     return@withLock
                 }
@@ -128,20 +156,21 @@ class LanguageServerPackageInstaller(
                 mutableState.value = Snapshot(State.INSTALLING, INSTALLING_MESSAGE)
                 try {
                     installPackages()
-                    if (!enabled) return@withLock
+                    if (!enabled && !explicitInstallRequested) return@withLock
                     if (!validateInstalledPackages()) throw IOException("Installed versions or command entry points did not pass validation")
+                    explicitInstallRequested = false
                     mutableState.value = Snapshot(State.READY, READY_MESSAGE)
                     unregisterNetworkCallback()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
-                    if (!enabled) return@withLock
+                    if (!enabled && !explicitInstallRequested) return@withLock
+                    explicitInstallRequested = false
                     mutableState.value = Snapshot(
                         State.FAILED,
                         "Language-server package setup failed: ${error.message ?: error.javaClass.simpleName}",
-                        canRetry = true,
                     )
-                    registerNetworkCallback()
+                    unregisterNetworkCallback()
                 }
             }
         }
@@ -153,7 +182,7 @@ class LanguageServerPackageInstaller(
         if (bootstrap.outcome != OperationOutcome.COMPLETE) {
             throw IOException(bootstrap.message.ifBlank { "The default Termux bootstrap is unavailable" })
         }
-        ensureStillEnabled()
+        ensureInstallAuthorized()
 
         val prefix = terminalInstaller.prefix()
         val node = File(prefix, "bin/node")
@@ -162,7 +191,7 @@ class LanguageServerPackageInstaller(
         if (!node.canExecute() || !npm.canExecute() || !supportsRequiredNodeVersion(nodeVersion)) {
             val update = runCommand("pkg update -y")
             ensureSuccess("Termux package index update", update)
-            ensureStillEnabled()
+            ensureInstallAuthorized()
             val install = runCommand("pkg install -y nodejs-lts")
             ensureSuccess("Node.js LTS installation", install)
         }
@@ -171,7 +200,7 @@ class LanguageServerPackageInstaller(
             throw IOException("LSP packages require Node.js 24.18 or newer; the available version is $verifiedNode")
         }
         if (!npm.canExecute()) throw IOException("npm is unavailable after installing the LSP Node.js prerequisite")
-        ensureStillEnabled()
+        ensureInstallAuthorized()
         if (!hasValidatedInternet()) throw IOException("A validated internet connection is no longer available")
 
         val installRoot = packageInstallRoot()
@@ -246,9 +275,9 @@ class LanguageServerPackageInstaller(
             .start()
         activeProcess = process
         try {
-            if (!enabled) {
+            if (!explicitInstallRequested) {
                 process.destroyForcibly()
-                throw CancellationException("LSP was disabled during package setup")
+                throw CancellationException("Explicit LSP package installation was cancelled")
             }
             if (!process.waitFor(COMMAND_TIMEOUT_MINUTES, TimeUnit.MINUTES)) {
                 process.destroyForcibly()
@@ -276,8 +305,8 @@ class LanguageServerPackageInstaller(
         }
     }
 
-    private fun ensureStillEnabled() {
-        if (!enabled) throw CancellationException("LSP was disabled during package setup")
+    private fun ensureInstallAuthorized() {
+        if (!explicitInstallRequested) throw CancellationException("Explicit LSP package installation was cancelled")
     }
 
     private fun copyAsset(asset: String, destination: File) {
@@ -305,8 +334,7 @@ class LanguageServerPackageInstaller(
                 .onFailure {
                     mutableState.value = Snapshot(
                         State.QUEUED,
-                        "$WAITING_MESSAGE Android could not monitor network changes; reopen editor settings or retry when online.",
-                        canRetry = true,
+                        "$WAITING_MESSAGE Android could not monitor network changes; run `ide tools install lsp` again when online.",
                     )
                 }
         }
@@ -335,5 +363,6 @@ class LanguageServerPackageInstaller(
         const val WAITING_MESSAGE = "Waiting for a validated internet connection to install the pinned language-server packages."
         const val INSTALLING_MESSAGE = "Installing and validating the pinned language-server packages…"
         const val READY_MESSAGE = "Pinned language-server packages are installed and validated."
+        const val INSTALL_REQUIRED_MESSAGE = "Language-server packages are not installed. Run `ide tools install lsp` to install them explicitly."
     }
 }

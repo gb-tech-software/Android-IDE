@@ -729,7 +729,6 @@ class GeckoBrowserDeveloperToolsService(
     private var opened = false
     private var installed = false
     private var installing = false
-    private var interactionListener: ((Boolean) -> Unit)? = null
 
     init {
         installIfNeeded()
@@ -738,10 +737,6 @@ class GeckoBrowserDeveloperToolsService(
     override fun setEnabled(enabled: Boolean) {
         this.enabled = enabled
         if (!enabled) close() else installIfNeeded()
-    }
-
-    override fun setInteractionListener(listener: ((Boolean) -> Unit)?) {
-        interactionListener = listener
     }
 
     override fun open() {
@@ -772,16 +767,10 @@ class GeckoBrowserDeveloperToolsService(
                         if (port.name != "android_ide") return
                         ports += port
                         port.setDelegate(object : WebExtension.PortDelegate {
-                            override fun onPortMessage(message: Any, port: WebExtension.Port) {
-                                val payload = message as? JSONObject ?: return
-                                if (payload.optString("type") == "developer-tools-interaction") {
-                                    interactionListener?.invoke(payload.optBoolean("active"))
-                                }
-                            }
+                            override fun onPortMessage(message: Any, port: WebExtension.Port) = Unit
 
                             override fun onDisconnect(port: WebExtension.Port) {
                                 ports -= port
-                                interactionListener?.invoke(false)
                             }
                         })
                         postVisibility(opened, port)
