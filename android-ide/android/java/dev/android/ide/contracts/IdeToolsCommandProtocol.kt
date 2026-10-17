@@ -17,6 +17,8 @@ object IdeToolsCommandProtocol {
     private val AUTH_TOKEN_LOCK = Any()
     @Volatile private var cachedAuthToken: String? = null
 
+    fun isValidRequestId(candidate: String?): Boolean = candidate != null && REQUEST_ID.matches(candidate)
+
     class Receipts(context: Context) {
         private val appFiles = context.applicationContext.filesDir
         val directory = File(appFiles, "ide-tools-receipts")
@@ -36,11 +38,11 @@ object IdeToolsCommandProtocol {
             return MessageDigest.isEqual(authToken.toByteArray(Charsets.UTF_8), candidate.toByteArray(Charsets.UTF_8))
         }
 
-        fun isValidRequestId(candidate: String?): Boolean = candidate != null && REQUEST_ID.matches(candidate)
+        fun isValidRequestId(candidate: String?): Boolean = IdeToolsCommandProtocol.isValidRequestId(candidate)
 
         @Synchronized
         fun record(requestId: String?, exitCode: Int, message: String, data: String? = null) {
-            val id = requestId?.takeIf(REQUEST_ID::matches) ?: return
+            val id = requestId?.takeIf { IdeToolsCommandProtocol.isValidRequestId(it) } ?: return
             if (exitCode !in 0..255 || (!directory.isDirectory && !directory.mkdirs())) return
             val destination = File(directory, "$id.result")
             val temporary = File(directory, "$id.tmp")

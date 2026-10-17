@@ -137,7 +137,7 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.action == OpenUrlRequestProtocol.ACTION) {
             val requestId = intent.getStringExtra(OpenUrlRequestProtocol.REQUEST_ID_EXTRA)
-                ?.takeIf { REQUEST_ID_PATTERN.matches(it) }
+                ?.takeIf { IdeToolsCommandProtocol.isValidRequestId(it) }
             val url = intent.getStringExtra(OpenUrlRequestProtocol.URL_EXTRA)?.trim().orEmpty()
             val uri = runCatching { Uri.parse(url) }.getOrNull()
             val receipts = ApplicationServices.from(application).browserNavigationReceipts
@@ -718,7 +718,7 @@ class MainActivity : ComponentActivity() {
                         val active = state.projectRootUri?.let { root -> registered.firstOrNull { it.location.stableId == root } }
                         when (command) {
                             "projects.list" -> 0 to if (registered.isEmpty()) "No registered projects" else "projects=${registered.size} truncated=${registered.size > 10} " + registered.take(10).joinToString(" | ") { "${it.id}\t${it.name.take(40)}\t${it.location.stableId.take(60)}" }
-                            "projects.status" -> 0 to "projects=${registered.size} active=${active?.id ?: "none"} selected=${appShellViewModel.uiState.value.selectedProjectId ?: "none"} editorRoot=${state.projectRootUri ?: "none"} dirtyTabs=${state.openTabs.count { it.isDirty }}"
+                            "projects.status" -> 0 to "projects=${registered.size} active=${active?.id ?: "none"} selected=${appShellViewModel.state.value.selectedProjectId ?: "none"} editorRoot=${state.projectRootUri ?: "none"} dirtyTabs=${state.openTabs.count { it.isDirty }}"
                             else -> {
                                 val root = state.projectRootUri
                                 if (root == null) 3 to "FAIL project workspace: no active project"

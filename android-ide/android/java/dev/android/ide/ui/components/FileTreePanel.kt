@@ -1182,9 +1182,9 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.PHP -> SimpleIcons.Php
         FileIconKind.HTML -> SimpleIcons.Html5
         FileIconKind.CSS -> SimpleIcons.Css3
-        FileIconKind.XML -> SimpleIcons.Xml
+        FileIconKind.XML -> Icons.Default.Code
         FileIconKind.SVG -> SimpleIcons.Svg
-        FileIconKind.YAML -> SimpleIcons.Yaml
+        FileIconKind.YAML -> Icons.Default.Settings
         FileIconKind.TOML -> Icons.Default.Settings
         FileIconKind.ENV -> Icons.Default.Settings
         FileIconKind.PROTO -> Icons.Default.Code
@@ -1203,6 +1203,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.TEXT -> Icons.Default.Article
         FileIconKind.CODE -> Icons.Default.Code
         FileIconKind.GENERIC -> Icons.Default.InsertDriveFile
+        FileIconKind.LOCKFILE -> Icons.Default.InsertDriveFile
         }
     }
     val label = when (kind) {
