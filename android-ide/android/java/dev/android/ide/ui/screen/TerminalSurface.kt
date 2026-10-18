@@ -2,6 +2,7 @@ package dev.android.ide.ui.screen
 
 import android.Manifest
 import android.os.Build
+import android.widget.Toast
 import android.content.pm.PackageManager
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -39,8 +40,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -99,7 +98,6 @@ fun TerminalSurface(
     val context = LocalContext.current
     val themeResolver = remember { ThemeResolver(context) }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    val snackbarHostState = remember { SnackbarHostState() }
     val terminalTheme = when (themeResolver.getTerminalTheme(terminalSettings.theme)) {
         ResolvedTheme.DARK -> TerminalTheme.DARK
         ResolvedTheme.LIGHT -> TerminalTheme.LIGHT
@@ -114,7 +112,7 @@ fun TerminalSurface(
     }
 
     LaunchedEffect(state.terminalFeedback?.message) {
-        state.terminalFeedback?.takeUnless(::requiresTerminalDialog)?.let { snackbarHostState.showSnackbar(it.message) }
+        state.terminalFeedback?.takeUnless(::requiresTerminalDialog)?.let { Toast.makeText(context, it.message, Toast.LENGTH_SHORT).show() }
     }
 
     LaunchedEffect(state.terminalFeedback) {
@@ -287,7 +285,6 @@ fun TerminalSurface(
             )
         }
     }
-    SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.TopCenter).padding(16.dp))
     blockingFeedback?.let { report ->
         AlertDialog(
             onDismissRequest = {},

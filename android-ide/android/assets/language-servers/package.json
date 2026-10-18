@@ -2,7 +2,7 @@
   "name": "android-ide-language-servers",
   "private": true,
   "version": "1.0.0",
-  "description": "Pinned language-server packages installed only by the explicit ide tools install lsp command",
+  "description": "Pinned language-server packages managed by Android IDE",
   "engines": {
     "node": ">=24.18"
   },

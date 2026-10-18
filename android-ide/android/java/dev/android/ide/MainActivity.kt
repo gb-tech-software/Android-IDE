@@ -702,15 +702,15 @@ class MainActivity : ComponentActivity() {
                     }
                     "tools.status", "tools.test" -> {
                         val lspInstalled = services.languageServerPackageInstaller.arePackagesInstalled()
-                        val liveServerInstalled = File(services.bundledRuntimeInstaller.prefix(), "bin/live-server").canExecute()
+                        val liveServerInstalled = services.projectLiveServer.packageStatus().installed
                         val packageNames = listOf("git", "node", "npm", "pnpm", "zip", "unzip")
                         val present = packageNames.filter { File(services.bundledRuntimeInstaller.prefix(), "bin/$it").canExecute() }
                         val missing = packageNames - present.toSet()
-                        val summary = "base=${present.joinToString(",")} live-server-global=$liveServerInstalled lsp-packages=$lspInstalled"
+                        val summary = "base=${present.joinToString(",")} preview-package=$liveServerInstalled lsp-packages=$lspInstalled"
                         if (command == "tools.status") 0 to summary
                         else if (!services.terminalRuntime.capabilities().shellAvailable) 3 to "FAIL tools: terminal runtime is unavailable"
-                        else if (missing.isNotEmpty()) 4 to "FAIL base tools: missing ${missing.joinToString(", ")}; run ide init; optional live-server/LSP=$liveServerInstalled/$lspInstalled"
-                        else 0 to "PASS base tools: ${packageNames.joinToString(", ")} are executable; optional live-server=$liveServerInstalled lsp-packages=$lspInstalled"
+                        else if (missing.isNotEmpty()) 4 to "FAIL base tools: missing ${missing.joinToString(", ")}; run ide init; optional preview/LSP=$liveServerInstalled/$lspInstalled"
+                        else 0 to "PASS base tools: ${packageNames.joinToString(", ")} are executable; optional preview=$liveServerInstalled lsp-packages=$lspInstalled"
                     }
                     "projects.status", "projects.test", "projects.list" -> {
                         val registered = services.projectManagement.registeredProjects()

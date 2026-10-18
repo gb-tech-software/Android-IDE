@@ -162,6 +162,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val lspDocumentVersions = mutableMapOf<String, Int>()
     private var workspaceSaveJob: Job? = null
     private var editorFeatureBoundaryReached = false
+    private var editorUsableTabReady = false
 
     init {
         // Read the previous session marker before marking this process as active.
@@ -209,7 +210,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAppForeground() {
         lifecycleStore.markForeground()
-        if (editorFeatureBoundaryReached && _uiState.value.editorSettings.languageServerEnabled) {
+        if (editorFeatureBoundaryReached && editorUsableTabReady && _uiState.value.editorSettings.languageServerEnabled) {
             languageServerPackageInstaller.refresh()
         }
     }
@@ -461,11 +462,21 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.retry()
     }
 
+    fun installLanguageServerTools() = languageServerPackageInstaller.installExplicitly()
+
+    fun updateLanguageServerTools() = languageServerPackageInstaller.installExplicitly()
+
     suspend fun removeLanguageServerTools(): Boolean {
         setEditorSettings(_uiState.value.editorSettings.copy(languageServerEnabled = false))
         languageServers.stopAll()
         return languageServerPackageInstaller.removePackages()
     }
+
+    suspend fun installPreviewPackage() = services.projectLiveServer.install()
+
+    suspend fun updatePreviewPackage() = services.projectLiveServer.update()
+
+    suspend fun removePreviewPackage(): Boolean = services.projectLiveServer.remove()
 
     fun setVolumeKeyMode(mode: VolumeKeyMode) {
         editorSettingsRepo.setVolumeKeyMode(mode)
@@ -1466,6 +1477,11 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
      * critical path.
      */
     private fun activateLanguageFeaturesAfterEditorReady() {
+        // Monaco being ready only means that the WebView exists. Do not start
+        // package discovery or register LSP providers until a document model
+        // has actually been loaded into an editor tab. This keeps optional
+        // language work off the editor-surface critical path on mobile.
+        if (!editorFeatureBoundaryReached || !editorUsableTabReady) return
         if (!_uiState.value.editorSettings.languageServerEnabled) return
         languageServerPackageInstaller.setEnabled(true)
         sendEditorCommand(EditorOutbound.EnableLanguageFeatures)
@@ -1779,10 +1795,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 editorBindRevision = it.editorBindRevision + 1,
             )
         }
-        // Monaco readiness is the boundary for optional workspace features.
-        // Do not probe/install LSP packages while the editor surface is still
-        // being created; the user must first receive an editable surface.
-        activateLanguageFeaturesAfterEditorReady()
         val settings = _uiState.value.editorSettings
         sendEditorCommand(EditorOutbound.SetEditorOptions(
             tabSize                = settings.tabSize,
@@ -1803,6 +1815,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     /** Marks the native editor as unavailable until the WebView sends Ready again. */
     fun onEditorRendererGone() {
         lastContentRevision.clear()
+        editorUsableTabReady = false
         _uiState.update {
             it.copy(
                 isEditorReady    = false,
@@ -1838,8 +1851,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         when (message) {
             is EditorInbound.Ready -> onEditorReady()
             is EditorInbound.FileLoaded -> {
-                // The editor has attached and displayed the model. Optional
-                // LSP/package work may begin only after this point.
+                // The editor has attached and displayed a document model.
+                // Optional LSP/package work may begin only after this point.
+                editorUsableTabReady = true
                 activateLanguageFeaturesAfterEditorReady()
             }
             is EditorInbound.FileLoadFailed,

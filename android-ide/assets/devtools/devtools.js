@@ -39,7 +39,10 @@
   function syncVisibility() {
     if (!visibilityOpen) {
       interactionActive = false;
-      if (bridgeReady) postToPage("visibility", { open: false, destroy: true });
+      // Hide the UI, but do not destroy the page bridge. It is installed at
+      // document_start so it can retain console, error, and network state
+      // before application code or a failed page can interrupt the load.
+      if (bridgeReady) postToPage("visibility", { open: false, destroy: false });
       return;
     }
     if (document.visibilityState !== "visible") {
@@ -67,6 +70,10 @@
     visibilityOpen = message.open === true;
     syncVisibility();
   });
+
+  // Do this independently of the panel's visibility. Waiting for the user to
+  // open DevTools, or for document_idle, loses early page errors and requests.
+  injectPageBridge();
 
   function injectPageBridge() {
     if (injectionStarted) return;

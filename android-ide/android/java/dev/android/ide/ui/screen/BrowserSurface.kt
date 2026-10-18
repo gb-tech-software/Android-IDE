@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.StatFs
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.core.content.FileProvider
@@ -22,6 +23,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -39,6 +42,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -92,6 +96,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -122,6 +127,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
@@ -286,6 +292,13 @@ fun BrowserSurface(
 
     LaunchedEffect(state.address, addressFocused) {
         if (!addressFocused) addressValue = TextFieldValue(state.address, TextRange(state.address.length))
+    }
+    LaunchedEffect(state.selectedTabId) {
+        // Scroll visibility belongs to the selected tab's surface. Do not carry
+        // a hidden address row from one tab into another or back into a tab that
+        // was temporarily detached while it was not selected.
+        previousScrollY = 0
+        urlRowVisible = true
     }
     LaunchedEffect(addressValue.text, addressFocused, addressSuggestionsOpen) {
         if (!addressFocused || !addressSuggestionsOpen) {
@@ -598,12 +611,10 @@ private fun BrowserSurfaceContent(
                     else -> "Browser"
                 }) },
                 navigationIcon = {
-                    IconButton(onClick = when {
-                        state.downloadsPageOpen -> browser::hideDownloadsPage
-                        state.historyPageOpen -> browser::hideHistoryPage
-                        else -> onOpenNavigation
-                    }) {
-                        Icon(if (state.downloadsPageOpen || state.historyPageOpen) Icons.Default.ArrowBack else Icons.Default.Menu, if (state.downloadsPageOpen || state.historyPageOpen) "Back to browser" else "Open Android IDE navigation")
+                    // Keep the Android IDE sidebar toggle available on every
+                    // browser surface, including Downloads and History.
+                    IconButton(onClick = onOpenNavigation) {
+                        Icon(Icons.Default.Menu, "Open Android IDE navigation")
                     }
                 },
                 actions = {
@@ -1642,7 +1653,16 @@ private fun DownloadsScreen(
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var deleteConfirmationIds by remember { mutableStateOf<List<String>?>(null) }
     var cancelConfirmationIds by remember { mutableStateOf<List<String>?>(null) }
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
     val context = LocalContext.current
+    val selectionMode = selectedIds.isNotEmpty()
+    BackHandler(enabled = selectionMode || searchOpen) {
+        when {
+            selectionMode -> selectedIds = emptySet()
+            searchOpen -> { searchOpen = false; searchQuery = "" }
+        }
+    }
     val liveIds = downloads.mapTo(mutableSetOf()) { it.id }
     LaunchedEffect(liveIds) { selectedIds = selectedIds intersect liveIds }
     val ordered = when (sort) {
@@ -1706,100 +1726,178 @@ private fun DownloadsScreen(
         cancelConfirmationIds = null
     }
 
+    val filterOptions = listOf(
+        DownloadFilter.ALL to "All",
+        DownloadFilter.AUDIO to "Audio",
+        DownloadFilter.IMAGES to "Images",
+        DownloadFilter.OTHER to "Other",
+    )
+    var filter by rememberSaveable { mutableStateOf(DownloadFilter.ALL) }
+    val filtered = ordered.filter {
+        filter.accepts(it) && (
+            searchQuery.isBlank() ||
+                it.name.contains(searchQuery, ignoreCase = true) ||
+                it.sourceUrl.contains(searchQuery, ignoreCase = true) ||
+                it.mimeType.contains(searchQuery, ignoreCase = true)
+            )
+    }
+    LaunchedEffect(searchQuery, filter, filtered.map { it.id }) {
+        val visibleIds = filtered.mapTo(mutableSetOf()) { it.id }
+        selectedIds = selectedIds intersect visibleIds
+    }
+    val previewCandidates = filtered.filter {
+        it.mimeType.startsWith("image/") &&
+            it.status == BrowserDownloadStatus.COMPLETED &&
+            it.available
+    }
+    val availablePreviews by produceState<Map<String, androidx.compose.ui.graphics.ImageBitmap>>(emptyMap(), previewCandidates.map { it.id }) {
+        val decoded = linkedMapOf<String, androidx.compose.ui.graphics.ImageBitmap>()
+        for (item in previewCandidates) {
+            loadDownloadThumbnail(context, item.uri)?.let { decoded[item.id] = it }
+            if (decoded.size == 4) break
+        }
+        value = decoded
+    }
+    val grouped = filtered.groupBy { downloadDateLabel(it.timestamp) }
+    val storage = remember(context.filesDir.absolutePath) {
+        runCatching { StatFs(context.filesDir.absolutePath) }.getOrNull()
+    }
+    val totalStorage = storage?.totalBytes ?: 0L
+    val availableStorage = storage?.availableBytes ?: 0L
+    val usedStorage = (totalStorage - availableStorage).coerceAtLeast(0L)
+    val downloadedBytes = downloads.filter { it.status == BrowserDownloadStatus.COMPLETED }
+        .sumOf { it.size.coerceAtLeast(0L) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(if (selectionMode) "${selectedIds.size} selected" else "Downloads", style = MaterialTheme.typography.headlineSmall)
                     Text(
-                        if (selectedIds.isEmpty()) "All downloads · ${downloads.size}" else "${selectedIds.size} selected",
-                        style = MaterialTheme.typography.titleSmall,
+                        if (totalStorage > 0L) "Using ${formatDownloadBytes(usedStorage)} of ${formatDownloadBytes(totalStorage)}"
+                        else "${formatDownloadBytes(downloadedBytes)} downloaded",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (downloads.isNotEmpty()) {
-                            TextButton(onClick = {
-                                selectedIds = if (selectedIds.size == downloads.size) emptySet() else downloads.mapTo(mutableSetOf()) { it.id }
-                            }) { Text(if (selectedIds.size == downloads.size) "Deselect all" else "Select all") }
+                }
+                Row {
+                    if (!selectionMode) IconButton(onClick = { searchOpen = !searchOpen }) {
+                        Icon(Icons.Default.Search, if (searchOpen) "Close search" else "Search downloads")
+                    }
+                    IconButton(onClick = if (selectionMode) ({ selectedIds = emptySet() }) else browser::hideDownloadsPage) {
+                        Icon(if (selectionMode) Icons.Default.Close else Icons.Default.Close, if (selectionMode) "Clear selection" else "Close downloads")
+                    }
+                }
+            }
+        }
+        if (searchOpen) {
+            item {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Search downloads") },
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    trailingIcon = if (searchQuery.isNotEmpty()) ({
+                        IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Close, "Clear search") }
+                    }) else null,
+                )
+            }
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                filterOptions.forEach { (option, label) ->
+                    FilterChip(
+                        selected = filter == option,
+                        onClick = { filter = option },
+                        label = { Text(label) },
+                        leadingIcon = if (filter == option) ({ Icon(Icons.Default.Download, null, Modifier.size(16.dp)) }) else null,
+                    )
+                }
+            }
+        }
+        if (availablePreviews.isNotEmpty()) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Available previews", style = MaterialTheme.typography.titleMedium)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        previewCandidates.filter { it.id in availablePreviews }.take(2).forEach { item ->
+                            DownloadPreviewTile(item, availablePreviews.getValue(item.id), browser, Modifier.weight(1f))
                         }
-                        Box {
-                            TextButton(onClick = { sortMenuOpen = true }) { Text("Sort: ${sort.label}") }
-                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                                DownloadSort.values().forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label) },
-                                        onClick = { sort = option; sortMenuOpen = false },
-                                    )
-                                }
+                    }
+                }
+            }
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    if (selectedIds.isEmpty()) "${filtered.size} files" else "${selectedIds.size} selected",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (filtered.isNotEmpty()) {
+                        TextButton(onClick = {
+                            selectedIds = if (selectedIds.size == filtered.size) emptySet() else filtered.mapTo(mutableSetOf()) { it.id }
+                        }) { Text(if (selectedIds.size == filtered.size) "Deselect all" else "Select all") }
+                    }
+                    Box {
+                        TextButton(onClick = { sortMenuOpen = true }) { Text("Sort") }
+                        DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                            DownloadSort.values().forEach { option ->
+                                DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortMenuOpen = false })
                             }
                         }
                     }
                 }
-                if (selectedIds.isNotEmpty()) {
-                    val cancelable = (running + paused).distinctBy { it.id }
-                    val retryable = selected.singleOrNull()?.takeIf {
-                        it.status in setOf(BrowserDownloadStatus.FAILED, BrowserDownloadStatus.INTERRUPTED, BrowserDownloadStatus.CANCELED) &&
-                            it.sourceUrl.isNotBlank()
-                    }
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            }
+        }
+        if (selectedIds.isNotEmpty()) {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Box {
                         IconButton(onClick = { selectionActionsOpen = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Selected download actions")
+                            Icon(Icons.Default.MoreVert, "Selected download actions")
                         }
-                        DropdownMenu(
-                            expanded = selectionActionsOpen,
-                            onDismissRequest = { selectionActionsOpen = false },
-                        ) {
-                            if (selected.size == 1 && shareable.size == 1) {
-                                DropdownMenuItem(
-                                    text = { Text("Open") },
-                                    leadingIcon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; openSelected() },
-                                )
-                            }
-                            if (shareable.isNotEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("Share (${shareable.size})") },
-                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; shareSelected() },
-                                )
-                            }
-                            if (running.isNotEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("Pause (${running.size})") },
-                                    leadingIcon = { Icon(Icons.Default.Pause, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; running.forEach { browser.pauseDownload(it.id) } },
-                                )
-                            }
-                            if (paused.isNotEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("Resume (${paused.size})") },
-                                    leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; paused.forEach { browser.resumeDownload(it.id) } },
-                                )
-                            }
-                            if (cancelable.isNotEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("Cancel (${cancelable.size})") },
-                                    leadingIcon = { Icon(Icons.Default.Cancel, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; cancelConfirmationIds = cancelable.map { it.id } },
-                                )
-                            }
-                            retryable?.let { item ->
-                                DropdownMenuItem(
-                                    text = { Text("Retry") },
-                                    leadingIcon = { Icon(Icons.Default.Replay, contentDescription = null) },
-                                    onClick = { selectionActionsOpen = false; browser.retryDownload(item.id) },
-                                )
-                            }
+                        DropdownMenu(expanded = selectionActionsOpen, onDismissRequest = { selectionActionsOpen = false }) {
+                            if (selected.size == 1 && shareable.size == 1) DropdownMenuItem(
+                                text = { Text("Open") },
+                                leadingIcon = { Icon(Icons.Default.OpenInNew, null) },
+                                onClick = { selectionActionsOpen = false; openSelected() },
+                            )
+                            if (shareable.isNotEmpty()) DropdownMenuItem(
+                                text = { Text("Share (${shareable.size})") },
+                                leadingIcon = { Icon(Icons.Default.Share, null) },
+                                onClick = { selectionActionsOpen = false; shareSelected() },
+                            )
+                            if (running.isNotEmpty()) DropdownMenuItem(
+                                text = { Text("Pause (${running.size})") },
+                                leadingIcon = { Icon(Icons.Default.Pause, null) },
+                                onClick = { selectionActionsOpen = false; running.forEach { browser.pauseDownload(it.id) } },
+                            )
+                            if (paused.isNotEmpty()) DropdownMenuItem(
+                                text = { Text("Resume (${paused.size})") },
+                                leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                                onClick = { selectionActionsOpen = false; paused.forEach { browser.resumeDownload(it.id) } },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Delete (${selected.size})", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                                 onClick = { selectionActionsOpen = false; deleteConfirmationIds = selected.map { it.id } },
                             )
                         }
@@ -1807,26 +1905,40 @@ private fun DownloadsScreen(
                 }
             }
         }
-        if (downloads.isEmpty()) {
+        if (filtered.isEmpty()) {
             item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.primary)
-                        Text("No downloads yet", style = MaterialTheme.typography.titleMedium)
-                        Text("Files you download will appear here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                Column(Modifier.fillMaxWidth().padding(vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Download, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                    Text(if (downloads.isEmpty()) "No downloads yet" else "No matching downloads", style = MaterialTheme.typography.titleMedium)
+                    Text("Downloaded files will appear here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-        }
-        items(ordered, key = { it.id }) { item ->
-            DownloadRow(
-                download = item,
-                browser = browser,
-                selected = item.id in selectedIds,
-                onSelectedChange = { checked -> selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id },
-                onCancel = { cancelConfirmationIds = listOf(item.id) },
-                onDelete = { deleteConfirmationIds = listOf(item.id) },
-            )
+        } else {
+            grouped.forEach { (label, entries) ->
+                item { Text(label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp)) }
+                items(entries, key = { it.id }) { item ->
+                    DownloadRow(
+                        download = item,
+                        browser = browser,
+                        selectionMode = selectionMode,
+                        selected = item.id in selectedIds,
+                        onSelectedChange = { checked -> selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id },
+                        onClick = {
+                            if (selectionMode) {
+                                val checked = item.id !in selectedIds
+                                selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id
+                            } else {
+                                val intent = browser.openDownload(item.id)
+                                if (intent == null) browser.reportError("The downloaded file is no longer available")
+                                else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
+                            }
+                        },
+                        onLongClick = { selectedIds = selectedIds + item.id },
+                        onCancel = { cancelConfirmationIds = listOf(item.id) },
+                        onDelete = { deleteConfirmationIds = listOf(item.id) },
+                    )
+                }
+            }
         }
     }
 
@@ -1867,6 +1979,85 @@ private fun DownloadsScreen(
 
 private enum class DownloadSort(val label: String) { DATE("Date"), NAME("Name"), SIZE("Size") }
 
+private enum class DownloadFilter {
+    ALL,
+    AUDIO,
+    IMAGES,
+    OTHER;
+
+    fun accepts(download: BrowserDownload): Boolean = when (this) {
+        ALL -> true
+        AUDIO -> download.mimeType.startsWith("audio/")
+        IMAGES -> download.mimeType.startsWith("image/")
+        OTHER -> !download.mimeType.startsWith("audio/") && !download.mimeType.startsWith("image/")
+    }
+}
+
+private fun downloadDateLabel(timestamp: Long): String {
+    if (timestamp <= 0L) return "Earlier"
+    val date = Date(timestamp)
+    val now = java.util.Calendar.getInstance()
+    val target = java.util.Calendar.getInstance().apply { time = date }
+    val sameDay = now.get(java.util.Calendar.ERA) == target.get(java.util.Calendar.ERA) &&
+        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+        now.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+    if (sameDay) return "Just now"
+    val yesterday = java.util.Calendar.getInstance().apply { add(java.util.Calendar.DAY_OF_YEAR, -1) }
+    val isYesterday = yesterday.get(java.util.Calendar.ERA) == target.get(java.util.Calendar.ERA) &&
+        yesterday.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
+        yesterday.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
+    if (isYesterday) return "Yesterday"
+    return DateFormat.getDateInstance(DateFormat.MEDIUM).format(date)
+}
+
+private suspend fun loadDownloadThumbnail(
+    context: android.content.Context,
+    uriValue: String,
+): androidx.compose.ui.graphics.ImageBitmap? = withContext(Dispatchers.IO) {
+    runCatching {
+        val uri = Uri.parse(uriValue)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { input -> BitmapFactory.decodeStream(input, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+        var sample = 1
+        while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, options)?.asImageBitmap()
+        }
+    }.getOrNull()
+}
+
+@Composable
+private fun DownloadPreviewTile(
+    download: BrowserDownload,
+    thumbnail: androidx.compose.ui.graphics.ImageBitmap,
+    browser: BrowserViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    Card(
+        modifier = modifier.height(116.dp).clickable {
+            val intent = browser.openDownload(download.id)
+            if (intent == null) browser.reportError("The downloaded file is no longer available")
+            else runCatching { context.startActivity(intent) }.onFailure { browser.reportError("No application can open this file") }
+        },
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Image(thumbnail, contentDescription = download.name, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            Text(
+                download.name,
+                modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color.Black.copy(alpha = 0.58f)).padding(horizontal = 8.dp, vertical = 5.dp),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+    }
+}
+
 private fun commonDownloadMimeType(values: List<String>): String {
     val mimeTypes = values.map { it.substringBefore(';').trim().ifBlank { "*/*" } }.distinct()
     if (mimeTypes.size == 1) return mimeTypes.single()
@@ -1874,12 +2065,16 @@ private fun commonDownloadMimeType(values: List<String>): String {
     return if (topLevelTypes.size == 1 && topLevelTypes.single() != "*") "${topLevelTypes.single()}/*" else "*/*"
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadRow(
     download: BrowserDownload,
     browser: BrowserViewModel,
+    selectionMode: Boolean,
     selected: Boolean,
     onSelectedChange: (Boolean) -> Unit,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onCancel: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -1902,14 +2097,14 @@ private fun DownloadRow(
     val progress = if (download.totalBytes > 0L) (download.downloadedBytes.toFloat() / download.totalBytes.toFloat()).coerceIn(0f, 1f) else null
 
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick),
         colors = CardDefaults.cardColors(
             containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         ),
     ) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Checkbox(checked = selected, onCheckedChange = onSelectedChange)
+                if (selectionMode) Checkbox(checked = selected, onCheckedChange = onSelectedChange)
                 Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
                     Icon(icon, contentDescription = download.mimeType, tint = MaterialTheme.colorScheme.primary)
                 }

@@ -160,6 +160,47 @@ function lspRange(range) {
   );
 }
 
+function lspLocationToMonaco(location, fallbackUri) {
+  if (!location) return null;
+  var uri = location.uri || location.targetUri;
+  var range = location.range || location.targetSelectionRange || location.targetRange;
+  if (!range) return null;
+  return { uri: uri ? monaco.Uri.parse(uri) : fallbackUri, range: lspRange(range) };
+}
+
+/** Convert LSP WorkspaceEdit changes into Monaco's mobile-safe edit shape. */
+function lspWorkspaceEditToMonaco(edit) {
+  if (!edit) return { edits: [] };
+  var result = [];
+  Object.keys(edit.changes || {}).forEach(function (uri) {
+    (edit.changes[uri] || []).forEach(function (change) {
+      if (!change || !change.range || change.newText == null) return;
+      result.push({ resource: monaco.Uri.parse(uri), textEdit: { range: lspRange(change.range), text: change.newText } });
+    });
+  });
+  (edit.documentChanges || []).forEach(function (change) {
+    var document = change && change.textDocument;
+    if (!document || !Array.isArray(change.edits)) return;
+    change.edits.forEach(function (entry) {
+      var textEdit = entry && (entry.edit || entry);
+      if (!textEdit || !textEdit.range || textEdit.newText == null) return;
+      result.push({ resource: monaco.Uri.parse(document.uri), textEdit: { range: lspRange(textEdit.range), text: textEdit.newText } });
+    });
+  });
+  return { edits: result };
+}
+
+function lspDocumentSymbolToMonaco(symbol) {
+  return {
+    name: symbol.name,
+    detail: symbol.detail,
+    kind: symbol.kind || monaco.languages.SymbolKind.Namespace,
+    range: lspRange(symbol.range),
+    selectionRange: lspRange(symbol.selectionRange || symbol.range),
+    children: (symbol.children || []).filter(function (child) { return child && child.name && child.range; }).map(lspDocumentSymbolToMonaco),
+  };
+}
+
 function modelUriForDocument(path) {
   return monaco.Uri.parse('androidide:///files/' + encodeURIComponent(path));
 }
@@ -192,17 +233,32 @@ function normalizeCompletionItems(result) {
   return items.map(function (item) {
     var textEdit = item.textEdit;
     var insertText = item.insertText || item.label || '';
-    var range = textEdit && textEdit.range ? lspRange(textEdit.range) : undefined;
+    var range = textEdit && textEdit.range
+      ? lspRange(textEdit.range)
+      : textEdit && textEdit.insert
+        ? lspRange(textEdit.insert)
+        : undefined;
     if (textEdit && textEdit.newText != null) insertText = textEdit.newText;
+    var documentation = item.documentation;
+    if (documentation && typeof documentation === 'object' && documentation.value != null) {
+      documentation = { value: documentation.value, isTrusted: false };
+    }
     return {
       label: item.label || insertText,
       kind: item.kind || monaco.languages.CompletionItemKind.Text,
       detail: item.detail,
-      documentation: item.documentation,
+      documentation: documentation,
       filterText: item.filterText,
       sortText: item.sortText,
+      preselect: !!item.preselect,
+      commitCharacters: item.commitCharacters,
       insertText: insertText,
       range: range,
+      additionalTextEdits: (item.additionalTextEdits || []).filter(function (edit) {
+        return edit && edit.range && edit.newText != null;
+      }).map(function (edit) {
+        return { range: lspRange(edit.range), text: edit.newText };
+      }),
       insertTextRules: item.insertTextFormat === 2
         ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
         : undefined,
@@ -217,10 +273,20 @@ function localSnippetItems(language) {
       ['log', 'console.log(${1:value});', 'Console log'],
       ['async', 'async function ${1:name}(${2:args}) {\n\t$0\n}', 'Async function'],
     ],
+    javascriptreact: [
+      ['component', 'function ${1:Component}(${2:props}) {\n\treturn (\n\t\t<${3:div}>$0</${3:div}>\n\t);\n}', 'React component'],
+      ['jsx', '<${1:Component} ${2:prop}={${3:value}}>$0</${1:Component}>', 'JSX element'],
+      ['fragment', '<>\n\t$0\n</>', 'React fragment'],
+    ],
     typescript: [
       ['fn', 'function ${1:name}(${2:args}): ${3:void} {\n\t$0\n}', 'Function'],
       ['iface', 'interface ${1:Name} {\n\t$0\n}', 'Interface'],
       ['type', 'type ${1:Name} = ${2:unknown};', 'Type alias'],
+    ],
+    typescriptreact: [
+      ['component', 'function ${1:Component}(${2:props}: ${3:Props}) {\n\treturn (\n\t\t<${4:div}>$0</${4:div}>\n\t);\n}', 'Typed React component'],
+      ['props', 'type ${1:Props} = {\n\t${2:property}: ${3:string};\n};', 'Component props'],
+      ['jsx', '<${1:Component} ${2:prop}={${3:value}}>$0</${1:Component}>', 'TSX element'],
     ],
     python: [
       ['def', 'def ${1:name}(${2:args}):\n\t$0', 'Function'],
@@ -253,11 +319,23 @@ function localSnippetItems(language) {
     markdown: [
       ['heading', '# ${1:Heading}', 'Heading'],
       ['link', '[${1:text}](${2:https://})', 'Link'],
-      ['code', '```${1:language}\n$0\n```', 'Code fence'],
+      ['image', '![${1:alt text}](${2:./image.png})', 'Image link'],
+      ['code', '```' + '${1:language}' + '\n$0\n```', 'Code fence'],
     ],
     xml: [
       ['element', '<${1:element}>\n\t$0\n</$1>', 'Element'],
       ['attribute', '${1:name}="${2:value}"', 'Attribute'],
+      ['declaration', '<?xml version="1.0" encoding="UTF-8"?>', 'XML declaration'],
+      ['svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${1:100} ${2:100}">\n\t$0\n</svg>', 'SVG root'],
+      ['path', '<path d="${1:M 0 0}" fill="${2:none}" stroke="${3:currentColor}" />', 'SVG path'],
+    ],
+    yaml: [
+      ['mapping', '${1:key}: ${2:value}', 'YAML mapping'],
+      ['list', '- ${1:item}', 'YAML list item'],
+      ['document', '---\n${1:key}: ${2:value}', 'YAML document'],
+    ],
+    jsonc: [
+      ['property', '"${1:key}": ${2:value},', 'JSONC property'],
     ],
     sql: [
       ['select', 'SELECT ${1:*}\nFROM ${2:table}\nWHERE ${3:condition};', 'SELECT query'],
@@ -275,7 +353,6 @@ function localSnippetItems(language) {
   };
   snippets.scss = snippets.css;
   snippets.less = snippets.css;
-  snippets.jsonc = snippets.json;
   return (snippets[language] || []).map(function (item) {
     return {
       label: item[0],
@@ -332,7 +409,7 @@ function registerLocalLanguageProviders() {
   localLanguageProvidersRegistered = true;
   var available = Object.create(null);
   monaco.languages.getLanguages().forEach(function (entry) { available[entry.id] = true; });
-  ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'sql', 'markdown', 'shell']
+  ['javascript', 'javascriptreact', 'typescript', 'typescriptreact', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'kotlin', 'java', 'xml', 'yaml', 'sql', 'markdown', 'shell']
     .filter(function (language) { return available[language] && localSnippetItems(language).length > 0; })
     .forEach(function (language) {
       lspProviderDisposables.push(monaco.languages.registerCompletionItemProvider(language, {
@@ -355,9 +432,9 @@ function registerLanguageProviders() {
   monaco.languages.getLanguages().forEach(function (entry) { available[entry.id] = true; });
   // These IDs correspond to LanguageServerRegistry and the installed, pinned
   // server packages. XML/SVG keeps Monaco's local XML grammar/snippets only.
-  var languages = ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json', 'markdown']
+  var languages = ['javascript', 'javascriptreact', 'typescript', 'typescriptreact', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'markdown']
     .filter(function (language) { return available[language]; });
-  var lspCompletionLanguages = ['javascript', 'typescript', 'python', 'html', 'css', 'scss', 'less', 'json'];
+  var lspCompletionLanguages = ['javascript', 'javascriptreact', 'typescript', 'typescriptreact', 'python', 'html', 'css', 'scss', 'less', 'json', 'jsonc', 'markdown'];
   var lspCompletionTriggers = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.split('').concat(['.', ':', '/', '<', '"', "'"]);
   languages.forEach(function (language) {
     if (lspCompletionLanguages.indexOf(language) !== -1) {
@@ -447,6 +524,36 @@ function registerLanguageProviders() {
         }).catch(function () { return []; });
       },
     }));
+    lspProviderDisposables.push(monaco.languages.registerDeclarationProvider(language, {
+      provideDeclaration: function (model, position) {
+        return requestLsp('textDocument/declaration', {
+          textDocument: { uri: model.uri.toString() }, position: lspPosition(position),
+        }).then(function (result) {
+          var locations = Array.isArray(result) ? result : (result ? [result] : []);
+          return locations.map(function (location) { return lspLocationToMonaco(location, model.uri); }).filter(Boolean);
+        }).catch(function () { return []; });
+      },
+    }));
+    lspProviderDisposables.push(monaco.languages.registerTypeDefinitionProvider(language, {
+      provideTypeDefinition: function (model, position) {
+        return requestLsp('textDocument/typeDefinition', {
+          textDocument: { uri: model.uri.toString() }, position: lspPosition(position),
+        }).then(function (result) {
+          var locations = Array.isArray(result) ? result : (result ? [result] : []);
+          return locations.map(function (location) { return lspLocationToMonaco(location, model.uri); }).filter(Boolean);
+        }).catch(function () { return []; });
+      },
+    }));
+    lspProviderDisposables.push(monaco.languages.registerImplementationProvider(language, {
+      provideImplementation: function (model, position) {
+        return requestLsp('textDocument/implementation', {
+          textDocument: { uri: model.uri.toString() }, position: lspPosition(position),
+        }).then(function (result) {
+          var locations = Array.isArray(result) ? result : (result ? [result] : []);
+          return locations.map(function (location) { return lspLocationToMonaco(location, model.uri); }).filter(Boolean);
+        }).catch(function () { return []; });
+      },
+    }));
     lspProviderDisposables.push(monaco.languages.registerReferenceProvider(language, {
       provideReferences: function (model, position, context) {
         return requestLsp('textDocument/references', {
@@ -458,6 +565,24 @@ function registerLanguageProviders() {
             return { uri: model.uri, range: lspRange(location.range) };
           });
         }).catch(function () { return []; });
+      },
+    }));
+    lspProviderDisposables.push(monaco.languages.registerDocumentSymbolProvider(language, {
+      provideDocumentSymbols: function (model) {
+        return requestLsp('textDocument/documentSymbol', { textDocument: { uri: model.uri.toString() } })
+          .then(function (result) {
+            return (result || []).filter(function (symbol) { return symbol && symbol.name && symbol.range; }).map(lspDocumentSymbolToMonaco);
+          }).catch(function () { return []; });
+      },
+    }));
+    lspProviderDisposables.push(monaco.languages.registerFoldingRangeProvider(language, {
+      provideFoldingRanges: function (model) {
+        return requestLsp('textDocument/foldingRange', { textDocument: { uri: model.uri.toString() } })
+          .then(function (result) {
+            return (result || []).filter(function (range) { return range && range.startLine != null && range.endLine != null; }).map(function (range) {
+              return { start: range.startLine + 1, end: range.endLine + 1, kind: range.kind };
+            });
+          }).catch(function () { return []; });
       },
     }));
     lspProviderDisposables.push(monaco.languages.registerDocumentFormattingEditProvider(language, {
@@ -496,9 +621,16 @@ function registerLanguageProviders() {
           context: { diagnostics: context.markers || [] },
         }).then(function (result) {
           return { actions: (result || []).filter(function (action) { return action.title; }).map(function (action) {
-            return { title: action.title, kind: action.kind, isPreferred: action.isPreferred, edit: action.edit };
+            return { title: action.title, kind: action.kind, isPreferred: action.isPreferred, edit: lspWorkspaceEditToMonaco(action.edit) };
           }), dispose: function () {} };
         }).catch(function () { return { actions: [], dispose: function () {} }; });
+      },
+    }));
+    lspProviderDisposables.push(monaco.languages.registerRenameProvider(language, {
+      provideRenameEdits: function (model, position, newName) {
+        return requestLsp('textDocument/rename', {
+          textDocument: { uri: model.uri.toString() }, position: lspPosition(position), newName: newName,
+        }).then(lspWorkspaceEditToMonaco).catch(function () { return { edits: [] }; });
       },
     }));
   });

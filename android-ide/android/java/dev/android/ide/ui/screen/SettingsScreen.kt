@@ -65,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,10 +88,12 @@ import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.viewmodel.IdeViewModel
 import dev.android.ide.viewmodel.model.IdeUiState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 
 enum class SettingsCategory(val title: String, val description: String, val icon: ImageVector) {
     GENERAL("General", "App theme and interface-wide preferences", Icons.Default.Palette),
     EDITOR("Editor", "Editor appearance, code behavior, keyboard, and file tree", Icons.Default.Code),
+    EDITOR_SERVICES("Editor Services", "Language support and project preview services", Icons.Default.Tune),
     PROJECTS("Projects", "Project creation and storage preferences", Icons.Default.FolderOpen),
     CREDENTIALS("Credentials", "Secure sign-in data", Icons.Default.Lock),
     SECURITY("Security", "Storage access, Android permissions, and protected data", Icons.Default.Lock),
@@ -124,6 +127,7 @@ fun SettingsScreen(
         val category = when (requested) {
             "App Theme", "UI Font Size" -> SettingsCategory.GENERAL
             "Editor Theme", "Editor", "Controls", "File Tree" -> SettingsCategory.EDITOR
+            "Editor Services", "Language Support", "Project Preview" -> SettingsCategory.EDITOR_SERVICES
             "Project Storage" -> SettingsCategory.PROJECTS
             "Permissions", "Folder Access", "Android App Permissions" -> SettingsCategory.SECURITY
             "Credentials", "Manage Credentials" -> SettingsCategory.CREDENTIALS
@@ -241,6 +245,7 @@ private fun SettingsCategoryContent(
         when (category) {
             SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
             SettingsCategory.EDITOR -> item { EditorSettingsContent(uiState, s, ideViewModel) }
+            SettingsCategory.EDITOR_SERVICES -> item { EditorServicesSettingsContent(uiState, ideViewModel) }
             SettingsCategory.PROJECTS -> item { ProjectsSettingsContent() }
             SettingsCategory.TERMINAL -> item { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) }
             SettingsCategory.BROWSER -> item { BrowserSettingsContent() }
@@ -248,6 +253,39 @@ private fun SettingsCategoryContent(
             SettingsCategory.SECURITY -> item { StorageAccessSettings() }
         }
     }
+}
+
+@Composable
+private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: IdeViewModel) {
+    val scope = rememberCoroutineScope()
+    val colors = LocalIdeColors.current
+    var operationMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    SettingsCard {
+        Text("Language support", style = MaterialTheme.typography.titleSmall)
+        VisibilitySettingRow(
+            "Enable language servers",
+            "Use application-managed language tools for completion, diagnostics, and navigation.",
+            uiState.editorSettings.languageServerEnabled,
+            { ideViewModel.setEditorSettings(uiState.editorSettings.copy(languageServerEnabled = it)) },
+        )
+        Text(uiState.languageServerPackageSetupMessage ?: "Language tools are managed by Android IDE.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = ideViewModel::installLanguageServerTools) { Text("Install") }
+            OutlinedButton(onClick = ideViewModel::updateLanguageServerTools) { Text("Update") }
+            OutlinedButton(onClick = ideViewModel::retryLanguageServerPackageInstallation) { Text("Check") }
+            OutlinedButton(onClick = { scope.launch { operationMessage = if (ideViewModel.removeLanguageServerTools()) "Language tools removed." else "Language tools could not be removed." } }) { Text("Remove") }
+        }
+    }
+    SettingsCard {
+        Text("Project preview", style = MaterialTheme.typography.titleSmall)
+        Text("Live Server runs from an Android IDE-owned package and Node runtime. It is independent of Terminal.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.installPreviewPackage(); "Preview server installed." }.getOrElse { it.message ?: "Preview installation failed." } } }) { Text("Install") }
+            OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.updatePreviewPackage(); "Preview server updated." }.getOrElse { it.message ?: "Preview update failed." } } }) { Text("Update") }
+            OutlinedButton(onClick = { scope.launch { operationMessage = if (ideViewModel.removePreviewPackage()) "Preview server removed." else "Preview server could not be removed." } }) { Text("Remove") }
+        }
+    }
+    operationMessage?.let { Text(it, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall) }
 }
 
 @Composable
@@ -387,25 +425,6 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         ChoiceSetting("Auto-close brackets", listOf("Always" to "always", "Smart" to "languageDefined", "Never" to "never"), s.autoClosingBrackets) { ideViewModel.setEditorSettings(s.copy(autoClosingBrackets = it)) }
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Auto save", "Save changes shortly after editing.", s.autoSave, { ideViewModel.setEditorSettings(s.copy(autoSave = it)) })
-    }
-    SettingsCard {
-        Text("Language intelligence", style = MaterialTheme.typography.titleSmall)
-        VisibilitySettingRow(
-            "Enable language servers",
-            "Install pinned language tools with `ide tools install lsp`. This setting only enables tools already installed.",
-            s.languageServerEnabled,
-            { ideViewModel.setEditorSettings(s.copy(languageServerEnabled = it)) },
-        )
-        if (s.languageServerEnabled) {
-            uiState.languageServerPackageSetupMessage?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-            }
-            if (uiState.languageServerPackageSetupCanRetry) {
-                OutlinedButton(onClick = ideViewModel::retryLanguageServerPackageInstallation) {
-                    Text("Retry package setup")
-                }
-            }
-        }
     }
     KeyboardSettingsContent(uiState, s, ideViewModel)
     FileTreeSettingsContent(s, ideViewModel)

@@ -73,6 +73,7 @@ private class GeckoBrowserEngineSession(
     internal val geckoSession = GeckoSession(
         GeckoSessionSettings.Builder()
             .userAgentMode(if (settings.desktopSite) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+            .viewportMode(if (settings.desktopSite) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
             .build(),
     )
     private var serializedState: BrowserSerializedState? = null

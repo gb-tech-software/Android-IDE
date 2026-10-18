@@ -1175,6 +1175,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.JAVASCRIPT -> SimpleIcons.Javascript
         FileIconKind.TYPESCRIPT -> SimpleIcons.Typescript
         FileIconKind.C_CPP -> SimpleIcons.Cplusplus
+        FileIconKind.C -> Icons.Default.Code
         FileIconKind.RUST -> SimpleIcons.Rust
         FileIconKind.GO -> SimpleIcons.Go
         FileIconKind.SWIFT -> SimpleIcons.Swift
@@ -1184,16 +1185,16 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.CSS -> SimpleIcons.Css3
         FileIconKind.XML -> Icons.Default.Code
         FileIconKind.SVG -> SimpleIcons.Svg
-        FileIconKind.YAML -> Icons.Default.Settings
+        FileIconKind.YAML -> Icons.Default.Code
         FileIconKind.TOML -> Icons.Default.Settings
         FileIconKind.ENV -> Icons.Default.Settings
         FileIconKind.PROTO -> Icons.Default.Code
-        FileIconKind.SQL -> SimpleIcons.Sqlite
+        FileIconKind.SQL -> Icons.Default.Code
         FileIconKind.SHELL -> SimpleIcons.Gnubash
         FileIconKind.DOCKER -> SimpleIcons.Docker
         FileIconKind.GIT -> SimpleIcons.Git
         FileIconKind.CONFIG -> Icons.Default.Settings
-        FileIconKind.DATABASE -> SimpleIcons.Sqlite
+        FileIconKind.DATABASE -> Icons.Default.FolderOpen
         FileIconKind.IMAGE -> Icons.Default.Image
         FileIconKind.ARCHIVE -> Icons.Default.Archive
         FileIconKind.FONT -> Icons.Default.FontDownload
@@ -1242,6 +1243,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.RUBY -> "RB"
         FileIconKind.PHP -> "PHP"
         FileIconKind.SQL -> "SQL"
+        FileIconKind.C -> "C"
         FileIconKind.SHELL -> "SH"
         FileIconKind.DOCKER -> "DOC"
         FileIconKind.GIT -> "GIT"
@@ -1289,6 +1291,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.RUBY -> Color(0xFFCC342D)
         FileIconKind.PHP -> Color(0xFF777BB4)
         FileIconKind.SQL -> Color(0xFF336791)
+        FileIconKind.C -> Color(0xFF555555)
         FileIconKind.SHELL -> Color(0xFF4EAA25)
         FileIconKind.DOCKER -> Color(0xFF2496ED)
         FileIconKind.GIT -> Color(0xFFF05032)

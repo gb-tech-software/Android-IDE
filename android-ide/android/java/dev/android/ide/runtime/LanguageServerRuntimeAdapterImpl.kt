@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Runs a terminal-managed language server over stdio JSON-RPC.
+ * Runs an application-managed language server over stdio JSON-RPC.
  *
  * The server uses the selected provider-backed directory as its workspace. No
  * project copy is created for language intelligence, and a server is not
@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class LanguageServerRuntimeAdapterImpl(
     private val workspace: ProjectWorkspaceService,
-    private val installer: BundledTermuxRuntimeInstaller,
+    private val nodeRuntime: IdeNodeRuntime,
     private val packageInstaller: LanguageServerPackageInstaller,
     private val onMessage: (projectId: String, serverId: String, message: ByteArray) -> Unit = { _, _, _ -> },
     private val onUnavailable: (projectId: String, serverId: String, explanation: String) -> Unit = { _, _, _ -> },
@@ -86,19 +86,12 @@ class LanguageServerRuntimeAdapterImpl(
             try {
                 val executable = packageInstaller.executablePath(definition.requiredExecutable)
                 if (!executable.isFile) throw IOException("Pinned language-server entrypoint is missing: ${executable.absolutePath}")
-                val node = File(installer.prefix(), "bin/node")
-                if (!node.canExecute()) throw IOException("Termux Node executable is missing: ${node.absolutePath}")
-                val command = listOf(node.absolutePath, executable.absolutePath) + definition.command.drop(1)
-                val startedProcess = ProcessBuilder(command)
-                    .directory(cwd)
-                    .apply {
-                        environment()["HOME"] = installer.home().absolutePath
-                        environment()["PREFIX"] = installer.prefix().absolutePath
-                        environment()["PATH"] = "${File(installer.prefix(), "lib/android-ide/bin").absolutePath}:${File(installer.prefix(), "bin").absolutePath}:${executable.parentFile?.absolutePath.orEmpty()}:/system/bin:/system/xbin"
-                        environment()["TERM"] = "xterm-256color"
-                        environment()["LANG"] = "C.UTF-8"
-                    }
-                    .start()
+                val startedProcess = nodeRuntime.startNode(
+                    executable,
+                    definition.command.drop(1),
+                    cwd,
+                    packageRoot = File(nodeRuntime.root, "language-servers"),
+                )
                 process = startedProcess
                 val status = LanguageServerStatus(definition.id, project.id, languageId, available = false)
                 val initializeId = nextRequestId.getAndIncrement()

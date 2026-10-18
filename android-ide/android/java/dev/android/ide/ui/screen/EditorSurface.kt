@@ -1,6 +1,6 @@
 package dev.android.ide.ui.screen
-
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -53,9 +52,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -70,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -439,21 +436,17 @@ private fun EditorWorkspace(
     modifier: Modifier,
 ) {
     val colors = LocalIdeColors.current
+    val context = LocalContext.current
     val activeTab = state.openTabs.firstOrNull { it.isActive }
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val previewScope = rememberCoroutineScope()
     var previewNotice by remember { mutableStateOf<String?>(null) }
-    val workspaceSnackbarState = remember { SnackbarHostState() }
     LaunchedEffect(state.statusMessage) {
         val message = state.statusMessage.trim()
         if (message.isNotEmpty() && state.fileOpDialog == null &&
             !isLanguageSupportFeedback(message) && !message.contains("preview", ignoreCase = true)
         ) {
-            workspaceSnackbarState.showSnackbar(
-                message = message,
-                withDismissAction = true,
-                duration = SnackbarDuration.Short,
-            )
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
     LaunchedEffect(activeTab?.id) { previewNotice = null }
@@ -499,16 +492,6 @@ private fun EditorWorkspace(
                 onRetryLanguageServerPackages = ideViewModel::retryLanguageServerPackageInstallation,
                 onRevealDiagnostic = ideViewModel::revealDiagnostic,
             )
-            previewNotice?.takeIf(String::isNotBlank)?.let { message ->
-                Text(
-                    text = message,
-                    color = colors.textSecondary,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-            }
             if (!state.localWorkspaceAvailable && state.projectRootUri != null) {
                 Text(
                     text = state.localWorkspaceExplanation
@@ -549,9 +532,28 @@ private fun EditorWorkspace(
             )
             if (state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
         }
-        SnackbarHost(
-            hostState = workspaceSnackbarState,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 12.dp, vertical = 12.dp).navigationBarsPadding(),
+    }
+    previewNotice?.takeIf(String::isNotBlank)?.let { message ->
+        AlertDialog(
+            onDismissRequest = { previewNotice = null },
+            title = { Text("Preview unavailable") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = {
+                    previewNotice = null
+                    previewScope.launch {
+                        val target = ideViewModel.resolveActivePreviewTarget()
+                        if (target == null) previewNotice = ideViewModel.uiState.value.statusMessage
+                        else onOpenProjectPreview(target.url, target.reuseKey)
+                    }
+                }) { Text("Retry") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { previewNotice = null; onOpenSettings() }) { Text("Settings") }
+                    TextButton(onClick = { previewNotice = null }) { Text("Dismiss") }
+                }
+            },
         )
     }
 }
@@ -710,7 +712,7 @@ private fun EditorTopBar(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         when {
-                            !state.editorSettings.languageServerEnabled -> "Language-server support is disabled in Editor settings."
+                            !state.editorSettings.languageServerEnabled -> "Language support is disabled in Editor Services."
                             state.languageIntelligenceAvailable -> "Language intelligence is available for the active document."
                             activeTab == null -> "Open a source file in a project to check language support."
                             else -> "Language intelligence is not currently active for ${activeTab.language}. Editing remains available."

@@ -11,7 +11,7 @@ object LanguageServerRegistry {
     val definitions: List<LanguageServerDefinition> = listOf(
         LanguageServerDefinition(
             id = "typescript",
-            languageIds = setOf("javascript", "typescript"),
+            languageIds = setOf("javascript", "typescript", "javascriptreact", "typescriptreact"),
             command = listOf("typescript-language-server", "--stdio"),
             requiredExecutable = "typescript-language-server",
         ),

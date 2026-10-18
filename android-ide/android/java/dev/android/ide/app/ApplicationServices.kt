@@ -28,6 +28,8 @@ import dev.android.ide.runtime.RuntimeStateStore
 import dev.android.ide.runtime.BundledTermuxRuntimeInstaller
 import dev.android.ide.runtime.LanguageServerPackageInstaller
 import dev.android.ide.runtime.LanguageServerRuntimeAdapterImpl
+import dev.android.ide.runtime.IdeNodeRuntime
+import dev.android.ide.runtime.IdePackageManager
 import dev.android.ide.workspace.ProjectWorkspaceService
 import dev.android.ide.runtime.TerminalRuntimeAdapterImpl
 import kotlinx.coroutines.CoroutineScope
@@ -63,11 +65,12 @@ class ApplicationServices private constructor(application: Application) {
     val browserEngine: BrowserEngine by lazy { GeckoViewBrowserEngine(browserRuntime, context) }
     val browserDeveloperTools by lazy { GeckoBrowserDeveloperToolsService(browserRuntime) }
     private val browserApplicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val nodeRuntime by lazy { IdeNodeRuntime(context, bundledRuntimeInstaller) }
+    val packageManager by lazy { IdePackageManager(context, nodeRuntime) }
     val projectLiveServer by lazy {
         ProjectLiveServerService(
-            bundledRuntimeInstaller.prefix(),
-            bundledRuntimeInstaller.home(),
-            bundledRuntimeInstaller.sessionEnvironment(),
+            nodeRuntime,
+            packageManager,
         )
     }
     val browserNavigationReceipts by lazy { BrowserNavigationReceiptStore(context) }
@@ -91,7 +94,7 @@ class ApplicationServices private constructor(application: Application) {
     val terminalSettingsRepository = TerminalSettingsRepository(context)
     val projectWorkspace = ProjectWorkspaceService(fileSystem.resources)
     val bundledRuntimeInstaller = BundledTermuxRuntimeInstaller(context)
-    val languageServerPackageInstaller by lazy { LanguageServerPackageInstaller(context, bundledRuntimeInstaller) }
+    val languageServerPackageInstaller by lazy { LanguageServerPackageInstaller(packageManager, nodeRuntime) }
     val terminalRuntime = TerminalRuntimeAdapterImpl(context, projectWorkspace, bundledRuntimeInstaller)
 
     val projectStorage = ProjectStorageAdapterImpl(fileSystem.documents, fileSystem.operations)
@@ -112,7 +115,7 @@ class ApplicationServices private constructor(application: Application) {
         onUnavailable: (projectId: String, serverId: String, explanation: String) -> Unit = { _, _, _ -> },
     ) = LanguageServerRuntimeAdapterImpl(
         projectWorkspace,
-        bundledRuntimeInstaller,
+        nodeRuntime,
         languageServerPackageInstaller,
         onMessage,
         onUnavailable,

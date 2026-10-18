@@ -1,0 +1,9 @@
+{
+  "name": "android-ide-preview",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned Live Server provider owned by Android IDE",
+  "dependencies": {
+    "live-server": "1.2.2"
+  }
+}

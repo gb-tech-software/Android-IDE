@@ -83,6 +83,12 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         activeSession?.attach(host)
+        // AndroidView can run its update block before the TextureView has been
+        // attached to the window. Reassert the same tab-bound session on the
+        // next UI turn so returning to a tab cannot leave its surface blank.
+        post {
+            if (isAttachedToWindow) activeSession?.attach(host)
+        }
         val tabId = activeTabId
         if (tabId != null && scrollListenerOwner == null) {
             scrollListenerOwner = tabId

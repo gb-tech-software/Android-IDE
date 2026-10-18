@@ -37,6 +37,7 @@ enum class FileIconKind {
     RUBY,
     PHP,
     SQL,
+    C,
     SHELL,
     DOCKER,
     GIT,
@@ -89,8 +90,10 @@ object EditorLanguageRegistry {
         // Kotlin DSL files are handled above using Monaco's Kotlin grammar.
         Definition(PLAIN_TEXT, extensions = setOf("gradle"), mimeType = "text/x-groovy", iconKind = FileIconKind.GRADLE),
         Definition("python", extensions = setOf("py", "pyw", "pyi"), mimeType = "text/x-python", iconKind = FileIconKind.PYTHON),
-        Definition("javascript", extensions = setOf("js", "mjs", "cjs", "jsx"), mimeType = "text/javascript", iconKind = FileIconKind.JAVASCRIPT),
-        Definition("typescript", extensions = setOf("ts", "mts", "cts", "tsx"), mimeType = "text/typescript", iconKind = FileIconKind.TYPESCRIPT),
+        Definition("javascript", extensions = setOf("js", "mjs", "cjs"), mimeType = "text/javascript", iconKind = FileIconKind.JAVASCRIPT),
+        Definition("javascriptreact", extensions = setOf("jsx"), mimeType = "text/javascript", iconKind = FileIconKind.JAVASCRIPT),
+        Definition("typescript", extensions = setOf("ts", "mts", "cts"), mimeType = "text/typescript", iconKind = FileIconKind.TYPESCRIPT),
+        Definition("typescriptreact", extensions = setOf("tsx"), mimeType = "text/typescript", iconKind = FileIconKind.TYPESCRIPT),
         Definition("html", extensions = setOf("html", "htm"), mimeType = "text/html", iconKind = FileIconKind.HTML),
         Definition("css", extensions = setOf("css"), mimeType = "text/css", iconKind = FileIconKind.CSS),
         Definition("scss", extensions = setOf("scss"), mimeType = "text/x-scss", iconKind = FileIconKind.CSS),
@@ -99,8 +102,10 @@ object EditorLanguageRegistry {
         Definition("shell", extensions = setOf("sh", "bash", "zsh", "fish"), mimeType = "text/x-sh", iconKind = FileIconKind.SHELL),
         Definition("bat", extensions = setOf("bat", "cmd"), mimeType = "text/x-batch", iconKind = FileIconKind.SHELL),
         Definition("powershell", extensions = setOf("ps1", "psm1", "psd1"), mimeType = "text/x-powershell", iconKind = FileIconKind.SHELL),
-        // Monaco's bundled C/C++ grammar uses the `cpp` language ID for both.
-        Definition("cpp", extensions = setOf("c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"), mimeType = "text/x-c++src", iconKind = FileIconKind.C_CPP),
+        // Monaco's bundled C/C++ grammar uses the `cpp` language ID for both,
+        // but the tree must not show a C++ icon for C sources and headers.
+        Definition("cpp", extensions = setOf("c", "h"), mimeType = "text/x-csrc", iconKind = FileIconKind.C),
+        Definition("cpp", extensions = setOf("cpp", "cc", "cxx", "hpp", "hh", "hxx"), mimeType = "text/x-c++src", iconKind = FileIconKind.C_CPP),
         Definition("rust", extensions = setOf("rs"), mimeType = "text/x-rust", iconKind = FileIconKind.RUST),
         Definition("go", extensions = setOf("go", "mod", "sum"), mimeType = "text/x-go", iconKind = FileIconKind.GO),
         Definition("ruby", extensions = setOf("rb", "rake", "gemspec"), mimeType = "text/x-ruby", iconKind = FileIconKind.RUBY),
