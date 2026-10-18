@@ -11,6 +11,7 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import org.json.JSONObject
 
 /** Application-owned project preview provider backed by the real Live Server package. */
 class ProjectLiveServerService(
@@ -67,10 +68,10 @@ class ProjectLiveServerService(
         }
         val status = packages.validate(spec)
         if (!status.installed) throw IOException(status.message ?: "Preview server is not installed")
-        // live-server 1.2.2 publishes the executable as bin/live-server,
-        // without a .js suffix. Invoke that real package entrypoint through
-        // Node rather than relying on the npm-generated shell shim.
-        val entrypoint = File(root, "node_modules/live-server/bin/live-server")
+        // Resolve the executable declared by the installed package metadata.
+        // This follows npm/pnpm layouts without guessing filenames or passing
+        // the generated node_modules/.bin shell shim to Node directly.
+        val entrypoint = resolveEntrypoint()
         synchronized(lock) {
             val active = current
             if (active != null && active.root == projectRoot && active.process.isAlive && probe(projectRoot, target, active)) {
@@ -147,6 +148,30 @@ class ProjectLiveServerService(
         if (portAvailable(PREFERRED_PORT)) return PREFERRED_PORT
         return (PREFERRED_PORT + 1..PREFERRED_PORT + PORT_SCAN_RANGE).firstOrNull(::portAvailable)
             ?: throw IOException("No local preview port is available")
+    }
+
+    private fun resolveEntrypoint(): File {
+        val packageDirectory = File(root, "node_modules/live-server")
+        val manifestFile = File(packageDirectory, "package.json")
+        if (!manifestFile.isFile) {
+            throw IOException("Installed Live Server package metadata is missing: ${manifestFile.absolutePath}")
+        }
+        val manifest = runCatching { JSONObject(manifestFile.readText()) }
+            .getOrElse { error -> throw IOException("Installed Live Server package metadata is invalid", error) }
+        val declaredBin = when (val bin = manifest.opt("bin")) {
+            is String -> bin
+            is JSONObject -> bin.optString("live-server")
+            else -> ""
+        }.trim()
+        if (declaredBin.isBlank()) {
+            throw IOException("Installed Live Server package does not declare a live-server executable")
+        }
+        val entrypoint = File(packageDirectory, declaredBin).canonicalFile
+        val packageRoot = packageDirectory.canonicalFile.toPath()
+        if (!entrypoint.isFile || !entrypoint.canRead() || !entrypoint.toPath().startsWith(packageRoot)) {
+            throw IOException("Installed Live Server executable is unavailable: $declaredBin")
+        }
+        return entrypoint
     }
 
     private fun portAvailable(port: Int): Boolean = runCatching { ServerSocket(port).use { true } }.getOrDefault(false)

@@ -21,7 +21,8 @@
       bridgeReady = true;
       syncVisibility();
     } else if (message.type === "error") {
-      console.error("Android IDE developer tools could not initialize:", message.message);
+      // DevTools failures are not page-console events. Keep them out of the
+      // page's console so the user sees only the page's own diagnostics.
     }
   });
 
@@ -107,7 +108,6 @@
       script.onerror = () => {
         script.remove();
         injectionStarted = false;
-        console.error("Android IDE could not load developer-tools asset:", assets[index - 1]);
       };
       documentRoot.appendChild(script);
     };

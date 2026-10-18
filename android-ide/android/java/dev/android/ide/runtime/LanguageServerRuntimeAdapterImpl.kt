@@ -100,10 +100,12 @@ class LanguageServerRuntimeAdapterImpl(
                 processes[key] = live
                 scope.launch { readMessages(key, transport) }
                 scope.launch {
-                    startedProcess.errorStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            if (live.stderrLines.size >= MAX_STDERR_LINES) live.stderrLines.pollFirst()
-                            live.stderrLines.addLast(line.take(MAX_STDERR_LINE_LENGTH))
+                    runCatching {
+                        startedProcess.errorStream.bufferedReader().useLines { lines ->
+                            lines.forEach { line ->
+                                if (live.stderrLines.size >= MAX_STDERR_LINES) live.stderrLines.pollFirst()
+                                live.stderrLines.addLast(line.take(MAX_STDERR_LINE_LENGTH))
+                            }
                         }
                     }
                 }
@@ -219,6 +221,12 @@ class LanguageServerRuntimeAdapterImpl(
                 }
                 if (!internalInitializeResponse) onMessage(key.projectId, key.serverId, body)
             }
+        } catch (_: IOException) {
+            // Destroying a language-server process closes its stdout while the
+            // IO coroutine may still be blocked in read(). Android reports that
+            // expected close as InterruptedIOException. The owning stop/restart
+            // path has already removed the process; do not let stream teardown
+            // escape as an uncaught application exception.
         } finally {
             val removed = processes.remove(key)
             if (removed != null) {
