@@ -422,6 +422,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         languageIntelligenceAvailable = false,
+                        languageServerFailure = null,
                         languageServerFeatures = emptySet(),
                         languageServerDiagnostics = emptyMap(),
                         languageServerPackageSetupMessage = null,
@@ -589,6 +590,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 openTabs = emptyList(),
                 activeTabId = null,
                 languageIntelligenceAvailable = false,
+                languageServerFailure = null,
                 languageServerFeatures = emptySet(),
                 currentScreen = AppScreen.PROJECTS,
                 projectSwitchRequest = null,
@@ -719,6 +721,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     openTabs = emptyList(),
                     activeTabId = null,
                     languageIntelligenceAvailable = false,
+                    languageServerFailure = null,
                     languageServerFeatures = emptySet(),
                     clipboardItems = emptyList(),
                     clipboardIsCut = false,
@@ -746,6 +749,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             openTabs       = emptyList(),
             activeTabId    = null,
             languageIntelligenceAvailable = false,
+            languageServerFailure = null,
             languageServerFeatures = emptySet(),
             recoveryEntries = emptyList(),
             isMultiSelectMode = false,
@@ -850,6 +854,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                     openTabs       = emptyList(),
                     activeTabId    = null,
                     languageIntelligenceAvailable = false,
+                    languageServerFailure = null,
                     languageServerFeatures = emptySet(),
                     isEditorReady  = false,
                     currentScreen  = AppScreen.PROJECTS,
@@ -1214,7 +1219,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         pinned: Boolean = false,
     ) {
         val requestGeneration = if (markActive) ++openFileGeneration else openFileGeneration
-        if (markActive) _uiState.update { it.copy(languageIntelligenceAvailable = false, languageServerFeatures = emptySet()) }
+        if (markActive) _uiState.update { it.copy(languageIntelligenceAvailable = false, languageServerFailure = null, languageServerFeatures = emptySet()) }
         val existing = _uiState.value.openTabs.find { it.documentUri == documentUri }
         if (existing != null) {
             if (!temporary && existing.isTemporary) pinTab(existing.id)
@@ -1464,6 +1469,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 if (state.activeTabId == tabId && state.editorSettings.languageServerEnabled) {
                     state.copy(
                         languageIntelligenceAvailable = true,
+                        languageServerFailure = null,
                         languageServerFeatures = languageServer.supportedFeatures,
                     )
                 } else state
@@ -1504,10 +1510,22 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             if (status.available) languageServers.stop(project.id, status.serverId)
             return null
         }
-        if (!status.available && status.explanation != null &&
+        val activeDocumentMatches = _uiState.value.openTabs
+            .firstOrNull { it.id == _uiState.value.activeTabId }
+            ?.language == languageId
+        if (!status.available && status.explanation != null && activeDocumentMatches &&
             languageServerPackageInstaller.state.value.state == LanguageServerPackageInstaller.State.READY
         ) {
-            _uiState.update { it.copy(statusMessage = "Language intelligence unavailable: ${status.explanation}") }
+            _uiState.update { state ->
+                if (state.openTabs.firstOrNull { it.id == state.activeTabId }?.language == languageId) {
+                    state.copy(
+                        languageIntelligenceAvailable = false,
+                        languageServerFailure = status.explanation,
+                        languageServerFeatures = emptySet(),
+                        statusMessage = "Language intelligence unavailable: ${status.explanation}",
+                    )
+                } else state
+            }
         }
         return if (status.available && status.initialized) {
             LanguageServerContext(project.id, status.serverId, status.supportedFeatures)
@@ -1587,6 +1605,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 activeTabId = tabId,
                 hasEditorSelection = false,
                 languageIntelligenceAvailable = false,
+                languageServerFailure = null,
                 languageServerFeatures = emptySet(),
             )
         }
@@ -1596,6 +1615,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 if (state.activeTabId == tabId && state.projectRootUri == projectRootUri) {
                     state.copy(
                         languageIntelligenceAvailable = languageServer != null,
+                        languageServerFailure = if (languageServer == null) "The language server could not initialize for this document." else null,
                         languageServerFeatures = languageServer?.supportedFeatures.orEmpty(),
                     )
                 } else state
@@ -1637,6 +1657,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             state.copy(
                 openTabs    = remaining.map { it.copy(isActive = it.id == newActiveId) },
                 activeTabId = newActiveId,
+                languageIntelligenceAvailable = if (wasActive && newActiveId == null) false else state.languageIntelligenceAvailable,
+                languageServerFailure = if (wasActive && newActiveId == null) null else state.languageServerFailure,
                 languageServerDiagnostics = if (tab != null) {
                     state.languageServerDiagnostics - tab.documentUri
                 } else state.languageServerDiagnostics,
@@ -1644,7 +1666,6 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (wasActive) {
             _uiState.value.activeTabId?.let(::selectTab)
-                ?: _uiState.update { it.copy(languageIntelligenceAvailable = false, languageServerFeatures = emptySet()) }
         }
         tab?.let { sendEditorCommand(EditorOutbound.CloseTab(it.documentUri)) }
         scheduleWorkspaceSave()
@@ -1722,6 +1743,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 openTabs = emptyList(),
                 activeTabId = null,
                 languageIntelligenceAvailable = false,
+                languageServerFailure = null,
                 languageServerFeatures = emptySet(),
                 tabCursorPositions = emptyMap(),
                 tabScrollPositions = emptyMap(),
@@ -2035,6 +2057,7 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             } == true
             state.copy(
                 languageIntelligenceAvailable = if (activeAffected) false else state.languageIntelligenceAvailable,
+                languageServerFailure = if (activeAffected) explanation else state.languageServerFailure,
                 languageServerFeatures = if (activeAffected) emptySet() else state.languageServerFeatures,
                 languageServerDiagnostics = state.languageServerDiagnostics - affectedUris,
                 statusMessage = if (state.editorSettings.languageServerEnabled) {
@@ -3321,7 +3344,10 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val url = try {
             withContext(Dispatchers.IO) { services.projectLiveServer.start(root.path, target.path) }
         } catch (error: Exception) {
-            _uiState.update { it.copy(statusMessage = "Could not start the local preview server: ${error.message ?: "project path unavailable"}") }
+            _uiState.update { it.copy(statusMessage = when {
+                !services.projectLiveServer.packageStatus().installed -> "Preview service packages are not installed. Open Editor Services to install them."
+                else -> "Project preview is not running. Retry or open Editor Services settings."
+            }) }
             return null
         }
         val digest = MessageDigest.getInstance("SHA-256").digest(root.path.toByteArray(Charsets.UTF_8))

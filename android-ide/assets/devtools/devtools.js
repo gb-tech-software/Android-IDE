@@ -6,6 +6,7 @@
   const CONTENT_PORT = "android-ide-devtools-content";
   const channel = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   let visibilityOpen = false;
+  let enabled = false;
   let bridgeReady = false;
   let injectionStarted = false;
 
@@ -38,11 +39,8 @@
   }
 
   function syncVisibility() {
-    if (!visibilityOpen) {
+    if (!enabled || !visibilityOpen) {
       interactionActive = false;
-      // Hide the UI, but do not destroy the page bridge. It is installed at
-      // document_start so it can retain console, error, and network state
-      // before application code or a failed page can interrupt the load.
       if (bridgeReady) postToPage("visibility", { open: false, destroy: false });
       return;
     }
@@ -68,12 +66,14 @@
 
   contentPort.onMessage.addListener(message => {
     if (!message || message.type !== "developer-tools") return;
+    if (Object.prototype.hasOwnProperty.call(message, "enabled")) enabled = message.enabled === true;
     visibilityOpen = message.open === true;
     syncVisibility();
   });
 
-  // Do this independently of the panel's visibility. Waiting for the user to
-  // open DevTools, or for document_idle, loses early page errors and requests.
+  // Install the capture layer independently of panel visibility and before
+  // application scripts run. The enabled flag controls the UI, not whether
+  // an already-installed page should lose its console/network history.
   injectPageBridge();
 
   function injectPageBridge() {

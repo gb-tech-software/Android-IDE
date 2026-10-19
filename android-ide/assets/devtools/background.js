@@ -3,7 +3,7 @@
   const NATIVE_APPLICATION = "android_ide";
   const contentPorts = new Set();
   let nativePort = null;
-  let visibility = { type: "developer-tools", open: false };
+  let visibility = { type: "developer-tools", enabled: true, open: false };
 
   function broadcast(message) {
     for (const port of [...contentPorts]) {
@@ -27,7 +27,11 @@
     nativePort = port;
     port.onMessage.addListener(message => {
       if (!message || message.type !== "developer-tools") return;
-      visibility = { type: "developer-tools", open: message.open === true };
+      visibility = {
+        type: "developer-tools",
+        enabled: message.enabled !== false,
+        open: message.open === true,
+      };
       broadcast(visibility);
     });
     port.onDisconnect.addListener(() => {

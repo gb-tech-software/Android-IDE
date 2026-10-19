@@ -72,8 +72,9 @@
   }
 
   function closeTools() {
-    // Kept for compatibility with older content scripts. Normal visibility
-    // changes only hide the tools so capture hooks are never torn down.
+    // Keep the bridge and capture hooks alive for the current document. The
+    // page-level guard is intentionally one-shot; destroying Eruda here would
+    // make a later enablement unable to initialize the same page again.
     hideTools();
   }
 

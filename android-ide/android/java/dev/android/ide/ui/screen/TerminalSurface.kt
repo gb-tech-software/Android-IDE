@@ -263,6 +263,7 @@ fun TerminalSurface(
                     view.setBackgroundColor(terminalTheme.background)
                     if (view.textSize != terminalTextSize) view.setTextSize(terminalTextSize)
                     view.setTerminalColors(terminalTheme.background, terminalTheme.foreground, terminalTheme.cursor)
+                    viewModel.bindTerminalView(selected.id) { view.postInvalidateOnAnimation() }
                     val live = viewModel.terminalSession(selected.id)
                     if (live != null && view.mTermSession !== live) view.attachSession(live)
                 },

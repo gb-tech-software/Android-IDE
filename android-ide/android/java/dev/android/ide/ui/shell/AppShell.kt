@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -893,7 +894,22 @@ private fun SurfaceHost(
     onExportCrashReport: (CrashReportSummary) -> Unit,
 ) {
     val ideState by ideViewModel.uiState.collectAsState()
-    when (state.surface) {
+    androidx.compose.foundation.layout.Box(modifier.fillMaxSize()) {
+        EditorSurface(
+            shellState = state,
+            shellViewModel = viewModel,
+            ideViewModel = ideViewModel,
+            visible = state.surface == Surface.EDITOR,
+            onOpenGlobalNavigation = onOpenNavigation,
+            editorPanelRequest = editorPanelRequest,
+            onOpenSettings = { onSettingsSection("Editor Services"); onNavigate(Surface.SETTINGS) },
+            onExportProject = onExportProject,
+            onFeedback = onFeedback,
+            onOpenBrowserContent = { url -> viewModel.requestBrowserNavigation(url) },
+            onOpenProjectPreview = { url, reuseKey -> viewModel.requestBrowserNavigation(url, reuseKey = reuseKey) },
+            modifier = if (state.surface == Surface.EDITOR) Modifier.fillMaxSize() else Modifier.size(1.dp).alpha(0f),
+        )
+        when (state.surface) {
         Surface.HOME -> HomeSurface(
             onNavigate = onNavigate,
             onOpenNavigation = onOpenNavigation,
@@ -914,19 +930,7 @@ private fun SurfaceHost(
         )
         Surface.PROJECTS -> ProjectsSurface(state, viewModel, onCreateProject, onImportFolder, onImportZip, onExportProject, onExportProjects, onDuplicateProject, onRelocateProject, viewModel::openTerminalForProject, onFeedback, onOpenNavigation, modifier)
         Surface.PROJECT_DETAILS -> ProjectDetailsSurface(state, viewModel, onExportProject, onDuplicateProject, onRelocateProject, onOpenNavigation, modifier)
-        Surface.EDITOR -> EditorSurface(
-            shellState = state,
-            shellViewModel = viewModel,
-            ideViewModel = ideViewModel,
-            onOpenGlobalNavigation = onOpenNavigation,
-            editorPanelRequest = editorPanelRequest,
-            onOpenSettings = { onNavigate(Surface.SETTINGS) },
-            onExportProject = onExportProject,
-            onFeedback = onFeedback,
-            onOpenBrowserContent = { url -> viewModel.requestBrowserNavigation(url) },
-            onOpenProjectPreview = { url, reuseKey -> viewModel.requestBrowserNavigation(url, reuseKey = reuseKey) },
-            modifier = modifier,
-        )
+        Surface.EDITOR -> Unit
         Surface.TERMINAL -> TerminalSurface(
             state = state,
             viewModel = viewModel,
@@ -957,6 +961,7 @@ private fun SurfaceHost(
             onScrollConsumed = onSettingsSectionConsumed,
         )
         else -> DomainPlaceholderSurface(surfaceTitle(state.surface), modifier, onOpenNavigation, onFeedback)
+        }
     }
 }
 

@@ -130,9 +130,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
 
     init {
+        // Request the extension before restoring sessions. Content scripts run
+        // at document_start, so restoration must not be the first event that
+        // causes Gecko pages to load before DevTools setup is requested.
+        developerToolsService.setEnabled(_uiState.value.settings.developerToolsEnabled)
         restoreTabs()
         reconcileDownloads()
-        developerToolsService.setEnabled(_uiState.value.settings.developerToolsEnabled)
         if (_uiState.value.developerToolsOpen) developerToolsService.open()
         viewModelScope.launch {
             permissionService.pending.collect { request ->

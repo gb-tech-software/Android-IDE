@@ -360,15 +360,18 @@ status_command() {
         printf '{"command":"status","tools":{"git":"%s","node":"%s","npm":"%s","pnpm":"%s","live_server":"%s","zip":"%s","unzip":"%s"}}\n' \
             "$(json_escape "$(command -v git 2>/dev/null || printf missing)")" "$(json_escape "$(command -v node 2>/dev/null || printf missing)")" \
             "$(json_escape "$(command -v npm 2>/dev/null || printf missing)")" "$(json_escape "$(command -v pnpm 2>/dev/null || printf missing)")" \
-            "$(json_escape "$(command -v live-server 2>/dev/null || printf missing)")" "$(json_escape "$(command -v zip 2>/dev/null || printf missing)")" \
+            "app-managed" "$(json_escape "$(command -v zip 2>/dev/null || printf missing)")" \
             "$(json_escape "$(command -v unzip 2>/dev/null || printf missing)")"
+        app_request tools.status
         app_request app.status
     else
         printf 'Android IDE terminal tools\n'
-        for tool in git node npm pnpm live-server zip unzip; do
+        for tool in git node npm pnpm zip unzip; do
             path=$(command -v "$tool" 2>/dev/null) || path=missing
             printf '  %-12s %s\n' "$tool" "$path"
         done
+        printf '  %-12s %s\n' live-server app-managed
+        app_request tools.status || return $?
         app_request app.status || return $?
     fi
 }

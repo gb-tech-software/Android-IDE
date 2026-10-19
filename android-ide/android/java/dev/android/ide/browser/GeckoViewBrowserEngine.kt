@@ -731,13 +731,14 @@ class GeckoBrowserDeveloperToolsService(
     private var installed = false
     private var installing = false
 
-    init {
-        installIfNeeded()
-    }
-
     override fun setEnabled(enabled: Boolean) {
         this.enabled = enabled
-        if (!enabled) close() else installIfNeeded()
+        if (!enabled) {
+            close()
+        } else {
+            installIfNeeded()
+            postVisibility(opened)
+        }
     }
 
     override fun open() {
@@ -784,7 +785,10 @@ class GeckoBrowserDeveloperToolsService(
     }
 
     private fun postVisibility(open: Boolean, only: WebExtension.Port? = null) {
-        val message = JSONObject().put("type", "developer-tools").put("open", open)
+        val message = JSONObject()
+            .put("type", "developer-tools")
+            .put("enabled", enabled)
+            .put("open", open && enabled)
         (only?.let(::listOf) ?: ports.toList()).forEach { port -> runCatching { port.postMessage(message) } }
     }
 }

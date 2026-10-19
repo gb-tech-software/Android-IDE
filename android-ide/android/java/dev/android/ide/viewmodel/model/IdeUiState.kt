@@ -153,6 +153,8 @@ data class IdeUiState(
 
     /** True only when the active file's project language server has initialized. */
     val languageIntelligenceAvailable: Boolean = false,
+    /** Failure scoped to the active document's language server. */
+    val languageServerFailure: String? = null,
 
     /** Protocol features actually advertised by the active file's language server. */
     val languageServerFeatures: Set<LanguageServerFeature> = emptySet(),

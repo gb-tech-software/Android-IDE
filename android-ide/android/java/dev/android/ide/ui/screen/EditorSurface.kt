@@ -108,6 +108,7 @@ fun EditorSurface(
     shellState: AppShellState,
     shellViewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
+    visible: Boolean,
     onOpenGlobalNavigation: () -> Unit,
     editorPanelRequest: Long = 0L,
     onOpenSettings: () -> Unit,
@@ -129,13 +130,15 @@ fun EditorSurface(
     }
 
     if (state.projectRootUri == null && !shellState.restoring) {
-        EditorEmptyState(
-            projectName = project?.name,
-            onOpenProjects = { shellViewModel.navigate(Surface.PROJECTS) },
-            onOpenNavigation = onOpenGlobalNavigation,
-            modifier = modifier,
-        )
-        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
+        if (visible) {
+            EditorEmptyState(
+                projectName = project?.name,
+                onOpenProjects = { shellViewModel.navigate(Surface.PROJECTS) },
+                onOpenNavigation = onOpenGlobalNavigation,
+                modifier = modifier,
+            )
+            EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
+        }
         return
     }
 
@@ -148,9 +151,10 @@ fun EditorSurface(
         onFeedback = onFeedback,
         onOpenBrowserContent = onOpenBrowserContent,
         onOpenProjectPreview = onOpenProjectPreview,
+        showChrome = visible,
         modifier = modifier.fillMaxSize().background(LocalIdeColors.current.background),
     )
-    if (state.fileMutationLoading) {
+    if (visible && state.fileMutationLoading) {
         Box(
             Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f)).clickable { },
             contentAlignment = Alignment.Center,
@@ -167,7 +171,9 @@ fun EditorSurface(
             }
         }
     }
-    EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
+    if (visible) {
+        EditorDialogHost(state, ideViewModel, onChooseExportDestination = { dialog -> exportZip.launch("${dialog.node.displayName}.zip") }, onOpenBrowserContent = onOpenBrowserContent)
+    }
 }
 
 @Composable
@@ -433,6 +439,7 @@ private fun EditorWorkspace(
     onFeedback: (String) -> Unit,
     onOpenBrowserContent: (String) -> Unit,
     onOpenProjectPreview: (String, String) -> Unit,
+    showChrome: Boolean,
     modifier: Modifier,
 ) {
     val colors = LocalIdeColors.current
@@ -441,18 +448,20 @@ private fun EditorWorkspace(
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val previewScope = rememberCoroutineScope()
     var previewNotice by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state.statusMessage) {
-        val message = state.statusMessage.trim()
-        if (message.isNotEmpty() && state.fileOpDialog == null &&
-            !isLanguageSupportFeedback(message) && !message.contains("preview", ignoreCase = true)
-        ) {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    if (showChrome) {
+        LaunchedEffect(state.statusMessage) {
+            val message = state.statusMessage.trim()
+            if (message.isNotEmpty() && state.fileOpDialog == null &&
+                !isLanguageSupportFeedback(message) && !message.contains("preview", ignoreCase = true)
+            ) {
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
         }
     }
-    LaunchedEffect(activeTab?.id) { previewNotice = null }
+    if (showChrome) LaunchedEffect(activeTab?.id) { previewNotice = null }
     Box(modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
-            EditorTopBar(
+            if (showChrome) EditorTopBar(
                 state = state, activeTab = activeTab, fileTree = fileTree,
                 projectRootUri = state.projectRootUri,
                 onOpenGlobalNavigation = onOpenGlobalNavigation,
@@ -492,7 +501,7 @@ private fun EditorWorkspace(
                 onRetryLanguageServerPackages = ideViewModel::retryLanguageServerPackageInstallation,
                 onRevealDiagnostic = ideViewModel::revealDiagnostic,
             )
-            if (!state.localWorkspaceAvailable && state.projectRootUri != null) {
+            if (showChrome && !state.localWorkspaceAvailable && state.projectRootUri != null) {
                 Text(
                     text = state.localWorkspaceExplanation
                         ?: "Edit existing files only. Move this project to Android IDE storage or Android external storage for full access.",
@@ -503,7 +512,7 @@ private fun EditorWorkspace(
                     modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
-            if (state.openTabs.isNotEmpty()) {
+            if (showChrome && state.openTabs.isNotEmpty()) {
                 EditorTabBar(
                     tabs = state.openTabs, onTabSelected = ideViewModel::selectTab, onTabCloseSafe = ideViewModel::closeTabSafe,
                     onTabSave = { tabId ->
@@ -530,10 +539,10 @@ private fun EditorWorkspace(
                 keyboardToolbarOrder = state.editorSettings.keyboardToolbarOrder,
                 tabCursorPositions = state.tabCursorPositions, tabScrollPositions = state.tabScrollPositions, modifier = Modifier.weight(1f).fillMaxWidth(),
             )
-            if (state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
+            if (showChrome && state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
         }
     }
-    previewNotice?.takeIf(String::isNotBlank)?.let { message ->
+    if (showChrome) previewNotice?.takeIf(String::isNotBlank)?.let { message ->
         AlertDialog(
             onDismissRequest = { previewNotice = null },
             title = { Text("Preview unavailable") },
@@ -584,9 +593,19 @@ private fun EditorTopBar(
     var moreOpen by remember { mutableStateOf(false) }
     var pathOpen by remember { mutableStateOf(false) }
     var languageSupportOpen by rememberSaveable { mutableStateOf(false) }
-    val packageStatusMessage = state.languageServerPackageSetupMessage?.takeIf(String::isNotBlank)
-    val runtimeStatusMessage = state.statusMessage.takeIf(::isLanguageSupportFeedback)
-    val languageSupportNeedsAttention = state.languageServerPackageSetupCanRetry || runtimeStatusMessage != null
+    val packageSetupPending = state.editorSettings.languageServerEnabled &&
+        state.languageServerPackageSetupMessage?.contains("Checking", ignoreCase = true) == true
+    val packageSetupFailed = state.editorSettings.languageServerEnabled && state.languageServerPackageSetupCanRetry
+    val languageSupportNeedsAttention = packageSetupFailed || state.languageServerFailure != null
+    val languageSupportMessage = when {
+        !state.editorSettings.languageServerEnabled -> "LSP settings are disabled. Enable them in Editor Services settings to use language support."
+        packageSetupFailed -> "LSP service packages are not installed. Install or update them in Editor Services settings."
+        packageSetupPending -> "LSP support is checking its service packages for the active project."
+        activeTab == null -> "Open a source file in a project to check language support."
+        state.languageServerFailure != null -> "LSP service is unavailable for the active document. Retry or inspect Editor Services settings."
+        state.languageIntelligenceAvailable -> "Language support is available for the active document."
+        else -> "LSP support is unavailable or unsupported for the current active document. Editing remains available."
+    }
     val activeDiagnostics = activeTab?.documentUri?.let { state.languageServerDiagnostics[it] }.orEmpty()
     val activeTabCanSave = activeTab != null && !activeTab.isImagePreview &&
         (activeTab.content != null || activeTab.isBlank)
@@ -709,23 +728,15 @@ private fun EditorTopBar(
             onDismissRequest = { languageSupportOpen = false },
             title = { Text("Language support") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        when {
-                            !state.editorSettings.languageServerEnabled -> "Language support is disabled in Editor Services."
-                            state.languageIntelligenceAvailable -> "Language intelligence is available for the active document."
-                            activeTab == null -> "Open a source file in a project to check language support."
-                            else -> "Language intelligence is not currently active for ${activeTab.language}. Editing remains available."
-                        },
-                    )
-                    packageStatusMessage?.let { Text(it, color = colors.textSecondary) }
-                    runtimeStatusMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
+                Text(languageSupportMessage)
             },
             confirmButton = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (state.languageServerPackageSetupCanRetry) {
-                        TextButton(onClick = { languageSupportOpen = false; onRetryLanguageServerPackages() }) { Text("Retry setup") }
+                    if (packageSetupFailed || state.languageServerFailure != null) {
+                        TextButton(onClick = { languageSupportOpen = false; onRetryLanguageServerPackages() }) { Text("Retry") }
+                    }
+                    if (!state.editorSettings.languageServerEnabled || packageSetupFailed || state.languageServerFailure != null) {
+                        TextButton(onClick = { languageSupportOpen = false; onOpenSettings() }) { Text("Editor services") }
                     }
                     TextButton(onClick = { languageSupportOpen = false }) { Text("Done") }
                 }
