@@ -871,6 +871,19 @@ class MainActivity : ComponentActivity() {
                         if (ideViewModel.removeLanguageServerTools()) 0 to "Pinned language-server packages removed"
                         else 1 to "Could not remove the pinned language-server package directory"
                     }
+                    "tools.preview.status" -> {
+                        val status = services.projectLiveServer.packageStatus()
+                        0 to "preview-package=${status.installed} version=${status.version ?: "unknown"} message=${status.message.orEmpty()}"
+                    }
+                    "tools.preview.install" -> {
+                        val status = services.projectLiveServer.install()
+                        if (status.installed) 0 to (status.message ?: "IDE-managed preview package installed")
+                        else 1 to (status.message ?: "IDE-managed preview package installation failed")
+                    }
+                    "tools.preview.remove" -> {
+                        if (services.projectLiveServer.remove()) 0 to "IDE-managed preview package removed"
+                        else 1 to "Could not remove the IDE-managed preview package"
+                    }
                     else -> 2 to "Unsupported Android IDE tools command"
                 }
             }.getOrElse { 1 to (it.message ?: it.javaClass.simpleName) }
@@ -933,6 +946,7 @@ class MainActivity : ComponentActivity() {
             "projects.create", "projects.import-folder", "projects.import-zip", "projects.rename",
             "projects.duplicate", "projects.relocate", "projects.unregister", "projects.delete", "projects.export",
             "tools.lsp.install", "tools.lsp.status", "tools.lsp.remove",
+            "tools.preview.install", "tools.preview.status", "tools.preview.remove",
         )
     }
 }

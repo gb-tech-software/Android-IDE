@@ -33,6 +33,7 @@ class EditorSettingsRepository(context: Context) {
         private const val KEY_CURSOR_STYLE            = "cursor_style"
         private const val KEY_BRACKET_PAIR_COLOR      = "bracket_pair_colorization"
         private const val KEY_AUTO_CLOSING_BRACKETS   = "auto_closing_brackets"
+        private const val KEY_PREVIEW_FLOATING_BROWSER = "preview_opens_floating_browser"
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -63,6 +64,7 @@ class EditorSettingsRepository(context: Context) {
         cursorStyle            = prefs.getString(KEY_CURSOR_STYLE, "line") ?: "line",
         bracketPairColorization= prefs.getBoolean(KEY_BRACKET_PAIR_COLOR, true),
         autoClosingBrackets    = prefs.getString(KEY_AUTO_CLOSING_BRACKETS, "languageDefined") ?: "languageDefined",
+        previewOpensFloatingBrowser = prefs.getBoolean(KEY_PREVIEW_FLOATING_BROWSER, false),
     )
 
     fun setEditorSettings(settings: EditorSettings) {
@@ -88,6 +90,7 @@ class EditorSettingsRepository(context: Context) {
             .putString (KEY_CURSOR_STYLE,            settings.cursorStyle)
             .putBoolean(KEY_BRACKET_PAIR_COLOR,      settings.bracketPairColorization)
             .putString (KEY_AUTO_CLOSING_BRACKETS,   settings.autoClosingBrackets)
+            .putBoolean(KEY_PREVIEW_FLOATING_BROWSER, settings.previewOpensFloatingBrowser)
             .apply()
     }
 

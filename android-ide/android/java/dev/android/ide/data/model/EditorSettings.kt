@@ -67,6 +67,8 @@ data class EditorSettings(
     val uiFontScale: Float = 1.0f,
     /** Install and use pinned language-server packages only when explicitly enabled. */
     val languageServerEnabled: Boolean = false,
+    /** Open Preview in the browser-owned floating host instead of the Browser domain. */
+    val previewOpensFloatingBrowser: Boolean = false,
 
 ) {
     companion object {

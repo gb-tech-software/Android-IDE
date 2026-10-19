@@ -198,6 +198,8 @@ fun BrowserSurface(
     onApplicationBack: () -> Unit = {},
     initialNavigation: BrowserNavigationRequest? = null,
     onInitialNavigationConsumed: (String) -> Unit = {},
+    floating: Boolean = false,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -319,8 +321,10 @@ fun BrowserSurface(
             activeFilePromptId = null
         }
     }
-    BackHandler(enabled = state.downloadsPageOpen || state.historyPageOpen || state.selectedTabId != null) {
-        if (state.downloadsPageOpen) {
+    BackHandler(enabled = floating || state.downloadsPageOpen || state.historyPageOpen || state.selectedTabId != null) {
+        if (floating) {
+            onDismiss()
+        } else if (state.downloadsPageOpen) {
             browser.hideDownloadsPage()
         } else if (state.historyPageOpen) {
             browser.hideHistoryPage()
@@ -355,8 +359,10 @@ fun BrowserSurface(
                 state.selectedTabId?.let { browser.captureTabThumbnail(it, visibleBrowserSurface.value?.thumbnailView()) }
                 tabsOpen = true
             },
-            onOpenNavigation = onOpenNavigation,
+            onOpenNavigation = if (floating) onDismiss else onOpenNavigation,
             onOpenSettings = onOpenSettings,
+            floating = floating,
+            onDismiss = onDismiss,
             tabSearchQuery = tabSearchQuery,
             setTabSearchQuery = { tabSearchQuery = it },
             setUrlRowVisible = { urlRowVisible = it },
@@ -425,6 +431,35 @@ fun BrowserSurface(
     }
 }
 
+/** Browser-owned presentation host for previewing content above another domain. */
+@Composable
+fun BrowserFloatingPanel(
+    browser: BrowserViewModel,
+    initialNavigation: BrowserNavigationRequest?,
+    onInitialNavigationConsumed: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.material3.Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        BrowserSurface(
+            browser = browser,
+            onOpenNavigation = {},
+            onOpenSettings = onOpenSettings,
+            initialNavigation = initialNavigation,
+            onInitialNavigationConsumed = onInitialNavigationConsumed,
+            floating = true,
+            onDismiss = onDismiss,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BrowserSurfaceContent(
@@ -445,6 +480,8 @@ private fun BrowserSurfaceContent(
     openTabs: () -> Unit,
     onOpenNavigation: () -> Unit,
     onOpenSettings: () -> Unit,
+    floating: Boolean,
+    onDismiss: () -> Unit,
     tabSearchQuery: String,
     setTabSearchQuery: (String) -> Unit,
     setUrlRowVisible: (Boolean) -> Unit,
@@ -542,6 +579,21 @@ private fun BrowserSurfaceContent(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
+                        val externalUrl = activeTab?.url?.takeIf { value ->
+                            runCatching { Uri.parse(value).scheme?.lowercase() in setOf("http", "https") }.getOrDefault(false)
+                        }
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.OpenInNew, contentDescription = null) },
+                            label = { Text("Open in another app") },
+                            selected = false,
+                            onClick = {
+                                if (externalUrl != null) closeDrawerThen {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(externalUrl))
+                                    runCatching { context.startActivity(Intent.createChooser(intent, "Open with")) }
+                                }
+                            },
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        )
                         NavigationDrawerItem(
                             icon = { Icon(Icons.Default.Add, contentDescription = null) },
                             label = { Text("New tab") },
@@ -611,10 +663,11 @@ private fun BrowserSurfaceContent(
                     else -> "Browser"
                 }) },
                 navigationIcon = {
-                    // Keep the Android IDE sidebar toggle available on every
-                    // browser surface, including Downloads and History.
                     IconButton(onClick = onOpenNavigation) {
-                        Icon(Icons.Default.Menu, "Open Android IDE navigation")
+                        Icon(
+                            if (floating) Icons.Default.Close else Icons.Default.Menu,
+                            if (floating) "Close floating browser" else "Open Android IDE navigation",
+                        )
                     }
                 },
                 actions = {

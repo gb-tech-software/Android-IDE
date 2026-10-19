@@ -899,6 +899,7 @@ private fun SurfaceHost(
             shellState = state,
             shellViewModel = viewModel,
             ideViewModel = ideViewModel,
+            browserViewModel = browserViewModel,
             visible = state.surface == Surface.EDITOR,
             onOpenGlobalNavigation = onOpenNavigation,
             editorPanelRequest = editorPanelRequest,
@@ -906,7 +907,13 @@ private fun SurfaceHost(
             onExportProject = onExportProject,
             onFeedback = onFeedback,
             onOpenBrowserContent = { url -> viewModel.requestBrowserNavigation(url) },
-            onOpenProjectPreview = { url, reuseKey -> viewModel.requestBrowserNavigation(url, reuseKey = reuseKey) },
+            onOpenProjectPreview = { url, reuseKey ->
+                viewModel.hideBrowserOverlay()
+                viewModel.requestBrowserNavigation(url, reuseKey = reuseKey)
+            },
+            onOpenFloatingBrowserPreview = { url, reuseKey ->
+                viewModel.requestFloatingBrowserNavigation(url, reuseKey)
+            },
             modifier = if (state.surface == Surface.EDITOR) Modifier.fillMaxSize() else Modifier.size(1.dp).alpha(0f),
         )
         when (state.surface) {

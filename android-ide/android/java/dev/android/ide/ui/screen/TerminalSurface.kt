@@ -6,6 +6,7 @@ import android.widget.Toast
 import android.content.pm.PackageManager
 import android.view.KeyEvent
 import android.view.MotionEvent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -29,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material.icons.filled.Settings
@@ -83,6 +85,8 @@ fun TerminalSurface(
     onOpenNavigation: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onSettingsChanged: (TerminalSettings) -> Unit = {},
+    floating: Boolean = false,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var ctrlLatched by remember { mutableStateOf(false) }
@@ -139,10 +143,11 @@ fun TerminalSurface(
     Box(modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
+            if (!floating) IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
             Column(Modifier.weight(1f)) {
                 Text("Terminal", style = MaterialTheme.typography.titleMedium)
             }
+            if (floating) IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close floating terminal") }
             Box {
                 IconButton(onClick = { appearanceMenuOpen = true }) {
                     Icon(Icons.Default.MoreVert, "Terminal menu")
@@ -301,6 +306,41 @@ fun TerminalSurface(
             },
         )
     }
+    }
+}
+
+/**
+ * Terminal-owned presentation host for use above another domain surface.
+ * The PTY, selected session, output, settings, and redraw binding remain
+ * exactly the same as [TerminalSurface]; only the presentation frame changes.
+ */
+@Composable
+fun TerminalFloatingPanel(
+    state: AppShellState,
+    viewModel: AppShellViewModel,
+    terminalSettings: TerminalSettings,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BackHandler(onBack = onDismiss)
+    Card(
+        modifier = modifier,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        TerminalSurface(
+            state = state,
+            viewModel = viewModel,
+            terminalSettings = terminalSettings,
+            onOpenNavigation = {},
+            onOpenSettings = onOpenSettings,
+            onSettingsChanged = viewModel::setTerminalSettings,
+            floating = true,
+            onDismiss = onDismiss,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 

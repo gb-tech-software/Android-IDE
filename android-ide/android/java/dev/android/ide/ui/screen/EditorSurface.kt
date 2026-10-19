@@ -76,8 +76,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.contracts.Surface
 import dev.android.ide.ui.components.EditorPane
 import dev.android.ide.ui.components.EditorProjectActionsMenu
@@ -108,6 +110,7 @@ fun EditorSurface(
     shellState: AppShellState,
     shellViewModel: AppShellViewModel,
     ideViewModel: IdeViewModel,
+    browserViewModel: BrowserViewModel,
     visible: Boolean,
     onOpenGlobalNavigation: () -> Unit,
     editorPanelRequest: Long = 0L,
@@ -116,6 +119,7 @@ fun EditorSurface(
     onFeedback: (String) -> Unit,
     onOpenBrowserContent: (String) -> Unit,
     onOpenProjectPreview: (String, String) -> Unit,
+    onOpenFloatingBrowserPreview: (String, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by ideViewModel.uiState.collectAsState()
@@ -143,14 +147,19 @@ fun EditorSurface(
     }
 
     EditorWorkspace(
+        shellState = shellState,
+        shellViewModel = shellViewModel,
         state = state,
         ideViewModel = ideViewModel,
+        browserViewModel = browserViewModel,
         fileTree = state.fileTree,
         onOpenGlobalNavigation = onOpenGlobalNavigation,
         onOpenSettings = onOpenSettings,
         onFeedback = onFeedback,
         onOpenBrowserContent = onOpenBrowserContent,
         onOpenProjectPreview = onOpenProjectPreview,
+        onOpenFloatingBrowserPreview = onOpenFloatingBrowserPreview,
+        onToggleTerminalOverlay = shellViewModel::toggleTerminalOverlay,
         showChrome = visible,
         modifier = modifier.fillMaxSize().background(LocalIdeColors.current.background),
     )
@@ -431,14 +440,19 @@ private fun SidebarIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, l
 
 @Composable
 private fun EditorWorkspace(
+    shellState: AppShellState,
+    shellViewModel: AppShellViewModel,
     state: IdeUiState,
     ideViewModel: IdeViewModel,
+    browserViewModel: BrowserViewModel,
     fileTree: List<FileNode>,
     onOpenGlobalNavigation: () -> Unit,
     onOpenSettings: () -> Unit,
     onFeedback: (String) -> Unit,
     onOpenBrowserContent: (String) -> Unit,
     onOpenProjectPreview: (String, String) -> Unit,
+    onOpenFloatingBrowserPreview: (String, String) -> Unit,
+    onToggleTerminalOverlay: () -> Unit,
     showChrome: Boolean,
     modifier: Modifier,
 ) {
@@ -486,7 +500,11 @@ private fun EditorWorkspace(
                         if (previewTarget == null) previewNotice = ideViewModel.uiState.value.statusMessage
                         else {
                             previewNotice = null
-                            onOpenProjectPreview(previewTarget.url, previewTarget.reuseKey)
+                            if (state.editorSettings.previewOpensFloatingBrowser) {
+                                onOpenFloatingBrowserPreview(previewTarget.url, previewTarget.reuseKey)
+                            } else {
+                                onOpenProjectPreview(previewTarget.url, previewTarget.reuseKey)
+                            }
                         }
                     }
                 },
@@ -498,6 +516,8 @@ private fun EditorWorkspace(
                 loadNavChildren = ideViewModel::loadNavChildren,
                 onFeedback = onFeedback,
                 onOpenSettings = onOpenSettings,
+                onToggleTerminalOverlay = onToggleTerminalOverlay,
+                terminalOverlayVisible = shellState.terminalOverlayVisible,
                 onRetryLanguageServerPackages = ideViewModel::retryLanguageServerPackageInstallation,
                 onRevealDiagnostic = ideViewModel::revealDiagnostic,
             )
@@ -540,6 +560,36 @@ private fun EditorWorkspace(
                 tabCursorPositions = state.tabCursorPositions, tabScrollPositions = state.tabScrollPositions, modifier = Modifier.weight(1f).fillMaxWidth(),
             )
             if (showChrome && state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
+        }
+        if (showChrome && shellState.terminalOverlayVisible) {
+            TerminalFloatingPanel(
+                state = shellState,
+                viewModel = shellViewModel,
+                terminalSettings = shellState.terminalSettings,
+                onOpenSettings = onOpenSettings,
+                onDismiss = shellViewModel::hideTerminalOverlay,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(12.dp)
+                    .heightIn(min = 240.dp, max = 440.dp)
+                    .zIndex(2f),
+            )
+        }
+        if (showChrome && shellState.browserOverlayVisible) {
+            BrowserFloatingPanel(
+                browser = browserViewModel,
+                initialNavigation = shellState.pendingBrowserNavigations.firstOrNull(),
+                onInitialNavigationConsumed = shellViewModel::consumeBrowserNavigationRequest,
+                onOpenSettings = onOpenSettings,
+                onDismiss = shellViewModel::hideBrowserOverlay,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(12.dp)
+                    .heightIn(min = 280.dp, max = 560.dp)
+                    .zIndex(2f),
+            )
         }
     }
     if (showChrome) previewNotice?.takeIf(String::isNotBlank)?.let { message ->
@@ -586,6 +636,8 @@ private fun EditorTopBar(
     loadNavChildren: suspend (String) -> List<FileNode>,
     onFeedback: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onToggleTerminalOverlay: () -> Unit,
+    terminalOverlayVisible: Boolean,
     onRetryLanguageServerPackages: () -> Unit,
     onRevealDiagnostic: (EditorDiagnostic) -> Unit,
 ) {
@@ -637,6 +689,13 @@ private fun EditorTopBar(
     }
     Row(Modifier.fillMaxWidth().height(56.dp).background(colors.surface).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onOpenGlobalNavigation) { Icon(Icons.Default.Menu, "Open application navigation", tint = colors.textPrimary) }
+        IconButton(onClick = onToggleTerminalOverlay) {
+            Icon(
+                Icons.Default.Terminal,
+                "Toggle floating terminal",
+                tint = if (terminalOverlayVisible) colors.primary else colors.textPrimary,
+            )
+        }
         Box(Modifier.weight(1f)) {
             Text(
                 text = path.ifBlank { "No file selected" }, color = colors.textPrimary, style = MaterialTheme.typography.titleSmall,

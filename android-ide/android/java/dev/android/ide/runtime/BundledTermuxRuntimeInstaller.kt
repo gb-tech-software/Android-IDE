@@ -79,7 +79,10 @@ class BundledTermuxRuntimeInstaller(private val context: Context) {
         "PREFIX=${prefix.absolutePath}",
         "PATH=${File(prefix, "lib/android-ide/bin").absolutePath}:${File(prefix, "bin").absolutePath}:/system/bin:/system/xbin",
         "SHELL=$shellPath",
-        "BROWSER=${File(prefix, "lib/android-ide/bin/ide").absolutePath}",
+        // Dev servers invoke BROWSER as a URL-taking executable. Keep this at
+        // the runtime boundary so Vite, Live Server, and other tools route
+        // through the Android IDE Browser domain without tool-specific hooks.
+        "BROWSER=${File(prefix, "lib/android-ide/bin/android-ide-open-url").absolutePath}",
         "IDE_PACKAGE=${context.packageName}",
         "IDE_RECEIPT_DIRECTORY=${File(context.filesDir, "browser-navigation-receipts").absolutePath}",
         "IDE_TOOLS_RECEIPT_DIRECTORY=${File(context.filesDir, "ide-tools-receipts").absolutePath}",
@@ -379,7 +382,7 @@ exec "${'$'}{PREFIX:-${prefix.absolutePath}}/lib/android-ide/bin/ide" "${'$'}@"
             val wrapper = File(commandDirectory, name)
             wrapper.writeText(
                 """#!/system/bin/sh
-exec "$idePath" browser open "${'$'}@"
+exec "$idePath" browser open --new-tab -u "${'$'}@"
 """.trimIndent() + "\n",
             )
             setMode(wrapper, EXECUTABLE_FILE_MODE)

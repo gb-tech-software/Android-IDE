@@ -63,6 +63,10 @@ data class AppShellState(
     val terminalProgress: String? = null,
     val terminalFeedback: OperationReport? = null,
     val terminalStorageSetupRequest: TerminalStorageSetupRequest? = null,
+    /** Shared visibility intent for the terminal-owned floating host. */
+    val terminalOverlayVisible: Boolean = false,
+    /** Shared visibility intent for the browser-owned floating host. */
+    val browserOverlayVisible: Boolean = false,
     val navigationPromptVisible: Boolean = false,
     val pendingNavigation: Surface? = null,
     val pendingBackNavigation: Boolean = false,
@@ -331,6 +335,20 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     fun terminalSession(sessionId: String): TerminalSession? = terminalRuntime.terminalSession(sessionId)
     fun bindTerminalView(sessionId: String, invalidate: () -> Unit) = terminalRuntime.bindTerminalView(sessionId, invalidate)
     fun unbindTerminalView(sessionId: String) = terminalRuntime.unbindTerminalView(sessionId)
+
+    /** Any domain may request the terminal-owned floating host to become visible. */
+    fun showTerminalOverlay() = _state.update { it.copy(terminalOverlayVisible = true) }
+
+    fun hideTerminalOverlay() = _state.update { it.copy(terminalOverlayVisible = false) }
+
+    fun toggleTerminalOverlay() = _state.update { it.copy(terminalOverlayVisible = !it.terminalOverlayVisible) }
+
+    /** Any domain may request the browser-owned floating host to become visible. */
+    fun showBrowserOverlay() = _state.update { it.copy(browserOverlayVisible = true) }
+
+    fun hideBrowserOverlay() = _state.update { it.copy(browserOverlayVisible = false) }
+
+    fun toggleBrowserOverlay() = _state.update { it.copy(browserOverlayVisible = !it.browserOverlayVisible) }
 
     fun selectTerminalSession(sessionId: String) {
         val session = _state.value.terminalSessions.firstOrNull { it.id == sessionId } ?: return
@@ -607,6 +625,14 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         queueBrowserNavigation(value, openInNewTab, reuseKey, requestId)
     }
 
+    /** Queue browser content for a browser-owned overlay without changing the current domain. */
+    fun requestFloatingBrowserNavigation(url: String, reuseKey: String? = null) {
+        val value = url.trim()
+        if (value.isBlank()) return
+        queueBrowserNavigation(value, openInNewTab = false, reuseKey = reuseKey, requestId = null, navigateToBrowser = false)
+        showBrowserOverlay()
+    }
+
     fun consumeBrowserNavigationRequest(requestId: String) {
         var receiptTracked = false
         _state.update { current ->
@@ -647,14 +673,20 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private fun queueBrowserNavigation(url: String, openInNewTab: Boolean, reuseKey: String?, requestId: String?) {
+    private fun queueBrowserNavigation(
+        url: String,
+        openInNewTab: Boolean,
+        reuseKey: String?,
+        requestId: String?,
+        navigateToBrowser: Boolean = true,
+    ) {
         val id = requestId?.takeIf(String::isNotBlank) ?: UUID.randomUUID().toString()
         _state.update { current ->
             if (current.pendingBrowserNavigations.any { it.id == id }) current
             else current.copy(pendingBrowserNavigations = current.pendingBrowserNavigations + BrowserNavigationRequest(id, url, openInNewTab, reuseKey, requestId != null))
         }
         if (requestId != null) services.browserNavigationReceipts.record(id, "accepted")
-        navigate(Surface.BROWSER)
+        if (navigateToBrowser) navigate(Surface.BROWSER)
     }
 
     fun back(): Boolean {

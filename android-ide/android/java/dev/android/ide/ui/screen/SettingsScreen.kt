@@ -10,7 +10,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -27,8 +29,9 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Code
@@ -41,7 +44,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -59,6 +62,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -91,14 +95,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
 
 enum class SettingsCategory(val title: String, val description: String, val icon: ImageVector) {
-    GENERAL("General", "App theme and interface-wide preferences", Icons.Default.Palette),
-    EDITOR("Editor", "Editor appearance, code behavior, keyboard, and file tree", Icons.Default.Code),
-    EDITOR_SERVICES("Editor Services", "Language support and project preview services", Icons.Default.Tune),
-    PROJECTS("Projects", "Project creation and storage preferences", Icons.Default.FolderOpen),
+    GENERAL("General", "Theme and interface", Icons.Default.Palette),
+    EDITOR("Editor", "Appearance, editing, and file tree", Icons.Default.Code),
+    EDITOR_SERVICES("Editor Services", "Language tools and preview", Icons.Default.Tune),
+    PROJECTS("Projects", "Project and storage defaults", Icons.Default.FolderOpen),
     CREDENTIALS("Credentials", "Secure sign-in data", Icons.Default.Lock),
-    SECURITY("Security", "Storage access, Android permissions, and protected data", Icons.Default.Lock),
-    TERMINAL("Terminal", "Terminal runtime and session preferences", Icons.Default.Terminal),
-    BROWSER("Browser", "Browser preview and web-project preferences", Icons.Default.Language),
+    SECURITY("Security", "Storage and permissions", Icons.Default.Lock),
+    TERMINAL("Terminal", "Runtime and session settings", Icons.Default.Terminal),
+    BROWSER("Browser", "Browsing and web-project settings", Icons.Default.Language),
 }
 
 @Composable
@@ -188,9 +192,9 @@ private fun SettingsCategoryList(
 ) {
     val colors = LocalIdeColors.current
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
+        contentPadding = PaddingValues(vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
             Text(
@@ -203,10 +207,12 @@ private fun SettingsCategoryList(
         items(SettingsCategory.values().toList()) { category ->
             Card(
                 onClick = { onCategorySelected(category) },
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, colors.separator.copy(alpha = 0.55f)),
                 colors = CardDefaults.cardColors(containerColor = colors.surface),
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(category.icon, contentDescription = null, tint = colors.primary, modifier = Modifier.size(24.dp))
@@ -235,12 +241,12 @@ private fun SettingsCategoryContent(
     val s = uiState.editorSettings
     val colors = LocalIdeColors.current
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
+        contentPadding = PaddingValues(vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            Text(category.description, color = colors.textSecondary, style = MaterialTheme.typography.bodyMedium)
+            Text(category.description, color = colors.textSecondary, style = MaterialTheme.typography.labelLarge)
         }
         when (category) {
             SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
@@ -264,7 +270,7 @@ private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: Ide
         Text("Language support", style = MaterialTheme.typography.titleSmall)
         VisibilitySettingRow(
             "Enable language servers",
-            "Use application-managed language tools for completion, diagnostics, and navigation.",
+            "Completion, diagnostics, and navigation.",
             uiState.editorSettings.languageServerEnabled,
             { ideViewModel.setEditorSettings(uiState.editorSettings.copy(languageServerEnabled = it)) },
         )
@@ -278,7 +284,13 @@ private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: Ide
     }
     SettingsCard {
         Text("Project preview", style = MaterialTheme.typography.titleSmall)
-        Text("Live Server runs from an Android IDE-owned package and Node runtime. It is independent of Terminal.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        Text("Uses Android IDE’s managed preview server.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        VisibilitySettingRow(
+            "Open Preview in floating browser",
+            "Show the browser above the editor instead of switching domains.",
+            uiState.editorSettings.previewOpensFloatingBrowser,
+            { ideViewModel.setEditorSettings(uiState.editorSettings.copy(previewOpensFloatingBrowser = it)) },
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.installPreviewPackage(); "Preview server installed." }.getOrElse { it.message ?: "Preview installation failed." } } }) { Text("Install") }
             OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.updatePreviewPackage(); "Preview server updated." }.getOrElse { it.message ?: "Preview update failed." } } }) { Text("Update") }
@@ -321,7 +333,7 @@ private fun StorageAccessSettings() {
     SettingsCard {
         Text("Project folder access", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Android IDE uses Android’s folder access permission for project files. Grant access to a folder when Android asks, and the permission remains available after the app is reopened.",
+            "Grant a folder once to keep project access after restart.",
             style = MaterialTheme.typography.bodySmall,
             color = LocalIdeColors.current.textSecondary,
         )
@@ -332,7 +344,7 @@ private fun StorageAccessSettings() {
     SettingsCard {
         Text("Android app permissions", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Request notifications on Android 13+ and legacy storage access on older Android versions. Modern project access uses the folder picker above.",
+            "Request notifications and legacy storage access when available.",
             style = MaterialTheme.typography.bodySmall,
             color = LocalIdeColors.current.textSecondary,
         )
@@ -356,12 +368,17 @@ private fun StorageAccessSettings() {
 @Composable
 private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChanged: (AppTheme) -> Unit, s: EditorSettings, ideViewModel: IdeViewModel) {
     SettingsCard {
-        Text("App theme", style = MaterialTheme.typography.titleSmall)
-        Column(Modifier.selectableGroup()) {
-            AppThemeOption("Dark", AppTheme.DARK, applicationTheme, onApplicationThemeChanged)
-            AppThemeOption("Light", AppTheme.LIGHT, applicationTheme, onApplicationThemeChanged)
-            AppThemeOption("Follow device", AppTheme.DEVICE, applicationTheme, onApplicationThemeChanged)
-        }
+        ChoiceSetting(
+            title = "App theme",
+            choices = listOf("Dark" to AppTheme.DARK.name, "Light" to AppTheme.LIGHT.name, "Follow device" to AppTheme.DEVICE.name),
+            selected = applicationTheme.name,
+            descriptions = mapOf(
+                AppTheme.DARK.name to "Use the dark interface.",
+                AppTheme.LIGHT.name to "Use the light interface.",
+                AppTheme.DEVICE.name to "Follow the device theme.",
+            ),
+            onSelected = { value -> onApplicationThemeChanged(AppTheme.valueOf(value)) },
+        )
     }
     SettingsCard {
         Text("Interface text size", style = MaterialTheme.typography.titleSmall)
@@ -385,13 +402,18 @@ private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChange
 private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideViewModel: IdeViewModel) {
     val colors = LocalIdeColors.current
     SettingsCard {
-        Text("Editor appearance", style = MaterialTheme.typography.titleSmall)
-        Column(Modifier.selectableGroup()) {
-            EditorThemeOption("Dark", "dark", s.editorTheme, s, ideViewModel)
-            EditorThemeOption("Light", "light", s.editorTheme, s, ideViewModel)
-            EditorThemeOption("Follow application", "application", s.editorTheme, s, ideViewModel)
-            EditorThemeOption("Follow device", "device", s.editorTheme, s, ideViewModel)
-        }
+        ChoiceSetting(
+            title = "Editor appearance",
+            choices = listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device"),
+            selected = s.editorTheme,
+            descriptions = mapOf(
+                "dark" to "Use the dark editor theme.",
+                "light" to "Use the light editor theme.",
+                "application" to "Match the application theme.",
+                "device" to "Match the device theme.",
+            ),
+            onSelected = { value -> ideViewModel.setEditorSettings(s.copy(editorTheme = value)) },
+        )
         HorizontalDivider(color = colors.separator)
         SettingStepper("Code font size", "${s.fontSize} sp", {
             if (s.fontSize > 10) ideViewModel.setEditorSettings(s.copy(fontSize = s.fontSize - 1))
@@ -404,15 +426,13 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
     SettingsCard {
         Text("Editing behavior", style = MaterialTheme.typography.titleSmall)
         HorizontalDivider(color = colors.separator)
-        Text("Tab size", style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf(2, 4, 8).forEach { size -> FilterChip(s.tabSize == size, { ideViewModel.setEditorSettings(s.copy(tabSize = size)) }, label = { Text("$size") }) } }
+        ChoiceSetting("Tab size", listOf("2 spaces" to "2", "4 spaces" to "4", "8 spaces" to "8"), s.tabSize.toString(), mapOf("2" to "Indent by two spaces.", "4" to "Indent by four spaces.", "8" to "Indent by eight spaces.")) { value -> ideViewModel.setEditorSettings(s.copy(tabSize = value.toInt())) }
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Word wrap", "Wrap long lines inside the editor.", s.wordWrap, { ideViewModel.setEditorSettings(s.copy(wordWrap = it)) })
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Line numbers", "Show line numbers beside the code.", s.lineNumbers, { ideViewModel.setEditorSettings(s.copy(lineNumbers = it)) })
         HorizontalDivider(color = colors.separator)
-        Text("Whitespace", style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { listOf("None" to "none", "Selection" to "selection", "All" to "all").forEach { (label, value) -> FilterChip(s.renderWhitespace == value, { ideViewModel.setEditorSettings(s.copy(renderWhitespace = value)) }, label = { Text(label) }) } }
+        ChoiceSetting("Whitespace", listOf("None" to "none", "Selection" to "selection", "All" to "all"), s.renderWhitespace, mapOf("none" to "Hide whitespace markers.", "selection" to "Show markers in selected text.", "all" to "Always show whitespace markers.")) { value -> ideViewModel.setEditorSettings(s.copy(renderWhitespace = value)) }
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Minimap", "Show a code overview at the edge of the editor.", s.minimapEnabled, { ideViewModel.setEditorSettings(s.copy(minimapEnabled = it)) })
         HorizontalDivider(color = colors.separator)
@@ -420,9 +440,21 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Bracket pair colors", "Color nested bracket levels differently.", s.bracketPairColorization, { ideViewModel.setEditorSettings(s.copy(bracketPairColorization = it)) })
         HorizontalDivider(color = colors.separator)
-        ChoiceSetting("Cursor style", listOf("Line" to "line", "Block" to "block", "Underline" to "underline"), s.cursorStyle) { ideViewModel.setEditorSettings(s.copy(cursorStyle = it)) }
+        ChoiceSetting(
+            "Cursor style",
+            listOf("Line" to "line", "Block" to "block", "Underline" to "underline"),
+            s.cursorStyle,
+            mapOf("line" to "Thin vertical cursor.", "block" to "Filled character block.", "underline" to "Underline the active character."),
+            onSelected = { ideViewModel.setEditorSettings(s.copy(cursorStyle = it)) },
+        )
         HorizontalDivider(color = colors.separator)
-        ChoiceSetting("Auto-close brackets", listOf("Always" to "always", "Smart" to "languageDefined", "Never" to "never"), s.autoClosingBrackets) { ideViewModel.setEditorSettings(s.copy(autoClosingBrackets = it)) }
+        ChoiceSetting(
+            "Auto-close brackets",
+            listOf("Always" to "always", "Smart" to "languageDefined", "Never" to "never"),
+            s.autoClosingBrackets,
+            mapOf("always" to "Always insert the matching bracket.", "languageDefined" to "Let the language decide.", "never" to "Do not insert matching brackets."),
+            onSelected = { ideViewModel.setEditorSettings(s.copy(autoClosingBrackets = it)) },
+        )
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Auto save", "Save changes shortly after editing.", s.autoSave, { ideViewModel.setEditorSettings(s.copy(autoSave = it)) })
     }
@@ -453,12 +485,16 @@ private fun KeyboardSettingsContent(uiState: IdeUiState, s: EditorSettings, ideV
             { ideViewModel.setEditorSettings(s.copy(showSymbolBar = it)) },
         )
         HorizontalDivider()
-        Text("Volume keys in editor", style = MaterialTheme.typography.bodyMedium)
-        Column(Modifier.selectableGroup()) {
-            VolumeKeyOption("Cursor horizontal (move cursor left/right)", VolumeKeyMode.HORIZONTAL, uiState.volumeKeyMode, ideViewModel)
-            VolumeKeyOption("Cursor vertical (move cursor up/down)", VolumeKeyMode.VERTICAL, uiState.volumeKeyMode, ideViewModel)
-            VolumeKeyOption("Disabled (controls system volume)", VolumeKeyMode.DISABLED, uiState.volumeKeyMode, ideViewModel)
-        }
+        ChoiceSetting(
+            "Volume keys in editor",
+            listOf("Horizontal cursor" to VolumeKeyMode.HORIZONTAL.name, "Vertical cursor" to VolumeKeyMode.VERTICAL.name, "System volume" to VolumeKeyMode.DISABLED.name),
+            uiState.volumeKeyMode.name,
+            mapOf(
+                VolumeKeyMode.HORIZONTAL.name to "Move the cursor left and right.",
+                VolumeKeyMode.VERTICAL.name to "Move the cursor up and down.",
+                VolumeKeyMode.DISABLED.name to "Use the keys for system volume.",
+            ),
+        ) { value -> ideViewModel.setVolumeKeyMode(VolumeKeyMode.valueOf(value)) }
         HorizontalDivider()
         OutlinedButton(onClick = {
             draftOrder = normalizeEditorToolbarOrder(s.keyboardToolbarOrder)
@@ -592,24 +628,26 @@ private fun FileTreeSettingsContent(s: EditorSettings, ideViewModel: IdeViewMode
 @Composable
 private fun ProjectsSettingsContent() {
     SettingsCard {
-        Text("Storage locations are chosen during project creation.", style = MaterialTheme.typography.bodyMedium)
-        Text("The editor does not keep a hidden default path. This avoids creating projects in an unexpected folder.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+        Text("Choose storage when creating a project.", style = MaterialTheme.typography.bodyMedium)
+        Text("No hidden project location is used.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
     }
 }
 
 @Composable
 private fun TerminalSettingsContent(settings: TerminalSettings, onSettingsChanged: (TerminalSettings) -> Unit) {
     SettingsCard {
-        Text("Terminal appearance", style = MaterialTheme.typography.titleSmall)
-        Text("Choose how the terminal resolves its colors. This setting is independent from the editor and browser.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
-        Column(Modifier.selectableGroup()) {
-            listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device").forEach { (label, value) ->
-                Row(Modifier.fillMaxWidth().selectable(selected = settings.theme == value, role = Role.RadioButton) { onSettingsChanged(settings.copy(theme = value)) }, verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(settings.theme == value, onClick = null)
-                    Text(label)
-                }
-            }
-        }
+        ChoiceSetting(
+            title = "Terminal appearance",
+            choices = listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device"),
+            selected = settings.theme,
+            descriptions = mapOf(
+                "dark" to "Use the dark terminal theme.",
+                "light" to "Use the light terminal theme.",
+                "application" to "Match the application theme.",
+                "device" to "Match the device theme.",
+            ),
+            onSelected = { value -> onSettingsChanged(settings.copy(theme = value)) },
+        )
         HorizontalDivider()
         SettingStepper("Terminal text size", "${settings.textSize} sp", {
             onSettingsChanged(settings.copy(textSize = settings.textSize - 1))
@@ -619,7 +657,7 @@ private fun TerminalSettingsContent(settings: TerminalSettings, onSettingsChange
     }
     SettingsCard {
         Text("Terminal shortcut toolbar", style = MaterialTheme.typography.titleSmall)
-        VisibilitySettingRow("Show shortcut toolbar", "Show terminal control and navigation shortcuts below the terminal.", settings.shortcutToolbarEnabled) {
+        VisibilitySettingRow("Show shortcut toolbar", "Show terminal controls below the terminal.", settings.shortcutToolbarEnabled) {
             onSettingsChanged(settings.copy(shortcutToolbarEnabled = it))
         }
     }
@@ -847,58 +885,95 @@ private fun DomainPlaceholder(category: SettingsCategory) {
 
 @Composable
 private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = LocalIdeColors.current.surface)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    val colors = LocalIdeColors.current
+    Card(
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, colors.separator.copy(alpha = 0.55f)),
+        colors = CardDefaults.cardColors(containerColor = colors.surface),
+    ) {
+        CompositionLocalProvider(LocalContentColor provides colors.textPrimary) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                content = content,
+            )
+        }
     }
 }
 
 @Composable
 private fun SettingStepper(title: String, value: String, onDecrease: () -> Unit, onIncrease: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) { Text(title); Text(value, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onDecrease, modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("−") }
-            OutlinedButton(onClick = onIncrease, modifier = Modifier.size(36.dp), contentPadding = PaddingValues(0.dp)) { Text("+") }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(value, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.labelMedium)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(onClick = onDecrease, modifier = Modifier.size(34.dp), contentPadding = PaddingValues(0.dp)) { Text("−") }
+            OutlinedButton(onClick = onIncrease, modifier = Modifier.size(34.dp), contentPadding = PaddingValues(0.dp)) { Text("+") }
         }
     }
 }
 
 @Composable
 private fun VisibilitySettingRow(title: String, description: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().selectable(selected = checked, role = Role.Switch, onClick = { onCheckedChange(!checked) })) {
-        Column(Modifier.weight(1f)) { Text(title, color = LocalIdeColors.current.textPrimary); Text(description, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall) }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().selectable(selected = checked, role = Role.Switch, onClick = { onCheckedChange(!checked) }).padding(vertical = 2.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, color = LocalIdeColors.current.textPrimary, style = MaterialTheme.typography.bodyMedium)
+            Text(description, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.labelMedium)
+        }
+        Switch(checked = checked, onCheckedChange = null, modifier = Modifier.semantics { contentDescription = title })
     }
 }
 
 @Composable
-private fun ChoiceSetting(title: String, choices: List<Pair<String, String>>, selected: String, onSelected: (String) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title)
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) { choices.forEach { (label, value) -> FilterChip(selected == value, { onSelected(value) }, label = { Text(label) }) } }
+private fun ChoiceSetting(
+    title: String,
+    choices: List<Pair<String, String>>,
+    selected: String,
+    descriptions: Map<String, String> = emptyMap(),
+    onSelected: (String) -> Unit,
+) {
+    var sheetOpen by rememberSaveable { mutableStateOf(false) }
+    val selectedLabel = choices.firstOrNull { it.second == selected }?.first ?: "Choose"
+    Row(
+        Modifier.fillMaxWidth().clickable { sheetOpen = true },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            Text(selectedLabel, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.labelMedium)
+        }
+        Text("Change", color = LocalIdeColors.current.primary, style = MaterialTheme.typography.labelLarge)
     }
-}
-
-@Composable
-private fun AppThemeOption(label: String, theme: AppTheme, current: AppTheme, onThemeChanged: (AppTheme) -> Unit) {
-    val selected = theme == current
-    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = { onThemeChanged(theme) }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected, onClick = null); Spacer(Modifier.width(8.dp)); Text(label)
-    }
-}
-
-@Composable
-private fun EditorThemeOption(label: String, themeKey: String, currentKey: String, settings: EditorSettings, ideViewModel: IdeViewModel) {
-    val selected = themeKey == currentKey
-    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = { ideViewModel.setEditorSettings(settings.copy(editorTheme = themeKey)) }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected, onClick = null); Spacer(Modifier.width(8.dp)); Text(label)
-    }
-}
-
-@Composable
-private fun VolumeKeyOption(label: String, mode: VolumeKeyMode, current: VolumeKeyMode, ideViewModel: IdeViewModel) {
-    val selected = mode == current
-    Row(Modifier.fillMaxWidth().selectable(selected = selected, role = Role.RadioButton, onClick = { ideViewModel.setVolumeKeyMode(mode) }).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected, onClick = null); Spacer(Modifier.width(8.dp)); Text(label)
+    if (sheetOpen) {
+        ModalBottomSheet(onDismissRequest = { sheetOpen = false }) {
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(title, style = MaterialTheme.typography.titleLarge)
+                choices.forEach { (label, value) ->
+                    val isSelected = value == selected
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .selectable(selected = isSelected, role = Role.RadioButton) {
+                                onSelected(value)
+                                sheetOpen = false
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = isSelected, onClick = null)
+                        Column(Modifier.padding(start = 10.dp)) {
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                            descriptions[value]?.let {
+                                Text(it, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

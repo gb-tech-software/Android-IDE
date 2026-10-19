@@ -39,9 +39,10 @@ Domains:
   tools     status|test|install|remove
 
 Package installation defaults: npm, global. `tools install web-preview`
-installs the npm `live-server` package globally; `tools install package PKG`
-manages other npm packages. `preview start` only starts the already-installed
-Live Server package in the active project at localhost:7468.
+installs the Android IDE-managed preview package outside the terminal prefix;
+use `tools install package PKG` to manage user terminal npm packages.
+`preview start` only starts the already-installed IDE-managed Live Server
+package in the active project at localhost:7468.
 `init` installs base terminal utilities only when explicitly invoked.
 
 Use `ide help DOMAIN` or `ide DOMAIN help` for exact arguments and safety
@@ -85,14 +86,14 @@ domain_help() {
             editor:save-all) printf 'Usage: ide editor save-all\nSaves all dirty editor tabs and reports any failed save.\n';;
             preview:status) printf 'Usage: ide preview status\nReports whether the IDE-managed Live Server is running and its project root/URL.\n';;
             preview:test) printf 'Usage: ide preview test\nChecks the running IDE-managed Live Server with a localhost HTTP probe.\n';;
-            preview:start) printf 'Usage: ide preview start\nStarts the already-installed global Live Server for the active local project at localhost:7468; it never installs packages.\n';;
+            preview:start) printf 'Usage: ide preview start\nStarts the already-installed IDE-managed Live Server for the active local project at localhost:7468; it never installs packages.\n';;
             preview:stop) printf 'Usage: ide preview stop\nStops the IDE-managed Live Server process.\n';;
             terminal:status) printf 'Usage: ide terminal status\nReports shell/PTY availability and terminal session counts.\n';;
             terminal:test|terminal:doctor) printf 'Usage: ide terminal %s\nCreates and closes a temporary PTY session to verify the terminal runtime.\n' "$command_name";;
             terminal:storage) printf 'Usage: ide terminal storage\nRuns Termux shared-storage setup and may request Android permission.\n';;
             storage:status) printf 'Usage: ide storage status\nInspects the standard Termux shared-storage links without changing them.\n';;
             storage:test) printf 'Usage: ide storage test\nChecks shell availability and whether all standard shared-storage links exist.\n';;
-            tools:status) printf 'Usage: ide tools status [lsp|web-preview|package PACKAGE|base]\nReports app-managed LSP state, Live Server presence, base tools, or a named npm package.\n';;
+            tools:status) printf 'Usage: ide tools status [lsp|web-preview|package PACKAGE|base]\nReports app-managed LSP/preview state, base tools, or a terminal npm package.\n';;
             tools:test) printf 'Usage: ide tools test\nChecks the terminal runtime and required base executables; optional LSP/preview packages are reported separately.\n';;
             projects:status|projects:test|projects:list) printf 'Usage: ide projects %s\nReports active/registered project state and verifies readable storage for the health test.\n' "$command_name";;
             files:status|files:test) printf 'Usage: ide files %s\nReports or verifies active-project file-service access.\n' "$command_name";;
@@ -111,7 +112,7 @@ domain_help() {
             terminal:sessions) printf 'Usage: ide terminal sessions list|close SESSION_ID\n';;
             storage:setup|storage:rebuild) printf 'Usage: ide storage %s\nInvokes Termux shared-storage setup and may request Android permission.\n' "$command_name";;
             tools:package) printf 'Usage: ide tools install|status|remove package PACKAGE [--manager npm|pnpm] [--global|--local]\nDefaults to npm global; local operations use the current terminal directory.\n';;
-            tools:install|tools:remove) printf 'Usage: ide tools %s lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\nLSP is app-managed and pinned; web-preview manages live-server; package manages any valid npm package name.\n' "$command_name";;
+            tools:install|tools:remove) printf 'Usage: ide tools %s lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\nLSP and web-preview are app-managed; package manages terminal npm packages.\n' "$command_name";;
             *) domain_help "$domain"; return 2;;
         esac
         return 0
@@ -129,7 +130,7 @@ domain_help() {
         projects) printf 'Usage: ide projects status|test|list|open ID [--dirty save|discard|cancel]|close [--dirty save|discard]|create|import-folder|import-zip|rename|duplicate|relocate|unregister|delete|export\nLocations are provider URIs/paths. Destructive removals require exact --confirm PROJECT_ID.\n';;
         files) printf 'Usage: ide files status|test|list [PATH]|read PATH|write PATH --stdin|create PATH|mkdir PATH|rename PATH NEW_NAME|copy PATH DEST_DIR|move PATH DEST_DIR|delete PATH --confirm PATH\nPaths are relative to the active project root; writes require confirmed local access, and destructive changes reject open editor tabs.\n';;
         search) printf 'Usage: ide search status|test|files QUERY|content QUERY [--regex] [--case-sensitive] [--whole-word]\nSearch is scoped to the active project.\n';;
-        tools) printf 'Usage: ide tools status|test|install|remove lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\n       ide tools status base\nInstall/remove are explicit; LSP is pinned and app-managed; generic packages default to npm global.\n';;
+        tools) printf 'Usage: ide tools status|test|install|remove lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\n       ide tools status base\nInstall/remove are explicit; LSP and web-preview are app-managed; generic packages default to npm global.\n';;
         *) usage >&2; return 2;;
     esac
 }
@@ -509,36 +510,17 @@ tools_command() {
     case "$scope" in global|local) :;; *) usage_error "unsupported install scope '$scope'";; esac
     case "$action:$tool" in
         status:lsp|install:lsp|remove:lsp)
-            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'LSP tools use the app-managed pinned npm package set; manager/scope options apply to npm tool packages such as web-preview'
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'LSP tools use the app-managed pinned package set; manager/scope options apply only to terminal package operations'
             case "$action" in status) app_request tools.lsp.status ;; install) app_request tools.lsp.install '' 200 ;; remove) app_request tools.lsp.remove ;; esac ;;
         status:web-preview|status:servers)
-            if [ "$scope" = local ]; then
-                executable="$PWD/node_modules/.bin/live-server"
-                [ -x "$executable" ] || { printf 'Live Server is not installed locally in %s\n' "$PWD"; return 3; }
-                printf 'Live Server local executable: %s\n' "$executable"
-            elif command -v live-server >/dev/null 2>&1; then
-                live-server --version 2>/dev/null || npm list --global live-server --depth=0
-            elif [ "$manager" = pnpm ] && command -v pnpm >/dev/null 2>&1; then
-                PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm list --global live-server
-            else
-                printf 'Live Server is not installed globally\n'; return 3
-            fi ;;
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'web-preview is app-managed; manager/scope options apply only to terminal package operations'
+            app_request tools.preview.status ;;
         install:web-preview|install:servers)
-            case "$manager:$scope" in
-                npm:global) command -v npm >/dev/null 2>&1 || { printf 'ide: npm is unavailable; install Node.js first with ide init\n' >&2; return 3; }; npm install --global live-server ;;
-                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm install --save-dev live-server ;;
-                pnpm:global) command -v pnpm >/dev/null 2>&1 || { printf 'ide: pnpm is unavailable; run ide init or choose npm\n' >&2; return 3; }; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm add --global live-server ;;
-                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm add --save-dev live-server ;;
-                *) usage_error "unsupported package manager '$manager' (use npm or pnpm)" ;;
-            esac ;;
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'web-preview is app-managed; manager/scope options apply only to terminal package operations'
+            app_request tools.preview.install '' 200 ;;
         remove:web-preview|remove:servers)
-            case "$manager:$scope" in
-                npm:global) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --global live-server ;;
-                npm:local) command -v npm >/dev/null 2>&1 || return 3; npm uninstall --save-dev live-server ;;
-                pnpm:global) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm remove --global live-server ;;
-                pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm remove --save-dev live-server ;;
-                *) usage_error "unsupported package manager '$manager' (use npm or pnpm)" ;;
-            esac ;;
+            [ "$manager" = npm ] && [ "$scope" = global ] || usage_error 'web-preview is app-managed; manager/scope options apply only to terminal package operations'
+            app_request tools.preview.remove ;;
         status:package)
             case "$manager:$scope" in
                 npm:global) command -v npm >/dev/null 2>&1 || return 3; npm list --global "$package_name" --depth=0 ;;
@@ -561,7 +543,7 @@ tools_command() {
                 pnpm:local) command -v pnpm >/dev/null 2>&1 || return 3; pnpm remove --save-dev "$package_name" ;;
             esac ;;
         install:base)
-            [ "$scope" = global ] || usage_error 'base package-manager setup installs pnpm globally; use `ide tools install web-preview --local` for project-local tools'
+            [ "$scope" = global ] || usage_error 'base package-manager setup installs pnpm globally; use `ide tools install package PACKAGE --local` for project-local tools'
             case "$manager" in npm) command -v npm >/dev/null 2>&1 || return 3; npm install --global pnpm ;;
                 pnpm) command -v pnpm >/dev/null 2>&1 || return 3; PNPM_HOME="${PNPM_HOME:-${PREFIX:-}/bin}" pnpm add --global pnpm ;;
                 *) usage_error "unsupported package manager '$manager'" ;; esac ;;
