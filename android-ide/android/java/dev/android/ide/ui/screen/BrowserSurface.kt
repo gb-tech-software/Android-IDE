@@ -124,7 +124,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
@@ -789,7 +788,6 @@ private fun BrowserSurfaceContent(
                             onRetry = browser::retryNavigationFailure,
                         )
                     } ?: state.selectedTabId?.let { tabId ->
-                        key(tabId) {
                         AndroidView(
                             factory = { browserContext ->
                                 BrowserSurfaceBinding(browserContext).apply {
@@ -812,7 +810,6 @@ private fun BrowserSurfaceContent(
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
-                        }
                         if (state.loading && state.navigationFailure == null) {
                             Box(
                                 Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),

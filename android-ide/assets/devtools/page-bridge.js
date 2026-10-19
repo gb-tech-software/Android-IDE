@@ -7,6 +7,7 @@
   let initialized = false;
   let initializationQueued = false;
   let readySent = false;
+  let passiveObserversInstalled = false;
 
   function post(type, fields = {}) {
     if (!channel) return;
@@ -20,8 +21,65 @@
     }
   }
 
+  function pageOrigin(error) {
+    return {
+      source: error && error.filename || location.href,
+      line: error && error.lineno || 0,
+      column: error && error.colno || 0,
+      stack: error && error.error && error.error.stack || error && error.reason && error.reason.stack || "",
+    };
+  }
+
+  function reportPageDiagnostic(kind, value, origin = {}) {
+    const details = {
+      kind,
+      message: typeof value === "string" ? value : String(value && value.message || value),
+      ...origin,
+    };
+    post("page-diagnostic", details);
+    // Show passive page-origin metadata without replacing page console or
+    // network methods. The source and stack remain browser event values.
+    if (initialized && window.eruda) {
+      try { window.eruda.get("console").error(`[page ${kind}]`, details); } catch (_) {}
+    }
+  }
+
+  function installPassiveObservers() {
+    if (passiveObserversInstalled) return;
+    passiveObserversInstalled = true;
+    window.addEventListener("error", event => {
+      reportPageDiagnostic("error", event.message || "Uncaught page error", pageOrigin(event));
+    }, true);
+    window.addEventListener("unhandledrejection", event => {
+      const reason = event.reason;
+      reportPageDiagnostic("unhandledrejection", reason, pageOrigin({ reason }));
+    }, true);
+    if (window.PerformanceObserver) {
+      try {
+        const observer = new PerformanceObserver(list => {
+          list.getEntries().forEach(entry => {
+            const details = {
+              name: entry.name,
+              initiatorType: entry.initiatorType || "resource",
+              startTime: entry.startTime,
+              duration: entry.duration,
+              transferSize: entry.transferSize || 0,
+              responseStatus: entry.responseStatus || 0,
+            };
+            post("page-network", details);
+            if (initialized && window.eruda) {
+              try { window.eruda.get("console").log("[page network]", details); } catch (_) {}
+            }
+          });
+        });
+        observer.observe({ type: "resource", buffered: true });
+      } catch (_) {}
+    }
+  }
+
   function initializeTools() {
     if (initialized || !window.eruda) return;
+    installPassiveObservers();
     // At document_start the body may not exist yet. Wait for its creation
     // without waiting for window.load or allowing page code to block setup.
     if (!document.body) {
