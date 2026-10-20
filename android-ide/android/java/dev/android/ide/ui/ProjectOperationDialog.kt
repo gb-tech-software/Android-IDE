@@ -44,6 +44,7 @@ internal fun ProjectOperationDialog(
     onReviewVisibleChange: (Boolean) -> Unit,
     onSubmit: () -> Unit,
     onDismiss: () -> Unit,
+    onKeepInBackground: () -> Unit = {},
 ) {
     val completed = operationReport?.outcome == OperationOutcome.COMPLETE && !operationInProgress
     val isDuplicate = kind == ProjectOperationKind.DUPLICATE
@@ -118,7 +119,9 @@ internal fun ProjectOperationDialog(
             }
         },
         confirmButton = {
-            Button(
+            if (operationInProgress) Button(onClick = onKeepInBackground) {
+                Text("Keep in background")
+            } else Button(
                 onClick = when {
                     completed -> onDismiss
                     reviewVisible -> onSubmit

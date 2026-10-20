@@ -1,0 +1,11 @@
+{
+  "name": "{{PACKAGE_NAME}}-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@{{PACKAGE_NAME}}/core": "workspace:*"
+  }
+}

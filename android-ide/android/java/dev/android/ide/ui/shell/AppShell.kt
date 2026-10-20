@@ -81,6 +81,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.app.BackgroundProjectOperation
 import dev.android.ide.browser.BrowserDownloadStatus
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.CrashReportSummary
@@ -114,6 +115,7 @@ fun AppShell(
     onExportProjects: (Set<String>) -> Unit,
     onDuplicateProject: (String) -> Unit,
     onRelocateProject: (String) -> Unit,
+    onOpenBackgroundOperation: (BackgroundProjectOperation) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val ideState by ideViewModel.uiState.collectAsState()
@@ -311,6 +313,7 @@ fun AppShell(
                                 sidebarSection = targetSection
                                 navigate(targetSurface, closeSidebar = false)
                             },
+                            onOpenBackgroundOperation = onOpenBackgroundOperation,
                             onOpenProject = { viewModel.openProject(it); coroutineScope.launch { drawerState.close() } },
                             onCreateProject = { onCreateProject(null); moreOpen = false; coroutineScope.launch { drawerState.close() } },
                             onImportFolder = { onImportFolder(); moreOpen = false; coroutineScope.launch { drawerState.close() } },
@@ -459,6 +462,7 @@ private fun ContextualNavigation(
     onNavigate: (Surface, Boolean) -> Unit,
     onSectionChange: (SidebarSection) -> Unit,
     onSectionNavigate: (SidebarSection, Surface) -> Unit,
+    onOpenBackgroundOperation: (BackgroundProjectOperation) -> Unit,
     onOpenProject: (String) -> Unit,
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
@@ -524,6 +528,25 @@ private fun ContextualNavigation(
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 NavigationGridItem(Icons.Default.BugReport, "Console") { onNavigate(Surface.DIAGNOSTICS, true) }
+                            }
+                        }
+                        if (state.backgroundOperations.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text("Background operations", style = MaterialTheme.typography.titleSmall)
+                                state.backgroundOperations.forEach { operation ->
+                                    NavigationItem(
+                                        icon = Icons.Default.Downloading,
+                                        label = operation.label,
+                                        selected = false,
+                                        onClick = { onOpenBackgroundOperation(operation) },
+                                    )
+                                }
                             }
                         }
                         Text("Recent projects", style = MaterialTheme.typography.titleSmall)

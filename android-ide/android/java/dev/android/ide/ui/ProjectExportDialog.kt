@@ -35,6 +35,7 @@ fun ProjectExportDialog(
     operationInProgress: Boolean,
     onChooseDestination: (suggestedFileName: String) -> Unit,
     onDismiss: () -> Unit,
+    onKeepInBackground: () -> Unit = {},
 ) {
     if (!visible) return
 
@@ -65,7 +66,9 @@ fun ProjectExportDialog(
             }
         },
         confirmButton = {
-            Button(
+            if (operationInProgress) Button(onClick = onKeepInBackground) {
+                Text("Keep in background")
+            } else Button(
                 onClick = if (completed) onDismiss else ({ onChooseDestination("$name.zip") }),
                 enabled = !operationInProgress && (completed || projectName != null),
             ) {

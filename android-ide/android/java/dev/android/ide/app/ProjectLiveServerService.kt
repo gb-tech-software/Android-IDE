@@ -85,6 +85,7 @@ class ProjectLiveServerService(
                 projectRoot,
                 packageRoot = root,
                 redirectErrorStream = true,
+                minimumNodeMajor = 11,
             )
             val started = LiveProcess(projectRoot, port, process)
             current = started

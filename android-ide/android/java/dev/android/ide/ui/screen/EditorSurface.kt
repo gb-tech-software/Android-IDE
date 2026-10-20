@@ -478,6 +478,10 @@ private fun EditorWorkspace(
         }
     }
     if (showChrome) LaunchedEffect(activeTab?.id) { previewNotice = null }
+    val locateActiveFile = {
+        onOpenGlobalNavigation()
+        ideViewModel.revealActiveFile()
+    }
     Box(modifier.fillMaxSize().background(colors.background)) {
         Column(Modifier.fillMaxSize()) {
             if (showChrome) EditorTopBar(
@@ -516,7 +520,7 @@ private fun EditorWorkspace(
                 onRefreshProject = ideViewModel::refreshProject,
                 onCloseOtherTabs = ideViewModel::closeOtherTabs,
                 onCopyFilePath = ideViewModel::copyPathToClipboard,
-                onLocateFile = ideViewModel::revealActiveFile,
+                onLocateFile = locateActiveFile,
                 onOpenFile = ideViewModel::openFile,
                 loadNavChildren = ideViewModel::loadNavChildren,
                 onFeedback = onFeedback,
@@ -542,7 +546,11 @@ private fun EditorWorkspace(
                         val target = state.openTabs.firstOrNull { it.id == tabId }
                         if (target?.isBlank == true) ideViewModel.showBlankTabSaveDialog(tabId) else ideViewModel.saveTabById(tabId)
                     }, onTabPin = ideViewModel::pinTab,
-                    onTabLocate = { tabId -> ideViewModel.selectTab(tabId); ideViewModel.revealActiveFile() },
+                    onTabLocate = { tabId ->
+                        ideViewModel.selectTab(tabId)
+                        onOpenGlobalNavigation()
+                        ideViewModel.revealActiveFile()
+                    },
                     onCloseOthers = ideViewModel::closeOtherTabs,
                     onCloseAll = ideViewModel::closeAllTabs, onNewBlankTab = ideViewModel::newBlankTab,
                     allowManualSave = !state.editorSettings.autoSave,
@@ -569,13 +577,26 @@ private fun EditorWorkspace(
                 onClick = shellViewModel::toggleTerminalOverlay,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 12.dp, bottom = 72.dp)
+                    .padding(
+                        end = 12.dp,
+                        bottom = when {
+                            keyboardVisible -> 116.dp
+                            state.editorSettings.showStatusBar -> 58.dp
+                            else -> 18.dp
+                        },
+                    )
+                    .size(56.dp)
+                    .background(
+                        color = if (shellState.terminalOverlayVisible) colors.primaryContainer else colors.surfaceVariant,
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                    )
                     .zIndex(3f),
             ) {
                 Icon(
                     Icons.Default.Terminal,
                     "Toggle floating terminal",
                     tint = if (shellState.terminalOverlayVisible) colors.primary else colors.textPrimary,
+                    modifier = Modifier.size(28.dp),
                 )
             }
         }
@@ -708,7 +729,6 @@ private fun EditorTopBar(
                     .padding(horizontal = 6.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                activeTab?.let { FileTypeBadge(it.displayName) }
                 Text(
                     text = path.ifBlank { "No file selected" }, color = colors.textPrimary, style = MaterialTheme.typography.titleSmall,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),

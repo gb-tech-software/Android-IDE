@@ -1,3 +1,11 @@
+export { Collection } from "./collection.js";
+export { createIdentifier, toSlug } from "./slug.js";
+
 export function describe() {
-  return {{PROJECT_NAME_JSON}} + " created with Android IDE";
+  return {
+    name: {{PROJECT_NAME_JSON}},
+    purpose: {{DESCRIPTION_JSON}},
+    poweredBy: "Android IDE",
+    modules: ["Collection", "createIdentifier", "toSlug"],
+  };
 }

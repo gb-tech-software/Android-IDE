@@ -104,6 +104,7 @@ var pendingNativeMessages = [];
 var contentChangeTimer = null;
 var CONTENT_CHANGE_DEBOUNCE_MS = 150;   // faster dirty-marking (was 300)
 var contentRevision = 0;
+var suppressContentChange = false;
 var lspRequestId = 1;
 var lspPending = Object.create(null);
 var lspProviderDisposables = [];
@@ -774,7 +775,7 @@ function initializeMonacoEditor() {
 
   // --- Content change (debounced) ---
   editor.onDidChangeModelContent(function () {
-    if (!currentPath) return;
+    if (!currentPath || suppressContentChange) return;
     clearTimeout(contentChangeTimer);
     contentChangeTimer = setTimeout(function () {
       postToNative({
@@ -1311,12 +1312,24 @@ function reloadFile(path, expectedCurrentContent, content, language) {
     return;
   }
   // Keep the model identity when reconciling disk changes. This is a refresh
-  // of an already-open tab, not a new tab load; disposing the model here
-  // discards Monaco state and can make the native side treat the return as a
-  // newly opened document.
+  // of an already-open tab, not a new tab load. Apply the replacement as one
+  // Monaco edit instead of setValue(): setValue() resets the model's undo
+  // stack, while pushEditOperations() keeps the prior session history so the
+  // user can undo the external refresh back to the pre-refresh document.
   var model = oldModel;
   if (model) {
-    model.setValue(content);
+    if (model.getValue() !== content) {
+      suppressContentChange = true;
+      try {
+        model.pushEditOperations(
+          [],
+          [{ range: model.getFullModelRange(), text: content }],
+          function () { return null; },
+        );
+      } finally {
+        suppressContentChange = false;
+      }
+    }
     if (monaco.editor.setModelLanguage) monaco.editor.setModelLanguage(model, syntaxLanguage);
   } else {
     model = monaco.editor.createModel(content, syntaxLanguage, uri);

@@ -1,6 +1,5 @@
 import { createServer } from "node:http";
+import { createRouter } from "./routes.js";
 
-createServer((request, response) => {
-  response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-  response.end({{PROJECT_NAME_JSON}} + " is running. Continue building it in Android IDE.");
-}).listen(3000, () => console.log("Server running on port 3000"));
+const port = Number(process.env.PORT || 3000);
+createServer(createRouter()).listen(port, () => console.log(`Server running on port ${port}`));

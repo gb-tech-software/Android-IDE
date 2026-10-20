@@ -33,6 +33,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.io.File
 import java.util.UUID
 
@@ -51,6 +52,8 @@ data class AppShellState(
     val restoring: Boolean = false,
     val refreshingProjects: Boolean = false,
     val operationInProgress: Boolean = false,
+    val activeOperationId: String? = null,
+    val backgroundOperations: List<BackgroundProjectOperation> = emptyList(),
     val projectDetails: ProjectDetails? = null,
     val folderInspection: FolderInspection? = null,
     val acquiredProjectId: String? = null,
@@ -110,6 +113,7 @@ data class TerminalStorageSetupRequest(
 )
 
 class AppShellViewModel(application: Application) : AndroidViewModel(application) {
+    private val backgroundedOperationIds = ConcurrentHashMap.newKeySet<String>()
     private val services = ApplicationServices.from(application)
     private val saf = services.fileSystem.documents
     private val projectManagement = services.projectManagement
@@ -119,12 +123,12 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     private val terminalRuntime = services.terminalRuntime
     private val themeRepository = services.themeRepository
     private val terminalSettingsRepository = services.terminalSettingsRepository
+    private val projectOperations = services.projectOperations
     private var restoreJob: kotlinx.coroutines.Job? = null
     private var restoreGeneration = 0L
     private var projectRefreshGeneration = 0L
     private val projectSummaryJobs = mutableMapOf<String, Job>()
     private var folderInspectionGeneration = 0L
-    private var storageSetupExpiryJob: Job? = null
 
     private val _state = MutableStateFlow(
         AppShellState(
@@ -158,6 +162,11 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             lifecycle.restore()
             refreshProjects()
+        }
+        viewModelScope.launch {
+            projectOperations.operations.collect { operations ->
+                _state.update { it.copy(backgroundOperations = operations) }
+            }
         }
         viewModelScope.launch {
             runtimeState.ensureReady()
@@ -457,24 +466,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 terminalStorageSetupRequest = TerminalStorageSetupRequest(requestId),
             )
         }
-        storageSetupExpiryJob?.cancel()
-        storageSetupExpiryJob = viewModelScope.launch {
-            // Match the shell's five-minute wait, but expire slightly earlier
-            // so a timed-out command cannot strand the next invocation.
-            kotlinx.coroutines.delay(285_000L)
-            if (_state.value.terminalStorageSetupRequest?.id == requestId) {
-                completeTerminalStorageSetup(
-                    requestId,
-                    TerminalStorageSetupPermission.Denied(
-                        OperationReport(
-                            OperationOutcome.BLOCKED,
-                            "Android IDE did not complete storage setup in time. Run termux-setup-storage again.",
-                            ErrorCategory.UNAVAILABLE_RUNTIME,
-                        ),
-                    ),
-                )
-            }
-        }
     }
 
     /** Completes setup and returns its report through the shell command's result channel. */
@@ -499,7 +490,6 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             } finally {
                 _state.update { state ->
                     if (state.terminalStorageSetupRequest?.id == requestId) {
-                        storageSetupExpiryJob = null
                         state.copy(terminalStorageSetupRequest = null)
                     } else state
                 }
@@ -756,6 +746,7 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
 
     fun continuePendingNavigation() {
         val current = _state.value
+        if (current.operationInProgress) keepCurrentProjectOperationInBackground()
         if (current.pendingBackNavigation) {
             val cancelledReceipts = current.pendingBrowserNavigations.filter { it.receiptTracked }.map { it.id }
             _state.update {
@@ -902,39 +893,41 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         description: String,
         template: CreateProjectTemplate = CreateProjectTemplate.FROM_SCRATCH,
     ) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = runAcquisition { projectManagement.createBlankProject(destinationParentUri, name, description, template) }
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = null,
-                    operationReport = report,
-                    acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
-                )
-            }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Creating project",
+            kind = "acquisition",
+            resources = listOf(destinationParentUri),
+            operation = { runAcquisition { projectManagement.createBlankProject(destinationParentUri, name, description, template) } },
+            acquisition = true,
+        )
     }
 
     fun importExistingFolder(projectRootUri: String, name: String? = null, description: String? = null) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = runAcquisition { projectManagement.importExistingFolder(projectRootUri, name, description) }
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = null,
-                    operationReport = report,
-                    acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
-                )
-            }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Acquiring project",
+            kind = "acquisition",
+            resources = listOf(projectRootUri),
+            operation = { runAcquisition { projectManagement.importExistingFolder(projectRootUri, name, description) } },
+            acquisition = true,
+        )
     }
 
     fun dismissAcquisitionPrompt() {
         _state.update { it.copy(acquiredProjectId = null) }
+    }
+
+    fun keepCurrentProjectOperationInBackground() {
+        val operationId = _state.value.activeOperationId ?: return
+        backgroundedOperationIds += operationId
+        projectOperations.keepInBackground(operationId)
+        val foreground = projectOperations.operations.value.filterNot { it.background }
+        _state.update {
+            it.copy(
+                operationInProgress = foreground.isNotEmpty(),
+                activeOperationId = foreground.firstOrNull()?.id,
+                operationReport = null,
+            )
+        }
     }
 
     fun importZip(
@@ -943,19 +936,13 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         name: String,
         description: String,
     ) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = runAcquisition { projectManagement.importZip(archiveUri, destinationParentUri, name, description) }
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = null,
-                    operationReport = report,
-                    acquiredProjectId = report.affectedIds.firstOrNull().takeIf { report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE },
-                )
-            }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Importing project archive",
+            kind = "acquisition",
+            resources = listOf(archiveUri, destinationParentUri),
+            operation = { runAcquisition { projectManagement.importZip(archiveUri, destinationParentUri, name, description) } },
+            acquisition = true,
+        )
     }
 
     private suspend fun runAcquisition(operation: suspend () -> OperationReport): OperationReport = try {
@@ -970,44 +957,70 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    private fun startProjectOperation(
+        label: String,
+        kind: String,
+        resources: Collection<String>,
+        operation: suspend () -> OperationReport,
+        afterComplete: (OperationReport) -> Unit = {},
+        acquisition: Boolean = false,
+    ) {
+        val id = projectOperations.start(
+            label = label,
+            kind = kind,
+            resources = resources,
+            operation = operation,
+            onComplete = { completedId, report ->
+            viewModelScope.launch {
+                val remaining = projectOperations.operations.value.filterNot { it.background }
+                val wasBackgrounded = backgroundedOperationIds.remove(completedId)
+                _state.update {
+                    it.copy(
+                        operationInProgress = remaining.isNotEmpty(),
+                        activeOperationId = remaining.firstOrNull()?.id,
+                        statusMessage = report.message,
+                        operationReport = report,
+                        acquiredProjectId = if (acquisition && !wasBackgrounded && report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                            report.affectedIds.firstOrNull()
+                        } else it.acquiredProjectId,
+                    )
+                }
+                afterComplete(report)
+                refreshProjects()
+            }
+            },
+        )
+        _state.update { it.copy(operationInProgress = true, activeOperationId = id, statusMessage = null, operationReport = null) }
+    }
+
     fun removeSelectedProject() {
         val projectId = _state.value.selectedProjectId ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.removeFromRegistry(projectId)
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = report.message,
-                    operationReport = report,
-                    projectDetails = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) null else it.projectDetails,
-                    selectedProjectId = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) null else it.selectedProjectId,
-                    surface = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) Surface.PROJECTS else it.surface,
-                )
-            }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Removing project from registry",
+            kind = "mutation",
+            resources = listOf(projectId),
+            operation = { projectManagement.removeFromRegistry(projectId) },
+            afterComplete = { report ->
+                if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                    _state.update { it.copy(projectDetails = null, selectedProjectId = null, surface = Surface.PROJECTS) }
+                }
+            },
+        )
     }
 
     fun permanentlyDeleteSelectedProject() {
         val projectId = _state.value.selectedProjectId ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.permanentlyDelete(projectId)
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = report.message,
-                    operationReport = report,
-                    projectDetails = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) null else it.projectDetails,
-                    selectedProjectId = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) null else it.selectedProjectId,
-                    surface = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
-                        Surface.PROJECTS
-                    } else it.surface,
-                )
-            }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Deleting project",
+            kind = "mutation",
+            resources = listOf(projectId),
+            operation = { projectManagement.permanentlyDelete(projectId) },
+            afterComplete = { report ->
+                if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                    _state.update { it.copy(projectDetails = null, selectedProjectId = null, surface = Surface.PROJECTS) }
+                }
+            },
+        )
     }
 
     fun exportSelectedProject(
@@ -1015,13 +1028,13 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         onComplete: (Boolean) -> Unit = {},
     ) {
         val projectId = _state.value.selectedProjectId ?: return
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.exportProject(projectId, destinationFileUri)
-            _state.update { it.copy(operationInProgress = false, statusMessage = report.message, operationReport = report) }
-            refreshProjects()
-            onComplete(report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE)
-        }
+        startProjectOperation(
+            label = "Exporting project",
+            kind = "export",
+            resources = listOf(projectId, destinationFileUri),
+            operation = { projectManagement.exportProject(projectId, destinationFileUri) },
+            afterComplete = { report -> onComplete(report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) },
+        )
     }
 
     fun duplicateProject(projectId: String, destinationParentUri: String, name: String, description: String? = null) {
@@ -1052,63 +1065,59 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun removeProjectsFromRegistry(projectIds: List<String>) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.batchRemoveFromRegistry(projectIds)
-            _state.update { it.copy(operationInProgress = false, statusMessage = report.message, operationReport = report, selectedProjectIds = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) emptySet() else it.selectedProjectIds) }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Removing selected projects",
+            kind = "mutation",
+            resources = projectIds,
+            operation = { projectManagement.batchRemoveFromRegistry(projectIds) },
+            afterComplete = { report ->
+                if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                    _state.update { it.copy(selectedProjectIds = emptySet()) }
+                }
+            },
+        )
     }
 
     fun exportProjects(projectIds: List<String>, destinationParentUri: String) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.exportProjects(projectIds, destinationParentUri)
-            _state.update { it.copy(operationInProgress = false, statusMessage = report.message, operationReport = report) }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Exporting selected projects",
+            kind = "export",
+            resources = projectIds + destinationParentUri,
+            operation = { projectManagement.exportProjects(projectIds, destinationParentUri) },
+        )
     }
 
     fun permanentlyDeleteProjects(projectIds: List<String>) {
-        viewModelScope.launch {
-            _state.update { it.copy(operationInProgress = true, statusMessage = null, operationReport = null) }
-            val report = projectManagement.batchPermanentlyDelete(projectIds)
-            _state.update { it.copy(operationInProgress = false, statusMessage = report.message, operationReport = report, selectedProjectIds = if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) emptySet() else it.selectedProjectIds) }
-            refreshProjects()
-        }
+        startProjectOperation(
+            label = "Deleting selected projects",
+            kind = "mutation",
+            resources = projectIds,
+            operation = { projectManagement.batchPermanentlyDelete(projectIds) },
+            afterComplete = { report ->
+                if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                    _state.update { it.copy(selectedProjectIds = emptySet()) }
+                }
+            },
+        )
     }
-
     private fun runProjectOperation(
         projectId: String,
         replaceSelection: Boolean = false,
         operation: suspend () -> dev.android.ide.contracts.OperationReport,
     ) {
-        viewModelScope.launch {
-            _state.update {
-                it.copy(
-                    selectedProjectId = projectId,
-                    operationInProgress = true,
-                    statusMessage = null,
-                    operationReport = null,
-                )
-            }
-            val report = operation()
-            _state.update {
-                it.copy(
-                    operationInProgress = false,
-                    statusMessage = report.message,
-                    operationReport = report,
-                    selectedProjectId = if (
-                        replaceSelection &&
-                        report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE
-                    ) report.affectedIds.firstOrNull() ?: it.selectedProjectId else it.selectedProjectId,
-                )
-            }
-            refreshProjects()
-            if (report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
-                refreshSelectedProjectDetails()
-            }
-        }
+        _state.update { it.copy(selectedProjectId = projectId) }
+        startProjectOperation(
+            label = "Project mutation",
+            kind = "mutation",
+            resources = listOf(projectId),
+            operation = operation,
+            afterComplete = { report ->
+                if (replaceSelection && report.outcome == dev.android.ide.contracts.OperationOutcome.COMPLETE) {
+                    _state.update { it.copy(selectedProjectId = report.affectedIds.firstOrNull() ?: it.selectedProjectId) }
+                    refreshSelectedProjectDetails()
+                }
+            },
+        )
     }
 
     fun loadProjectSummary(projectId: String) {

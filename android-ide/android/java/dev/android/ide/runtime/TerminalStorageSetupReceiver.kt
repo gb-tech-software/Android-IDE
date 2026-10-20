@@ -58,6 +58,6 @@ class TerminalStorageSetupReceiver : BroadcastReceiver() {
 
     private companion object {
         const val TAG = "TerminalStorageSetup"
-        val REQUEST_ID_PATTERN = Regex("[0-9]+")
+        val REQUEST_ID_PATTERN = Regex("[A-Za-z0-9-]+")
     }
 }

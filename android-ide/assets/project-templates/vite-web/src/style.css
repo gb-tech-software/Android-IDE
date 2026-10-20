@@ -27,6 +27,30 @@ body {
   text-transform: uppercase;
 }
 
-a {
-  color: #4055d6;
+.hero p:last-child {
+  max-width: 52ch;
+  color: #536070;
+}
+.panel {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  border: 1px solid #dce2ef;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 1rem 2rem #17203312;
+}
+.panel__heading, .task-form, .task {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+}
+.panel__heading { justify-content: space-between; }
+.badge { padding: .25rem .6rem; border-radius: 999px; background: #e2e7ff; color: #4055d6; }
+.task-form { margin: 1rem 0; }
+.task-form input { flex: 1; padding: .7rem .8rem; border: 1px solid #cbd3e4; border-radius: .5rem; font: inherit; }
+button { padding: .7rem 1rem; border: 0; border-radius: .5rem; background: #4055d6; color: #fff; font: inherit; cursor: pointer; }
+.task-list { display: grid; gap: .55rem; }
+.task { padding: .8rem; border-radius: .5rem; background: #f5f7fb; }
+.task--complete span { color: #6b7280; text-decoration: line-through; }
+.empty { color: #6b7280; }
 }

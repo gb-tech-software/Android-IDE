@@ -7,10 +7,13 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,11 +30,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.consume
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
@@ -59,6 +61,8 @@ fun FloatingOverlayFrame(
     var height by rememberSaveable { mutableFloatStateOf(initialHeight) }
     var x by rememberSaveable { mutableFloatStateOf(0f) }
     var y by rememberSaveable { mutableFloatStateOf(0f) }
+    var yBeforeIme by rememberSaveable { mutableFloatStateOf(0f) }
+    var imeWasVisible by rememberSaveable { mutableStateOf(false) }
     var expanded by rememberSaveable { mutableStateOf(false) }
     var positioned by rememberSaveable { mutableStateOf(false) }
 
@@ -71,15 +75,25 @@ fun FloatingOverlayFrame(
         val resolvedHeight = height.coerceIn(minHeight, maxHeight)
         val maxX = (availableWidth - resolvedWidth).coerceAtLeast(0f)
         val maxY = (availableHeight - resolvedHeight).coerceAtLeast(0f)
+        val imeVisible = WindowInsets.ime.getBottom(density) > 0
 
-        LaunchedEffect(availableWidth, availableHeight) {
+        LaunchedEffect(availableWidth, availableHeight, imeVisible) {
             if (!positioned) {
                 width = resolvedWidth
                 height = resolvedHeight
                 x = if (startFromRight) maxX else ((availableWidth - resolvedWidth) / 2f).coerceAtLeast(0f)
                 y = maxY
                 positioned = true
-            } else {
+            } else if (imeVisible != imeWasVisible) {
+                if (imeVisible) {
+                    yBeforeIme = y
+                    imeWasVisible = true
+                    y = y.coerceIn(0f, maxY)
+                } else {
+                    imeWasVisible = false
+                    y = yBeforeIme.coerceIn(0f, maxY)
+                }
+            } else if (!imeVisible) {
                 x = x.coerceIn(0f, maxX)
                 y = y.coerceIn(0f, maxY)
             }
@@ -162,7 +176,7 @@ private fun OverlayPositionBar(
 }
 
 @Composable
-private fun ResizeHandle(onDrag: (Float, Float) -> Unit) {
+private fun BoxScope.ResizeHandle(onDrag: (Float, Float) -> Unit) {
     Box(
         modifier = Modifier
             .align(Alignment.BottomEnd)

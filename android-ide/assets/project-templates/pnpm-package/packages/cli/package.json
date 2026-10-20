@@ -1,0 +1,19 @@
+{
+  "name": "@{{PACKAGE_NAME}}/cli",
+  "version": "1.0.0",
+  "description": "Command-line interface for {{PROJECT_NAME}}",
+  "type": "module",
+  "bin": {
+    "{{PACKAGE_NAME}}": "src/cli.js"
+  },
+  "scripts": {
+    "build": "node --check src/cli.js",
+    "dev": "node --watch src/cli.js",
+    "lint": "node --check src/cli.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@{{PACKAGE_NAME}}/core": "workspace:*",
+    "commander": "^12.1.0"
+  }
+}

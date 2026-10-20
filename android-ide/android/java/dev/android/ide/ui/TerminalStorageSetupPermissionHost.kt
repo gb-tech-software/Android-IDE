@@ -17,9 +17,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import dev.android.ide.app.AppShellViewModel
 import dev.android.ide.app.TerminalStorageSetupRequest
 import dev.android.ide.contracts.ErrorCategory
@@ -38,7 +35,6 @@ internal fun TerminalStorageSetupPermissionHost(
 ) {
     val context = LocalContext.current
     var launchedRequestId by remember { mutableStateOf<String?>(null) }
-    var settingsPromptRequestId by remember { mutableStateOf<String?>(null) }
 
     val settingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         val requestId = launchedRequestId ?: viewModel.state.value.terminalStorageSetupRequest?.id
@@ -78,7 +74,6 @@ internal fun TerminalStorageSetupPermissionHost(
 
     LaunchedEffect(request?.id) {
         val requestId = request?.id ?: run {
-            settingsPromptRequestId = null
             return@LaunchedEffect
         }
         launchedRequestId = requestId
@@ -88,7 +83,26 @@ internal fun TerminalStorageSetupPermissionHost(
                     launchedRequestId = null
                     viewModel.completeTerminalStorageSetup(requestId, TerminalStorageSetupPermission.Granted)
                 } else {
-                    settingsPromptRequestId = requestId
+                    runCatching {
+                        settingsLauncher.launch(
+                            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            },
+                        )
+                    }.onFailure { error ->
+                        launchedRequestId = null
+                        viewModel.completeTerminalStorageSetup(
+                            requestId,
+                            TerminalStorageSetupPermission.Denied(
+                                OperationReport(
+                                    OperationOutcome.BLOCKED,
+                                    "Android Settings could not open. No storage links were changed.",
+                                    ErrorCategory.PERMISSION_LOST,
+                                    recoveryHint = error.message,
+                                ),
+                            ),
+                        )
+                    }
                 }
             }
             Build.VERSION.SDK_INT == Build.VERSION_CODES.Q -> {
@@ -121,68 +135,5 @@ internal fun TerminalStorageSetupPermissionHost(
                 }
             }
         }
-    }
-    settingsPromptRequestId?.let { requestId ->
-        AlertDialog(
-            onDismissRequest = {
-                settingsPromptRequestId = null
-                launchedRequestId = null
-                viewModel.completeTerminalStorageSetup(
-                    requestId,
-                    TerminalStorageSetupPermission.Denied(
-                        OperationReport(
-                            OperationOutcome.BLOCKED,
-                            "Storage access was not granted. No storage links were changed.",
-                            ErrorCategory.PERMISSION_LOST,
-                        ),
-                    ),
-                )
-            },
-            title = { Text("Allow shared storage access?") },
-            text = {
-                Text("termux-setup-storage needs Android IDE to create safe links under ~/storage. Android will open its system permission page; you can cancel there and run the command again later.")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    settingsPromptRequestId = null
-                    runCatching {
-                        settingsLauncher.launch(
-                            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                data = Uri.parse("package:${context.packageName}")
-                            },
-                        )
-                    }.onFailure { error ->
-                        launchedRequestId = null
-                        viewModel.completeTerminalStorageSetup(
-                            requestId,
-                            TerminalStorageSetupPermission.Denied(
-                                OperationReport(
-                                    OperationOutcome.BLOCKED,
-                                    "Android Settings could not open. No storage links were changed.",
-                                    ErrorCategory.PERMISSION_LOST,
-                                    recoveryHint = error.message,
-                                ),
-                            ),
-                        )
-                    }
-                }) { Text("Open Android settings") }
-            },
-            dismissButton = {
-                Button(onClick = {
-                    settingsPromptRequestId = null
-                    launchedRequestId = null
-                    viewModel.completeTerminalStorageSetup(
-                        requestId,
-                        TerminalStorageSetupPermission.Denied(
-                            OperationReport(
-                                OperationOutcome.BLOCKED,
-                                "Storage access was not granted. No storage links were changed.",
-                                ErrorCategory.PERMISSION_LOST,
-                            ),
-                        ),
-                    )
-                }) { Text("Not now") }
-            },
-        )
     }
 }

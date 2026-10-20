@@ -1,9 +1,15 @@
 :root {
   font-family: system-ui, sans-serif;
   color: #202124;
+  background: #f4f6fa;
 }
-
-body {
-  margin: 0;
-  padding: 2rem;
-}
+body { margin: 0; min-width: 320px; }
+.dashboard { max-width: 720px; margin: 0 auto; padding: 4rem 1.5rem; }
+.eyebrow { color: #4055d6; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.dashboard header p:last-child { color: #606878; }
+form { display: flex; gap: .6rem; margin: 2rem 0 1rem; }
+input[name="title"] { flex: 1; padding: .75rem; border: 1px solid #cbd3e4; border-radius: .5rem; font: inherit; }
+button { padding: .75rem 1rem; border: 0; border-radius: .5rem; background: #4055d6; color: white; font: inherit; }
+.task-list { display: grid; gap: .5rem; }
+.task { display: flex; gap: .7rem; padding: .8rem; border-radius: .5rem; background: white; box-shadow: 0 1px 3px #17203318; }
+.task input:checked + span { color: #6b7280; text-decoration: line-through; }

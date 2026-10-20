@@ -3,6 +3,7 @@ package dev.android.ide.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
@@ -12,6 +13,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,6 +47,7 @@ internal fun CreateNewProjectDialog(
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
     validName: (String) -> Boolean,
+    onKeepInBackground: () -> Unit = {},
 ) {
     val acquiredId = state.acquiredProjectId
     val acquiredProject = acquiredId?.let { id -> state.projects.firstOrNull { it.id == id } }
@@ -123,7 +126,9 @@ internal fun CreateNewProjectDialog(
                 }
             },
             confirmButton = {
-                Button(onClick = {
+                if (state.operationInProgress) Button(onClick = onKeepInBackground) {
+                    Text("Keep in background")
+                } else Button(onClick = {
                     if (acquiredId != null) {
                         viewModel.dismissAcquisitionPrompt()
                         onOpenProject(acquiredId)
@@ -147,11 +152,29 @@ internal fun CreateNewProjectDialog(
 
 @Composable
 private fun CreateTemplateChoices(selected: CreateProjectTemplate, onSelect: (CreateProjectTemplate) -> Unit, disabled: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Starting point", style = MaterialTheme.typography.titleSmall)
         CreateProjectTemplate.values().forEach { template ->
-            TextButton(onClick = { onSelect(template) }, enabled = !disabled, modifier = Modifier.fillMaxWidth()) {
-                Text(if (selected == template) "✓ ${template.title}" else template.title)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !disabled) { onSelect(template) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                RadioButton(
+                    selected = selected == template,
+                    onClick = if (disabled) null else ({ onSelect(template) }),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(template.title, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        template.summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -169,6 +192,7 @@ internal fun LoadExistingProjectDialog(
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
     validName: (String) -> Boolean,
+    onKeepInBackground: () -> Unit = {},
 ) {
     val inspection = state.folderInspection
     val ready = inspection?.let { it.readable && it.writable && !it.alreadyRegistered && it.containmentVerified && !it.overlapsRegisteredProject } == true
@@ -236,7 +260,9 @@ internal fun LoadExistingProjectDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
+            if (state.operationInProgress) Button(onClick = onKeepInBackground) {
+                Text("Keep in background")
+            } else Button(onClick = {
                 if (acquiredId != null) {
                     viewModel.dismissAcquisitionPrompt()
                     onOpenProject(acquiredId)
@@ -277,6 +303,7 @@ internal fun ImportZipProjectDialog(
     onOpenProject: (String) -> Unit,
     onLocation: (String) -> String,
     validName: (String) -> Boolean,
+    onKeepInBackground: () -> Unit = {},
 ) {
     val ready = archiveUri != null && validName(name) && destination != null
     val acquiredId = state.acquiredProjectId
@@ -342,7 +369,9 @@ internal fun ImportZipProjectDialog(
             }
         },
         confirmButton = {
-            Button(onClick = {
+            if (state.operationInProgress) Button(onClick = onKeepInBackground) {
+                Text("Keep in background")
+            } else Button(onClick = {
                 if (acquiredId != null) {
                     viewModel.dismissAcquisitionPrompt()
                     onOpenProject(acquiredId)

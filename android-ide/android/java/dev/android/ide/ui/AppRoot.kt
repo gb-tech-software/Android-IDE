@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.Modifier
 import dev.android.ide.app.AppShellViewModel
+import dev.android.ide.app.BackgroundProjectOperation
 import dev.android.ide.app.ExternalContentActionKind
 import dev.android.ide.app.ExternalContentRoute
 import dev.android.ide.data.ThemeResolver
@@ -83,6 +84,7 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
     var exportReviewVisible by remember { mutableStateOf(false) }
     var pendingExportProjectId by remember { mutableStateOf<String?>(null) }
     var pendingBatchExportIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedBackgroundOperation by remember { mutableStateOf<BackgroundProjectOperation?>(null) }
 
     val openFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
@@ -240,7 +242,18 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 operationDestination = null
                 operationReviewVisible = false
             },
+            onOpenBackgroundOperation = { operation -> selectedBackgroundOperation = operation },
         )
+
+        selectedBackgroundOperation?.let { operation ->
+            val currentOperation = shellState.backgroundOperations.firstOrNull { it.id == operation.id }
+            if (currentOperation != null) {
+                BackgroundProjectOperationDialog(
+                    operation = currentOperation,
+                    onDismiss = { selectedBackgroundOperation = null },
+                )
+            }
+        }
 
         (shellState.pendingExternalContent as? ExternalContentRoute.Choose)?.let { choice ->
             AlertDialog(
@@ -286,6 +299,12 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 onOpenProject = { createVisible = false; createReviewVisible = false; createConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
+                onKeepInBackground = {
+                    viewModel.keepCurrentProjectOperationInBackground()
+                    createVisible = false
+                    createReviewVisible = false
+                    createConfirmationVisible = false
+                },
             )
         }
         if (folderReviewVisible) {
@@ -300,6 +319,11 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 onOpenProject = { folderReviewVisible = false; folderConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
+                onKeepInBackground = {
+                    viewModel.keepCurrentProjectOperationInBackground()
+                    folderReviewVisible = false
+                    folderConfirmationVisible = false
+                },
             )
         }
         if (zipReviewVisible) {
@@ -319,6 +343,11 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                 onOpenProject = { zipReviewVisible = false; zipConfirmationVisible = false; viewModel.openProject(it) },
                 onLocation = ::humanReadableStorageLocation,
                 validName = ::projectNameIsValid,
+                onKeepInBackground = {
+                    viewModel.keepCurrentProjectOperationInBackground()
+                    zipReviewVisible = false
+                    zipConfirmationVisible = false
+                },
             )
         }
         pickerFeedback?.let { message ->
@@ -340,6 +369,11 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
             operationInProgress = shellState.operationInProgress,
             onChooseDestination = { suggestedFileName -> exportFilePicker.launch(suggestedFileName) },
             onDismiss = { exportReviewVisible = false; pendingExportProjectId = null },
+            onKeepInBackground = {
+                viewModel.keepCurrentProjectOperationInBackground()
+                exportReviewVisible = false
+                pendingExportProjectId = null
+            },
         )
         operationKind?.let { kind ->
             val project = shellState.projects.firstOrNull { it.id == operationProjectId }
@@ -372,6 +406,11 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
                     }
                 },
                 onDismiss = { operationKind = null; operationReviewVisible = false },
+                onKeepInBackground = {
+                    viewModel.keepCurrentProjectOperationInBackground()
+                    operationKind = null
+                    operationReviewVisible = false
+                },
             )
         }
         }

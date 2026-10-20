@@ -78,6 +78,7 @@ import dev.android.ide.data.ResolvedTheme
 import dev.android.ide.ui.components.EditorToolbarGlyph
 import dev.android.ide.ui.components.FloatingOverlayFrame
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TerminalSurface(
     state: AppShellState,
@@ -96,6 +97,7 @@ fun TerminalSurface(
     var escapeLatched by remember { mutableStateOf(false) }
     var terminalTextSize by remember { mutableStateOf(terminalSettings.textSize) }
     var appearanceMenuOpen by remember { mutableStateOf(false) }
+    var sessionMenuOpen by remember { mutableStateOf(false) }
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
@@ -146,15 +148,46 @@ fun TerminalSurface(
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             if (!floating) IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
-            Column(Modifier.weight(1f)) {
-                Text("Terminal", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    selected?.name ?: "No active session",
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Box(Modifier.weight(1f)) {
+                if (floating) {
+                    Row(
+                        Modifier
+                            .combinedClickable(onClick = { sessionMenuOpen = true }, onLongClick = { sessionMenuOpen = true })
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Terminal>${selected?.name ?: "No active session"}",
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = sessionMenuOpen,
+                        onDismissRequest = { sessionMenuOpen = false },
+                    ) {
+                        sessions.filter { it.availability == SessionAvailability.AVAILABLE }.forEach { session ->
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        session.name,
+                                        color = if (session.id == state.selectedTerminalSessionId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Text(if (session.id == state.selectedTerminalSessionId) "✓" else "  ", color = MaterialTheme.colorScheme.primary)
+                                },
+                                onClick = {
+                                    sessionMenuOpen = false
+                                    viewModel.selectTerminalSession(session.id)
+                                },
+                            )
+                        }
+                    }
+                } else {
+                    Text("Terminal", style = MaterialTheme.typography.titleMedium)
+                }
             }
             if (floating) IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close floating terminal") }
             Box {

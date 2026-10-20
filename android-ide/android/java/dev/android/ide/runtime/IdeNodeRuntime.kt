@@ -20,7 +20,7 @@ class IdeNodeRuntime(
     val home: File get() = bundledRuntime.home()
     val prefix: File get() = bundledRuntime.prefix()
 
-    fun ensureReady(): Unit {
+    fun ensureReady(minimumNodeMajor: Int = DEFAULT_MINIMUM_NODE_MAJOR): Unit {
         val report = bundledRuntime.initialize()
         if (report.outcome != dev.android.ide.contracts.OperationOutcome.COMPLETE) {
             throw IOException(report.message.ifBlank { "The Android IDE JavaScript runtime is unavailable" })
@@ -31,8 +31,8 @@ class IdeNodeRuntime(
         val version = nodeVersion()
             ?: throw IOException("Unable to determine Node.js version")
         val parts = version.removePrefix("v").split('.').mapNotNull { it.toIntOrNull() }
-        if (parts.size < 2 || parts[0] != REQUIRED_NODE_MAJOR) {
-            throw IOException("Android IDE services require Node.js $REQUIRED_NODE_MAJOR.x; available version is $version")
+        if (parts.size < 2 || parts[0] < minimumNodeMajor) {
+            throw IOException("Android IDE services require Node.js $minimumNodeMajor.x or newer; available version is $version")
         }
     }
 
@@ -74,8 +74,9 @@ class IdeNodeRuntime(
         workingDirectory: File,
         packageRoot: File? = null,
         redirectErrorStream: Boolean = false,
+        minimumNodeMajor: Int = DEFAULT_MINIMUM_NODE_MAJOR,
     ): Process {
-        ensureReady()
+        ensureReady(minimumNodeMajor)
         if (!entrypoint.isFile) throw IOException("Node entrypoint is missing: ${entrypoint.absolutePath}")
         return ProcessBuilder(listOf(node.absolutePath, entrypoint.absolutePath) + arguments)
             .directory(workingDirectory)
@@ -85,7 +86,7 @@ class IdeNodeRuntime(
     }
 
     private companion object {
-        const val REQUIRED_NODE_MAJOR = 20
+        const val DEFAULT_MINIMUM_NODE_MAJOR = 20
         const val NODE_CHECK_TIMEOUT_SECONDS = 5L
     }
 

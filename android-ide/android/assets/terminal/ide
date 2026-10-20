@@ -110,7 +110,7 @@ domain_help() {
             editor:open) printf 'Usage: ide editor open DOCUMENT_URI\nOpens a document URI already inside the active project.\n';;
             editor:format) printf 'Usage: ide editor format [TAB_ID]\nDispatches Monaco formatDocument only when an installed language server advertises formatting support.\n';;
             terminal:sessions) printf 'Usage: ide terminal sessions list|close SESSION_ID\n';;
-            storage:setup|storage:rebuild) printf 'Usage: ide storage %s\nInvokes Termux shared-storage setup and may request Android permission.\n' "$command_name";;
+            storage:setup|storage:rebuild) printf 'Usage: ide storage %s\nInspects ~/storage, confirms in the terminal, then requests Android permission and rebuilds links.\n' "$command_name";;
             tools:package) printf 'Usage: ide tools install|status|remove package PACKAGE [--manager npm|pnpm] [--global|--local]\nDefaults to npm global; local operations use the current terminal directory.\n';;
             tools:install|tools:remove) printf 'Usage: ide tools %s lsp|web-preview|package PACKAGE [--manager npm|pnpm] [--global|--local]\nLSP and web-preview are app-managed; package manages terminal npm packages.\n' "$command_name";;
             *) domain_help "$domain"; return 2;;
@@ -123,7 +123,7 @@ domain_help() {
         init) printf 'Usage: ide init [--manager pkg|apt] [--skip-storage] [--skip-packages]\n       ide init status|test|help\nBootstrap installs only the listed base packages when explicitly requested; test runs app/runtime health checks.\n';;
         app) printf 'Usage: ide app status|test|doctor|logs [--lines N]\nstatus reports app/terminal/preview state; test probes app bridge and runtime capabilities.\n';;
         terminal) printf 'Usage: ide terminal status|test|sessions list|close SESSION_ID|storage\nstatus reports runtime and session state; test starts and closes a temporary PTY.\n';;
-        storage) printf 'Usage: ide storage status|test|setup|rebuild\nsetup/rebuild invoke Termux storage setup and the Android permission flow; status/test inspect ~/storage links.\n';;
+        storage) printf 'Usage: ide storage status|test|--setup|--rebuild\nBoth mutating commands inspect and confirm in the terminal before requesting Android permission.\n';;
         browser) printf 'Usage: ide browser status|test|open|reload|back|forward|stop|tabs [list|select|close]|downloads [list|open|cancel|pause|resume|retry|delete]\n';;
         editor) printf 'Usage: ide editor status|test|refresh|tabs [list|select|close]|open DOCUMENT_URI|save [TAB_ID]|save-all|format [TAB_ID]\n';;
         preview) printf 'Usage: ide preview status|test|start|stop\ntest requires the IDE-managed Live Server to be running and checks its HTTP response.\n';;
@@ -313,10 +313,94 @@ run_package_manager() {
     esac
 }
 
+storage_link_names='shared documents downloads dcim pictures music movies podcasts audiobooks'
+
+storage_links_complete() {
+    [ -d "$HOME/storage" ] || return 1
+    for name in $storage_link_names; do
+        [ -L "$HOME/storage/$name" ] || return 1
+    done
+    return 0
+}
+
+storage_print_affected_paths() {
+    if [ -L "$HOME/storage" ]; then
+        printf '%s\n' "$HOME/storage"
+    elif [ -d "$HOME/storage" ]; then
+        find "$HOME/storage" -mindepth 1 -print 2>/dev/null | sort
+    else
+        for name in $storage_link_names; do printf '%s\n' "$HOME/storage/$name"; done
+    fi
+}
+
+storage_confirm() {
+    printf '\nAndroid IDE will remove and rebuild new links under ~/storage/* to bridge your external storage.\n'
+    printf 'Ensure to backup any important files in this directory.\n'
+    printf "Files on external shared storage devices won't be affected.\n\n"
+    printf 'Are you sure to continue? (Y/N) '
+    read -r choice
+    case "$choice" in
+        Y|y) return 0 ;;
+        *) printf 'Storage operation aborted.\n'; return 1 ;;
+    esac
+}
+
+storage_request_permission() {
+    request_id=$(request_id)
+    result_dir="$HOME/.android-ide-storage-setup"
+    result_file="$result_dir/$request_id.result"
+    accepted_file="$result_dir/$request_id.accepted"
+    mkdir -p "$result_dir" || { printf 'ide: unable to prepare the storage setup result channel\n' >&2; return 1; }
+    rm -f "$result_file" "$accepted_file" "$result_dir/$request_id.tmp"
+    printf 'Android IDE needs storage permissions inorder to continue.\n'
+    printf 'Please grant the All files access permission in Android Settings.\n'
+    printf 'Opening storage permission settings in 3s..\n'
+    sleep 1; printf '2..\n'
+    sleep 1; printf '1..\n'
+    sleep 1
+    broadcast_output=$(am broadcast -n "$IDE_PACKAGE/dev.android.ide.runtime.TerminalStorageSetupReceiver" \
+        -a 'dev.android.ide.action.TERMINAL_STORAGE_SETUP' \
+        --es 'dev.android.ide.extra.STORAGE_SETUP_KIND' storage \
+        --es 'dev.android.ide.extra.STORAGE_SETUP_REQUEST_ID' "$request_id" 2>&1)
+    result=$?
+    if [ "$result" -ne 0 ]; then
+        printf 'Android IDE did not receive the storage setup request (exit %s).\n' "$result" >&2
+        [ -z "$broadcast_output" ] || printf '%s\n' "$broadcast_output" >&2
+        return "$result"
+    fi
+    printf 'Waiting for the Android storage permission response. Press Ctrl+C to stop.\n'
+    while [ ! -f "$accepted_file" ] && [ ! -f "$result_file" ]; do
+        sleep 1
+        printf 'Still waiting for Android storage permission…\n' >&2
+    done
+    rm -f "$accepted_file"
+    printf 'Waiting for Android IDE to rebuild storage links. Press Ctrl+C to stop.\n'
+    while [ ! -f "$result_file" ]; do
+        sleep 1
+        printf 'Still waiting for Android IDE storage setup…\n' >&2
+    done
+    exec 3<"$result_file"
+    IFS= read -r result_code <&3
+    if [ "$result_code" = "0" ]; then cat <&3; else cat <&3 >&2; fi
+    exec 3<&-
+    rm -f "$result_file"
+    [ "$result_code" = "0" ] || return 1
+    return 0
+}
+
 storage_setup() {
-    helper=$(command -v termux-setup-storage 2>/dev/null)
-    [ -n "$helper" ] || { printf 'ide: termux-setup-storage is unavailable; initialize the terminal runtime first\n' >&2; return 3; }
-    "$helper"
+    mode=${1:-setup}
+    case "$mode" in setup|rebuild) :;; *) usage_error 'storage mode must be setup or rebuild';; esac
+    if [ "$mode" = setup ] && storage_links_complete; then
+        printf 'Storage setup links already exist under ~/storage/. To rebuild them, run "ide storage --rebuild" instead\n'
+        return 4
+    fi
+    if [ "$mode" = rebuild ]; then
+        printf 'The following files/folders under ~/storage/ will be removed and rebuilt:\n'
+        storage_print_affected_paths
+    fi
+    storage_confirm || return 4
+    storage_request_permission
 }
 
 init_command() {
@@ -685,7 +769,8 @@ storage_command() {
         help|-h|--help) domain_help storage; return;;
         status) [ "$#" -eq 0 ] || usage_error 'storage status accepts no arguments'; app_request storage.status;;
         test) [ "$#" -eq 0 ] || usage_error 'storage test accepts no arguments'; app_request storage.test;;
-        setup|rebuild|--setup|--rebuild) [ "$#" -eq 0 ] || usage_error "storage $sub accepts no arguments"; storage_setup;;
+        setup|--setup) [ "$#" -eq 0 ] || usage_error "storage $sub accepts no arguments"; storage_setup setup;;
+        rebuild|--rebuild) [ "$#" -eq 0 ] || usage_error "storage $sub accepts no arguments"; storage_setup rebuild;;
         *) usage_error "unknown storage command '$sub'";;
     esac
 }
@@ -704,7 +789,7 @@ terminal_command() {
                 close) [ "$#" -eq 1 ] || usage_error 'terminal sessions close requires SESSION_ID'; app_request terminal.sessions.close "$1";;
                 *) usage_error "unknown terminal sessions command '$action'";;
             esac ;;
-        storage) [ "$#" -eq 0 ] || usage_error 'terminal storage accepts no arguments'; storage_setup ;;
+        storage) [ "$#" -eq 0 ] || usage_error 'terminal storage accepts no arguments'; storage_setup setup ;;
         *) usage_error "unknown terminal command '$sub'" ;;
     esac
 }

@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Palette
@@ -97,7 +96,6 @@ import kotlinx.coroutines.launch
 enum class SettingsCategory(val title: String, val description: String, val icon: ImageVector) {
     GENERAL("General", "Theme and interface", Icons.Default.Palette),
     EDITOR("Editor", "Appearance, editing, and file tree", Icons.Default.Code),
-    PROJECTS("Projects", "Project and storage defaults", Icons.Default.FolderOpen),
     SECURITY("Security", "Storage and permissions", Icons.Default.Lock),
     TERMINAL("Terminal", "Runtime and session settings", Icons.Default.Terminal),
     BROWSER("Browser", "Browsing and web-project settings", Icons.Default.Language),
@@ -130,7 +128,7 @@ fun SettingsScreen(
             "App Theme", "UI Font Size" -> SettingsCategory.GENERAL
             "Editor Theme", "Editor", "Controls", "File Tree" -> SettingsCategory.EDITOR
             "Editor Services", "Language Support", "Project Preview" -> SettingsCategory.EDITOR
-            "Project Storage" -> SettingsCategory.PROJECTS
+            "Project Storage" -> SettingsCategory.SECURITY
             "Permissions", "Folder Access", "Android App Permissions" -> SettingsCategory.SECURITY
             "Terminal" -> SettingsCategory.TERMINAL
             "Browser" -> SettingsCategory.BROWSER
@@ -191,7 +189,7 @@ private fun SettingsCategoryList(
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
         contentPadding = PaddingValues(vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Text(
@@ -240,18 +238,17 @@ private fun SettingsCategoryContent(
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(horizontal = 12.dp),
         contentPadding = PaddingValues(vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             Text(category.description, color = colors.textSecondary, style = MaterialTheme.typography.labelLarge)
         }
         when (category) {
-            SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
+            SettingsCategory.GENERAL -> item { SettingsSectionColumn { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) } }
             SettingsCategory.EDITOR -> item { EditorSettingsContent(uiState, s, ideViewModel) }
-            SettingsCategory.PROJECTS -> item { ProjectsSettingsContent() }
-            SettingsCategory.TERMINAL -> item { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) }
-            SettingsCategory.BROWSER -> item { BrowserSettingsContent() }
-            SettingsCategory.SECURITY -> item { StorageAccessSettings() }
+            SettingsCategory.TERMINAL -> item { SettingsSectionColumn { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) } }
+            SettingsCategory.BROWSER -> item { SettingsSectionColumn { BrowserSettingsContent() } }
+            SettingsCategory.SECURITY -> item { SettingsSectionColumn { StorageAccessSettings() } }
         }
     }
 }
@@ -393,46 +390,55 @@ private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChange
     }
 }
 
+private enum class EditorSettingsGroup(val title: String, val description: String) {
+    SERVICES("Language tools and preview", "Manage LSP packages and the IDE-managed preview service."),
+    APPEARANCE("Editor appearance", "Choose the editor theme, font size, and document information."),
+    EDITING("Editing behavior", "Configure wrapping, whitespace, brackets, cursor, and saving."),
+    KEYBOARD("Keyboard and input", "Configure keyboard controls and the editor toolbar."),
+    FILE_TREE("File tree", "Choose which workspace folders appear in the file tree."),
+}
+
 @Composable
 private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideViewModel: IdeViewModel) {
-    val colors = LocalIdeColors.current
-    var servicesOpen by rememberSaveable { mutableStateOf(false) }
-    if (servicesOpen) {
-        BackHandler { servicesOpen = false }
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { servicesOpen = false }) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back to editor settings")
-                }
-                Text("Language tools and preview", style = MaterialTheme.typography.titleLarge)
+    var selectedGroupName by rememberSaveable { mutableStateOf<String?>(null) }
+    val selectedGroup = selectedGroupName?.let { name -> EditorSettingsGroup.values().firstOrNull { it.name == name } }
+    if (selectedGroup == null) {
+        SettingsSectionColumn {
+            EditorSettingsGroup.values().forEach { group ->
+                SettingsGroupEntry(group.title, group.description) { selectedGroupName = group.name }
             }
-            EditorServicesSettingsContent(uiState, ideViewModel)
         }
         return
     }
-    SettingsCard {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable { servicesOpen = true },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Language tools and preview", style = MaterialTheme.typography.titleSmall)
-                Text("Manage LSP packages and the IDE-managed preview service.", style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
+    BackHandler { selectedGroupName = null }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { selectedGroupName = null }) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back to editor settings")
             }
-            Text("Open", color = colors.textSecondary)
+            Text(selectedGroup.title, style = MaterialTheme.typography.titleLarge)
+        }
+        SettingsSectionColumn {
+            when (selectedGroup) {
+                EditorSettingsGroup.SERVICES -> EditorServicesSettingsContent(uiState, ideViewModel)
+                EditorSettingsGroup.APPEARANCE -> EditorAppearanceSettingsContent(s, ideViewModel)
+                EditorSettingsGroup.EDITING -> EditorEditingSettingsContent(s, ideViewModel)
+                EditorSettingsGroup.KEYBOARD -> KeyboardSettingsContent(uiState, s, ideViewModel)
+                EditorSettingsGroup.FILE_TREE -> FileTreeSettingsContent(s, ideViewModel)
+            }
         }
     }
+}
+
+@Composable
+private fun EditorAppearanceSettingsContent(s: EditorSettings, ideViewModel: IdeViewModel) {
+    val colors = LocalIdeColors.current
     SettingsCard {
         ChoiceSetting(
             title = "Editor appearance",
             choices = listOf("Dark" to "dark", "Light" to "light", "Follow application" to "application", "Follow device" to "device"),
             selected = s.editorTheme,
-            descriptions = mapOf(
-                "dark" to "Use the dark editor theme.",
-                "light" to "Use the light editor theme.",
-                "application" to "Match the application theme.",
-                "device" to "Match the device theme.",
-            ),
+            descriptions = mapOf("dark" to "Use the dark editor theme.", "light" to "Use the light editor theme.", "application" to "Match the application theme.", "device" to "Match the device theme."),
             onSelected = { value -> ideViewModel.setEditorSettings(s.copy(editorTheme = value)) },
         )
         HorizontalDivider(color = colors.separator)
@@ -444,6 +450,11 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Document information row", "Show line, column, spacing, language, and encoding below the editor.", s.showStatusBar, { ideViewModel.setEditorSettings(s.copy(showStatusBar = it)) })
     }
+}
+
+@Composable
+private fun EditorEditingSettingsContent(s: EditorSettings, ideViewModel: IdeViewModel) {
+    val colors = LocalIdeColors.current
     SettingsCard {
         Text("Editing behavior", style = MaterialTheme.typography.titleSmall)
         HorizontalDivider(color = colors.separator)
@@ -461,26 +472,12 @@ private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideVie
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Bracket pair colors", "Color nested bracket levels differently.", s.bracketPairColorization, { ideViewModel.setEditorSettings(s.copy(bracketPairColorization = it)) })
         HorizontalDivider(color = colors.separator)
-        ChoiceSetting(
-            "Cursor style",
-            listOf("Line" to "line", "Block" to "block", "Underline" to "underline"),
-            s.cursorStyle,
-            mapOf("line" to "Thin vertical cursor.", "block" to "Filled character block.", "underline" to "Underline the active character."),
-            onSelected = { ideViewModel.setEditorSettings(s.copy(cursorStyle = it)) },
-        )
+        ChoiceSetting("Cursor style", listOf("Line" to "line", "Block" to "block", "Underline" to "underline"), s.cursorStyle, mapOf("line" to "Thin vertical cursor.", "block" to "Filled character block.", "underline" to "Underline the active character."), onSelected = { ideViewModel.setEditorSettings(s.copy(cursorStyle = it)) })
         HorizontalDivider(color = colors.separator)
-        ChoiceSetting(
-            "Auto-close brackets",
-            listOf("Always" to "always", "Smart" to "languageDefined", "Never" to "never"),
-            s.autoClosingBrackets,
-            mapOf("always" to "Always insert the matching bracket.", "languageDefined" to "Let the language decide.", "never" to "Do not insert matching brackets."),
-            onSelected = { ideViewModel.setEditorSettings(s.copy(autoClosingBrackets = it)) },
-        )
+        ChoiceSetting("Auto-close brackets", listOf("Always" to "always", "Smart" to "languageDefined", "Never" to "never"), s.autoClosingBrackets, mapOf("always" to "Always insert the matching bracket.", "languageDefined" to "Let the language decide.", "never" to "Do not insert matching brackets."), onSelected = { ideViewModel.setEditorSettings(s.copy(autoClosingBrackets = it)) })
         HorizontalDivider(color = colors.separator)
         VisibilitySettingRow("Auto save", "Save changes shortly after editing.", s.autoSave, { ideViewModel.setEditorSettings(s.copy(autoSave = it)) })
     }
-    KeyboardSettingsContent(uiState, s, ideViewModel)
-    FileTreeSettingsContent(s, ideViewModel)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -643,14 +640,6 @@ private fun FileTreeSettingsContent(s: EditorSettings, ideViewModel: IdeViewMode
         VisibilitySettingRow("Hide .git folder", "Keep repository internals out of the file tree.", s.hideGitFolder, { ideViewModel.setEditorSettings(s.copy(hideGitFolder = it)) })
         HorizontalDivider()
         VisibilitySettingRow("Hide workspace metadata", "Keep Android IDE workspace metadata out of the file tree.", s.hideProjectMetadataFolder, { ideViewModel.setEditorSettings(s.copy(hideProjectMetadataFolder = it)) })
-    }
-}
-
-@Composable
-private fun ProjectsSettingsContent() {
-    SettingsCard {
-        Text("Choose storage when creating a project.", style = MaterialTheme.typography.bodyMedium)
-        Text("No hidden project location is used.", style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
     }
 }
 
@@ -886,9 +875,22 @@ private fun SitePermissionsSettingsScreen(
 }
 
 @Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+private fun SettingsSectionColumn(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
+}
+
+@Composable
+private fun SettingsCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     val colors = LocalIdeColors.current
     Card(
+        modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, colors.separator.copy(alpha = 0.55f)),
         colors = CardDefaults.cardColors(containerColor = colors.surface),
@@ -899,6 +901,22 @@ private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 content = content,
             )
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupEntry(title: String, description: String, onClick: () -> Unit) {
+    SettingsCard(modifier = Modifier.clickable(onClick = onClick)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(description, style = MaterialTheme.typography.bodySmall, color = LocalIdeColors.current.textSecondary)
+            }
+            Text("Open", color = LocalIdeColors.current.primary, style = MaterialTheme.typography.labelLarge)
         }
     }
 }

@@ -1,0 +1,17 @@
+{
+  "name": "@{{PACKAGE_NAME}}/core",
+  "version": "1.0.0",
+  "description": "Core domain utilities for {{PROJECT_NAME}}",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": "./src/index.js",
+  "files": ["src"],
+  "scripts": {
+    "build": "node --check src/index.js",
+    "lint": "node --check src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "picocolors": "^1.1.1"
+  }
+}

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Pinned language-server packages managed by Android IDE",
   "engines": {
-    "node": ">=20 <21"
+    "node": ">=20"
   },
   "dependencies": {
     "pyright": "1.1.414",

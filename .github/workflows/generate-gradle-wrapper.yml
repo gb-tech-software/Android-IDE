@@ -62,4 +62,4 @@ jobs:
           name: gradle-wrapper
           path: dist/gradle-wrapper-bundle.zip
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 2

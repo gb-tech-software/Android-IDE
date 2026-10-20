@@ -24,6 +24,7 @@ import dev.android.ide.project.ProjectMetadataStore
 import dev.android.ide.project.ProjectRegistryStore
 import dev.android.ide.project.ProjectStorageAdapterImpl
 import dev.android.ide.project.GitMetadataReader
+import dev.android.ide.project.ProjectResourceLock
 import dev.android.ide.runtime.RuntimeStateStore
 import dev.android.ide.runtime.BundledTermuxRuntimeInstaller
 import dev.android.ide.runtime.LanguageServerPackageInstaller
@@ -101,6 +102,8 @@ class ApplicationServices private constructor(application: Application) {
     val projectRegistry = ProjectRegistryStore(projectRepository, projectStorage)
     val projectMetadata = ProjectMetadataStore(fileSystem.operations)
     val gitMetadata = GitMetadataReader(fileSystem.operations)
+    val projectResourceLock = ProjectResourceLock()
+    val projectOperations = ProjectOperationManager(context)
     val projectManagement = ProjectManagementService(
         context,
         projectRegistry,
@@ -108,6 +111,7 @@ class ApplicationServices private constructor(application: Application) {
         fileSystem.operations,
         projectMetadata,
         gitMetadata,
+        projectResourceLock,
     )
 
     fun languageServerAdapter(

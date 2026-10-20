@@ -1,15 +1,17 @@
 {
-  "name": "{{PACKAGE_NAME}}",
+  "name": "{{PACKAGE_NAME}}-workspace",
   "version": "1.0.0",
+  "private": true,
   "description": {{DESCRIPTION_JSON}},
   "type": "module",
-  "main": "src/index.js",
-  "exports": "./src/index.js",
-  "files": ["src"],
   "scripts": {
-    "lint": "node --check src/index.js",
-    "test": "node --test"
+    "build": "pnpm --recursive run build",
+    "dev": "pnpm --filter @{{PACKAGE_NAME}}/cli dev",
+    "lint": "pnpm --recursive run lint",
+    "test": "pnpm --recursive run test"
   },
-  "packageManager": "pnpm@9",
-  "license": "ISC"
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  },
+  "packageManager": "pnpm@9"
 }

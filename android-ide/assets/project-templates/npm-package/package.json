@@ -4,11 +4,19 @@
   "description": {{DESCRIPTION_JSON}},
   "type": "module",
   "main": "src/index.js",
-  "exports": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./collection": "./src/collection.js",
+    "./slug": "./src/slug.js"
+  },
   "files": ["src"],
   "scripts": {
     "lint": "node --check src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "prepare": "node --check src/index.js"
+  },
+  "dependencies": {
+    "nanoid": "^5.0.9"
   },
   "license": "ISC"
 }

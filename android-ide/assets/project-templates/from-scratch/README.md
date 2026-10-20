@@ -1,21 +1,33 @@
 # {{PROJECT_NAME}}
 
+**Repository**: https://github.com/godlovetikum/Android-IDE
+
 {{DESCRIPTION}}
 
-Android IDE is a mobile development environment for creating, editing, organizing, and running software projects directly from an Android device. It provides a project workspace with a file tree, code editor, terminal, project management features, and browser tooling.
+This is the clean starting point for a project you want to shape yourself with Android IDE. It intentionally contains no framework, runtime, dependency, or opinionated source tree: the first decision belongs to you.
 
-## Getting started
+## What this starter is for
 
-This is an intentionally empty project starter. Add the files, language tooling, dependencies, and scripts that your project requires.
+Use this project when you are exploring an idea, prototyping a new language or framework, adopting an existing convention, or creating a product whose structure should be decided after its requirements are clear. Android IDE gives you the editor, terminal, browser, and project workflow to make those decisions deliberately.
 
-Use Android IDE's file tree and editor to create files, and its terminal to install packages, run commands, and manage Git when repository tooling is available.
+## Continue building with Android IDE
 
-## Continue with Android IDE
+Open this project in Android IDE and use its file tree, editor, terminal, browser, and project tools to establish the structure your project needs. Add a source directory, tests, package metadata, build tooling, and documentation when those choices are known.
 
-The project files remain in the storage location selected during acquisition. Android IDE works with that project location rather than creating an unrelated hidden copy.
+Keep the project’s files visible, portable, and under your control as you develop it with Android IDE.
 
-Use Android IDE to add files, edit source code, manage dependencies, run commands, inspect project files, and shape this starter into an application, package, service, or experiment.
+## A deliberate first step
+
+Before adding dependencies, decide what the project should produce, which runtime will execute it, how it will be tested, and which commands another contributor should use. Then add only the conventions that support that decision.
+
+## Development commands
+
+No commands are preconfigured because this starter deliberately has no runtime or framework. After choosing the project type, add the appropriate manifest and scripts—such as `npm run dev`, `pnpm test`, a language-specific test command, or a framework development server—and document them here.
+
+## Project structure
+
+There is no source tree yet. Establish `src/`, `test/`, package metadata, or another convention when the project’s requirements are clear.
 
 ## Created with Android IDE
 
-This project was created with Android IDE. Continue developing it from the Android IDE editor, terminal, browser, and project workspace.
+Android IDE is a development workspace for building real projects from an Android device. Use this starter when you want the freedom to define the project—and the editor, terminal, browser, and project workflow to carry it forward.

@@ -24,6 +24,7 @@ import dev.android.ide.contracts.ApplicationIdentity
 import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.LanguageServerFeature
 import dev.android.ide.contracts.OperationOutcome
+import dev.android.ide.contracts.OperationReport
 import dev.android.ide.contracts.ProjectLocation
 import dev.android.ide.contracts.StorageLocation
 import dev.android.ide.saf.ChildrenInspectionResult
@@ -111,6 +112,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val resourcePaths     = ResourcePathResolver()
     private val projectMetadata   = services.projectMetadata
     private val projectManagement = services.projectManagement
+    private val projectResourceLock = services.projectResourceLock
+    private val projectOperations = services.projectOperations
     private val projectRepository = services.projectRepository
     private val sessionRepository = services.sessionRepository
     private val editorSettingsRepo = services.editorSettingsRepository
@@ -1105,25 +1108,23 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun importFiles(targetDirUri: String, sourceUris: List<String>) {
         if (!requireConfirmedLocalStorageForMutation()) return
         if (sourceUris.isEmpty()) return
-        viewModelScope.launch {
-            _uiState.update { it.copy(fileMutationLoading = true, statusMessage = "Importing selected files…") }
-            try {
-                var count = 0
+        _uiState.update { it.copy(fileMutationLoading = true, statusMessage = "Importing selected files…") }
+        projectOperations.start("Importing files", "file-import", listOf(targetDirUri) + sourceUris, operation = {
+            var count = 0
+            projectResourceLock.withLock(listOf(targetDirUri) + sourceUris) {
                 sourceUris.forEach { uri ->
-                    val name  = fileMutations.displayName(uri)
-                        ?: uri.substringAfterLast('/', "imported_file")
-                    when (fileMutations.copy(uri, targetDirUri, name)) {
-                        is SafeMutationResult.Created -> count++
-                        else -> Unit
-                    }
+                    val name = fileMutations.displayName(uri) ?: uri.substringAfterLast('/', "imported_file")
+                    if (fileMutations.copy(uri, targetDirUri, name) is SafeMutationResult.Created) count++
                 }
-                refreshProjectNow()
-                val outcome = if (count == sourceUris.size) "Imported $count file(s)" else "Imported $count of ${sourceUris.size} file(s); some files could not be imported"
-                _uiState.update { it.copy(statusMessage = outcome) }
-            } finally {
-                _uiState.update { it.copy(fileMutationLoading = false) }
             }
-        }
+            val message = if (count == sourceUris.size) "Imported $count file(s)" else "Imported $count of ${sourceUris.size} file(s); some files could not be imported"
+            OperationReport(OperationOutcome.COMPLETE, message)
+        }, onComplete = { _, report ->
+            viewModelScope.launch {
+                refreshProjectNow()
+                _uiState.update { it.copy(fileMutationLoading = false, statusMessage = report.message) }
+            }
+        }, background = true)
     }
 
     fun exportDirectory(node: FileNode) {
@@ -1139,7 +1140,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     fun exportProject(projectUri: String, destinationUri: String) {
         if (!requireConfirmedLocalStorageForMutation()) return
         viewModelScope.launch {
-            val result = fileMutations.writeDirectoryArchive(projectUri, destinationUri)
+            val result = projectResourceLock.withLock(listOf(projectUri, destinationUri)) {
+                fileMutations.writeDirectoryArchive(projectUri, destinationUri)
+            }
             _uiState.update {
                 it.copy(
                     statusMessage = if (result == null) {
@@ -1157,7 +1160,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { state -> state.copy(fileMutationLoading = true, fileOpDialog = (state.fileOpDialog as? FileOpDialog.Export)?.copy(isSubmitting = true, resultMessage = null, failed = false)) }
             try {
-                val result = fileMutations.writeDirectoryArchive(node.documentUri, destinationUri)
+                val result = projectResourceLock.withLock(listOf(_uiState.value.projectRootUri ?: node.documentUri, node.documentUri, destinationUri)) {
+                    fileMutations.writeDirectoryArchive(node.documentUri, destinationUri)
+                }
                 _uiState.update {
                     it.copy(
                         fileOpDialog = (it.fileOpDialog as? FileOpDialog.Export)?.copy(
@@ -3107,46 +3112,38 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         val allAffectedUris = nodes.flatMap { affectedUris(it) }.toSet()
         viewModelScope.launch {
             _uiState.update { state -> state.copy(fileMutationLoading = true, statusMessage = "Deleting ${nodes.size} item(s)…", fileOpDialog = (state.fileOpDialog as? FileOpDialog.Delete)?.copy(errorMessage = null, isSubmitting = true)) }
-            var deletedCount = 0
-            val deletedUris = mutableSetOf<String>()
-            val deletedProjectPaths = mutableSetOf<String>()
-            nodes.forEachIndexed { index, selectedNode ->
-                fileMutations.delete(selectedNode.documentUri)
-                if (editorFilePresenceAfterDelete(selectedNode.documentUri) == DocumentPresence.ABSENT) {
-                    deletedCount++
-                    deletedUris += allAffectedUris.intersect(affectedUris(selectedNode))
-                    deletedProjectPaths += targetPaths[index].removePrefix("/")
+            projectResourceLock.withLock(listOf(_uiState.value.projectRootUri ?: "") + allAffectedUris) {
+                var deletedCount = 0
+                val deletedUris = mutableSetOf<String>()
+                val deletedProjectPaths = mutableSetOf<String>()
+                nodes.forEachIndexed { index, selectedNode ->
+                    fileMutations.delete(selectedNode.documentUri)
+                    if (editorFilePresenceAfterDelete(selectedNode.documentUri) == DocumentPresence.ABSENT) {
+                        deletedCount++
+                        deletedUris += allAffectedUris.intersect(affectedUris(selectedNode))
+                        deletedProjectPaths += targetPaths[index].removePrefix("/")
+                    }
                 }
+                _uiState.value.openTabs.filter { it.documentUri in deletedUris }.forEach { closeTab(it.id) }
+                refreshProjectNow()
+                val complete = deletedCount == nodes.size
+                val message = if (complete && nodes.size == 1) "Deleted ${targetPaths.single()}" else if (complete) "Deleted ${targetPaths.joinToString(", ")}" else "Deleted $deletedCount of ${nodes.size} item(s)"
+                val configuredPreview = _uiState.value.defaultPreviewPath
+                val previewWasDeleted = configuredPreview != null && deletedProjectPaths.any { path -> configuredPreview == path || (path.isNotEmpty() && configuredPreview.startsWith("$path/")) }
+                _uiState.update { it.copy(
+                    defaultPreviewPath = if (previewWasDeleted) null else it.defaultPreviewPath,
+                    fileMutationLoading = false,
+                    fileOpDialog = (it.fileOpDialog as? FileOpDialog.Delete)?.copy(
+                        isSubmitting = false,
+                        errorMessage = if (complete) null else "$message. Some items could not be removed; inspect the project and retry.",
+                        resultMessage = if (complete) message else null,
+                    ),
+                    isMultiSelectMode = false,
+                    selectedUris = emptySet(),
+                    statusMessage = message,
+                ) }
+                if (previewWasDeleted) scheduleWorkspaceSave()
             }
-            _uiState.value.openTabs
-                .filter { it.documentUri in deletedUris }
-                .forEach { closeTab(it.id) }
-            refreshProjectNow()
-            val complete = deletedCount == nodes.size
-            val message = if (complete && nodes.size == 1) {
-                "Deleted ${targetPaths.single()}"
-            } else if (complete) {
-                "Deleted ${targetPaths.joinToString(", ")}"
-            } else {
-                "Deleted $deletedCount of ${nodes.size} item(s)"
-            }
-            val configuredPreview = _uiState.value.defaultPreviewPath
-            val previewWasDeleted = configuredPreview != null && deletedProjectPaths.any { path ->
-                configuredPreview == path || (path.isNotEmpty() && configuredPreview.startsWith("$path/"))
-            }
-            _uiState.update { it.copy(
-                defaultPreviewPath = if (previewWasDeleted) null else it.defaultPreviewPath,
-                fileMutationLoading = false,
-                fileOpDialog = (it.fileOpDialog as? FileOpDialog.Delete)?.copy(
-                    isSubmitting = false,
-                    errorMessage = if (complete) null else "$message. Some items could not be removed; inspect the project and retry.",
-                    resultMessage = if (complete) message else null,
-                ),
-                isMultiSelectMode = false,
-                selectedUris = emptySet(),
-                statusMessage = message,
-            ) }
-            if (previewWasDeleted) scheduleWorkspaceSave()
         }
     }
 

@@ -6,11 +6,14 @@
 
 package dev.android.ide.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -28,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.viewmodel.model.EditorTab
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EditorTabBar(
     tabs: List<EditorTab>,
@@ -96,6 +100,7 @@ fun EditorTabBar(
 
 // ── Tab item ───────────────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EditorTabItem(
     tab: EditorTab,
@@ -116,11 +121,17 @@ private fun EditorTabItem(
         else -> colors.surface
     }
     var menuOpen by remember { mutableStateOf(false) }
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+
+    LaunchedEffect(tab.id, tab.isActive, tab.displayName, tab.isDirty) {
+        if (tab.isActive) bringIntoViewRequester.bringIntoView()
+    }
 
     Box(
         modifier = Modifier
             .fillMaxHeight()
             .background(bgColor)
+            .bringIntoViewRequester(bringIntoViewRequester)
             .clickable(onClick = onSelected),
     ) {
         Row(
@@ -152,6 +163,8 @@ private fun EditorTabItem(
                     modifier = Modifier.size(13.dp),
                 )
             }
+            FileTypeBadge(tab.displayName)
+            Spacer(Modifier.width(4.dp))
             Text(
                 text     = tab.displayName,
                 style    = MaterialTheme.typography.labelMedium.copy(

@@ -1,32 +1,39 @@
 # {{PROJECT_NAME}}
 
+**Repository**: https://github.com/godlovetikum/Android-IDE
+
 {{DESCRIPTION}}
 
-Android IDE is a mobile development environment for creating, editing, organizing, and running software projects directly from an Android device. The project remains in the storage location selected during acquisition.
+A Vite-powered web application starter created with Android IDE. It begins as a small task dashboard with a feature store, reusable task-list component, form interaction, and responsive styling so the first screen is a real product surface rather than a placeholder greeting.
 
-## Getting started
+## What you get
 
-```bash
+The application separates bootstrapping from UI behavior. `src/main.js` starts the application, `src/app.js` composes the dashboard, `src/features/tasks.js` owns task state, and `src/components/task-list.js` renders the collection. The structure is ready for additional features, API integration, routing, and a design system.
+
+## Project structure
+
+- `index.html` — browser document shell and metadata.
+- `src/main.js` — Vite entrypoint.
+- `src/app.js` — application composition and form behavior.
+- `src/features/tasks.js` — task feature state and operations.
+- `src/components/task-list.js` — reusable task-list view.
+- `src/style.css` — application styling.
+
+## Development commands
+
+```sh
 npm install
 npm run dev
-```
-
-Build and preview the production bundle with:
-
-```bash
 npm run build
 npm run preview
 ```
 
-## Project structure
+Open the development server in Android IDE’s browser tools while you work. Use the production build and preview commands when checking the deployable output.
 
-- `index.html` — Vite HTML entry point
-- `src/main.js` — application entry point
-- `src/style.css` — application styles
-- `package.json` — scripts and development dependency metadata
+## Continue building with Android IDE
 
-Use Android IDE's editor and terminal to continue developing the application. When the development server is browser-accessible, use the Android IDE browser to inspect it.
+Use the editor and file tree to grow the dashboard by feature, the terminal to manage Vite and dependencies, and the browser workflow to inspect the result on the same device where you develop it.
 
 ## Created with Android IDE
 
-This project was created with Android IDE. Continue developing it from the Android IDE editor, terminal, browser, and project workspace.
+Android IDE helps you move from idea to working interface without leaving your Android device. This Vite starter gives you a branded, interactive screen and a maintainable feature structure so your first task is product design—not replacing a blank screen.

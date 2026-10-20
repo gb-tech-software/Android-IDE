@@ -7,6 +7,18 @@
   let initialized = false;
   let initializationQueued = false;
   let readySent = false;
+  const earlyPageErrors = [];
+
+  // The bridge is injected at document_start, but Eruda waits for a body
+  // before initializing. Preserve errors raised during that gap. These are
+  // passive observers: they never cancel, stop, replace, or retry a page
+  // operation.
+  window.addEventListener("error", event => {
+    if (!initialized) earlyPageErrors.push(event.error || new Error(event.message || "Page error"));
+  }, true);
+  window.addEventListener("unhandledrejection", event => {
+    if (!initialized) earlyPageErrors.push(event.reason || new Error("Unhandled promise rejection"));
+  }, true);
 
   function post(type, fields = {}) {
     if (!channel) return;
@@ -53,9 +65,12 @@
         tool: ["console", "elements", "network", "resources", "sources", "info", "snippets"],
         useShadowDom: true,
         inline: false,
+        catchGlobalErrors: true,
         defaults: { displaySize: 50, transparency: 1 }
       });
       initialized = true;
+      const erudaConsole = window.eruda.get("console");
+      earlyPageErrors.splice(0).forEach(error => erudaConsole.error(error));
       // Prevent Eruda's default launcher from appearing before native state
       // has explicitly authorized user exposure.
       setEntryVisibility(false);

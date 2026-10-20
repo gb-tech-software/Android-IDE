@@ -1,28 +1,52 @@
 # {{PROJECT_NAME}}
 
+**Repository**: https://github.com/godlovetikum/Android-IDE
+
 {{DESCRIPTION}}
 
-This is an ESM pnpm package starter with a public source entry point and a Node.js test workflow.
+A multi-package pnpm workspace created with Android IDE. This starter is for projects that need shared code, more than one executable or publishable package, and a clear boundary between reusable domain logic, command-line tooling, and examples.
 
-## Getting started
+## What you get
 
-```bash
-pnpm install
-pnpm test
-```
+This is a real workspace rather than a package with a renamed folder. `@{{PACKAGE_NAME}}/core` contains the reusable task domain and formatting utilities. `@{{PACKAGE_NAME}}/cli` consumes that package and exposes a command-line interface. `examples/demo` shows how another workspace project consumes the shared package.
 
-The first install creates `pnpm-lock.yaml`. Review the package name, version, public entry point, exports, files list, scripts, README, and license before publishing.
+The workspace gives each package its own manifest, scripts, tests, and dependency graph while keeping coordinated development in one repository. Add more packages under `packages/` when a boundary is real; keep examples under `examples/` when they demonstrate consumption rather than become part of the published product.
 
 ## Project structure
 
-- `src/index.js` — public package entry point
-- `test/index.test.js` — Node's built-in test runner smoke test
-- `package.json` — package metadata and scripts
-- `pnpm-lock.yaml` — generated lockfile after dependency installation
-- `.gitignore` — generated and local files excluded from Git
+- `package.json` — workspace-level scripts and package-manager configuration.
+- `pnpm-workspace.yaml` — package and example workspace globs.
+- `packages/core/` — reusable task domain package with tests.
+- `packages/cli/` — Commander-based CLI consuming the core package.
+- `examples/demo/` — runnable consumer example.
 
-Use Android IDE to edit the package, manage its files, run pnpm commands in the terminal, and prepare the package for distribution.
+## Development commands
+
+Install every workspace dependency from the root:
+
+```sh
+pnpm install
+```
+
+Run all package tests and checks, or target one workspace:
+
+```sh
+pnpm test
+pnpm lint
+pnpm --filter @{{PACKAGE_NAME}}/core test
+pnpm --filter @{{PACKAGE_NAME}}/cli dev -- add "Plan the next release"
+```
+
+Run the example consumer:
+
+```sh
+pnpm --filter {{PACKAGE_NAME}}-demo start
+```
+
+## Continue building with Android IDE
+
+Use Android IDE’s file tree to move between package boundaries, its editor to evolve shared contracts, and its terminal to run filtered pnpm commands. When a new feature needs its own lifecycle, dependency set, or release cadence, give it a package boundary instead of enlarging one catch-all module.
 
 ## Created with Android IDE
 
-This package was created with Android IDE. Continue building it from the Android IDE editor and terminal.
+Android IDE is a project workspace for building real multi-package systems from an Android device. This template gives you shared code, an executable package, a consumer example, dependency relationships, and workspace commands so the repository starts with the conventions a growing product needs.

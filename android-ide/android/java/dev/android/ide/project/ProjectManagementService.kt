@@ -22,6 +22,7 @@ class ProjectManagementService(
     files: FileManagementService,
     metadata: ProjectMetadataStore,
     gitMetadata: GitMetadataReader,
+    private val resourceLock: ProjectResourceLock,
 ) {
     private val registryStore = registry
     private val storageAdapter = storage
@@ -41,23 +42,34 @@ class ProjectManagementService(
         state.register(location, name, description)
 
     suspend fun createBlankProject(destinationParentUri: String, name: String, description: String, template: CreateProjectTemplate = CreateProjectTemplate.FROM_SCRATCH) =
-        acquisition.createBlankProject(destinationParentUri, name, description, template)
+        resourceLock.withLock(listOf(destinationParentUri)) { acquisition.createBlankProject(destinationParentUri, name, description, template) }
     suspend fun importExistingFolder(projectRootUri: String, name: String? = null, description: String? = null) =
-        acquisition.importExistingFolder(projectRootUri, name, description)
+        resourceLock.withLock(listOf(projectRootUri)) { acquisition.importExistingFolder(projectRootUri, name, description) }
     suspend fun importZip(archiveUri: String, destinationParentUri: String, name: String, description: String) =
-        acquisition.importZip(archiveUri, destinationParentUri, name, description)
+        resourceLock.withLock(listOf(archiveUri, destinationParentUri)) { acquisition.importZip(archiveUri, destinationParentUri, name, description) }
 
-    suspend fun removeFromRegistry(projectId: String) = mutations.removeFromRegistry(projectId)
-    suspend fun permanentlyDelete(projectId: String) = mutations.permanentlyDelete(projectId)
-    suspend fun exportProject(projectId: String, destinationFileUri: String) = mutations.exportProject(projectId, destinationFileUri)
+    suspend fun removeFromRegistry(projectId: String) = withProjectLock(projectId) { mutations.removeFromRegistry(projectId) }
+    suspend fun permanentlyDelete(projectId: String) = withProjectLock(projectId) { mutations.permanentlyDelete(projectId) }
+    suspend fun exportProject(projectId: String, destinationFileUri: String) = withProjectLock(projectId, destinationFileUri) { mutations.exportProject(projectId, destinationFileUri) }
     suspend fun duplicateProject(projectId: String, destinationParentUri: String, name: String, description: String? = null) =
-        mutations.duplicateProject(projectId, destinationParentUri, name, description)
+        withProjectLock(projectId, destinationParentUri) { mutations.duplicateProject(projectId, destinationParentUri, name, description) }
     suspend fun relocateProject(projectId: String, destinationParentUri: String, name: String) =
-        mutations.relocateProject(projectId, destinationParentUri, name)
-    suspend fun renameProject(projectId: String, name: String) = mutations.renameProject(projectId, name)
-    suspend fun batchRemoveFromRegistry(projectIds: List<String>) = mutations.batchRemoveFromRegistry(projectIds)
-    suspend fun exportProjects(projectIds: List<String>, destinationParentUri: String) = mutations.exportProjects(projectIds, destinationParentUri)
-    suspend fun batchPermanentlyDelete(projectIds: List<String>) = mutations.batchPermanentlyDelete(projectIds)
+        withProjectLock(projectId, destinationParentUri) { mutations.relocateProject(projectId, destinationParentUri, name) }
+    suspend fun renameProject(projectId: String, name: String) = withProjectLock(projectId) { mutations.renameProject(projectId, name) }
+    suspend fun batchRemoveFromRegistry(projectIds: List<String>) = withProjectsLock(projectIds) { mutations.batchRemoveFromRegistry(projectIds) }
+    suspend fun exportProjects(projectIds: List<String>, destinationParentUri: String) = withProjectsLock(projectIds, destinationParentUri) { mutations.exportProjects(projectIds, destinationParentUri) }
+    suspend fun batchPermanentlyDelete(projectIds: List<String>) = withProjectsLock(projectIds) { mutations.batchPermanentlyDelete(projectIds) }
 
     suspend fun loadDetails(projectId: String): ProjectDetailsResult = details.load(projectId)
+
+    private suspend fun <T> withProjectLock(projectId: String, vararg extra: String, block: suspend () -> T): T {
+        val projectUri = registeredProjectAt(projectId)?.location?.stableId
+        val resources = listOfNotNull(projectUri, *extra)
+        return if (resources.isEmpty()) block() else resourceLock.withLock(resources) { block() }
+    }
+
+    private suspend fun <T> withProjectsLock(projectIds: List<String>, vararg extra: String, block: suspend () -> T): T {
+        val resources = projectIds.mapNotNull { registeredProjectAt(it)?.location?.stableId } + extra
+        return if (resources.isEmpty()) block() else resourceLock.withLock(resources) { block() }
+    }
 }

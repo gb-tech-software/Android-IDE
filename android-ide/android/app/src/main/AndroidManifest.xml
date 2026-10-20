@@ -149,6 +149,15 @@
                 android:value="Visible terminal session input and output" />
         </service>
 
+        <service
+            android:name="dev.android.ide.app.ProjectOperationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Background project acquisition and file mutation operations" />
+        </service>
+
         <!-- Temporary camera output for browser file inputs; only the dedicated cache subdirectory is exposed. -->
         <provider
             android:name="androidx.core.content.FileProvider"
