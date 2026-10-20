@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
@@ -1112,7 +1113,7 @@ private fun ProjectContentSearchPanel(
 
 /** Shared typed badge used by the file tree, filename search, and content search. */
 @Composable
-private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) {
+internal fun FileTypeBadge(displayName: String, muted: Boolean = false, accent: Boolean = false) {
     val kind = EditorLanguageRegistry.iconKindForFileName(displayName)
     val fileName = displayName.substringAfterLast('/').lowercase()
     val extension = fileName.substringAfterLast('.', "")
@@ -1189,7 +1190,7 @@ private fun FileTypeBadge(displayName: String, muted: Boolean, accent: Boolean) 
         FileIconKind.TOML -> Icons.Default.Settings
         FileIconKind.ENV -> Icons.Default.Settings
         FileIconKind.PROTO -> Icons.Default.Code
-        FileIconKind.SQL -> Icons.Default.Code
+        FileIconKind.SQL -> Icons.Default.Storage
         FileIconKind.SHELL -> SimpleIcons.Gnubash
         FileIconKind.DOCKER -> SimpleIcons.Docker
         FileIconKind.GIT -> SimpleIcons.Git

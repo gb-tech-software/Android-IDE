@@ -73,6 +73,7 @@ class LanguageServerPackageInstaller(
     }
 
     suspend fun arePackagesInstalled(): Boolean = packageManager.validate(spec).installed
+    fun packageStatus(): IdePackageManager.PackageStatus = packageManager.validate(spec)
 
     fun executablePath(command: String): File = File(root, "node_modules/.bin/$command")
 

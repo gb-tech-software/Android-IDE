@@ -208,14 +208,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun sessionFor(tab: BrowserTabRuntime, initialHistoryAddress: String? = null): BrowserEngineSession {
         tab.session?.let { return it }
         val restoredState = tab.sessionState?.let(::BrowserSerializedState)
-        val session = sessionService.ensureSession(
-            tabId = tab.id,
-            settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
-            state = restoredState,
-            sink = engineEventSink(tab),
-        )
+        var restored = restoredState != null
+        val session = if (restoredState == null) {
+            sessionService.ensureSession(
+                tabId = tab.id,
+                settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
+                state = null,
+                sink = engineEventSink(tab),
+            )
+        } else {
+            runCatching {
+                sessionService.ensureSession(
+                    tabId = tab.id,
+                    settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
+                    state = restoredState,
+                    sink = engineEventSink(tab),
+                )
+            }.getOrElse {
+                restored = false
+                sessionService.ensureSession(
+                    tabId = tab.id,
+                    settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
+                    state = null,
+                    sink = engineEventSink(tab),
+                )
+            }
+        }
         tab.session = session
-        if (restoredState == null || tab.url == DEFAULT_HOME) {
+        if (!restored) {
             session.load(BrowserNavigation(tab.url, historyAddress = initialHistoryAddress))
         }
         return session

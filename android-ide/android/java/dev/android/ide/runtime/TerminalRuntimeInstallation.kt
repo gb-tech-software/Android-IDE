@@ -58,6 +58,13 @@ class TerminalRuntimeInstallation(
         return RuntimeCapabilities(
             availability = if (available) RuntimeAvailability.AVAILABLE else RuntimeAvailability.UNAVAILABLE,
             architecture = System.getProperty("os.arch"),
+            nodeVersion = runCatching {
+                ProcessBuilder(File(prefix, "bin/node").absolutePath, "-p", "process.versions.node")
+                    .redirectErrorStream(true)
+                    .start()
+                    .also { process -> process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) }
+                    .inputStream.bufferedReader().use { it.readText().trim() }
+            }.getOrNull()?.takeIf { it.isNotBlank() },
             shellAvailable = available,
             ptyAvailable = available,
             executableFilesSupported = available,

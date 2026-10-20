@@ -358,20 +358,25 @@ init_command() {
 
 status_command() {
     if [ "$JSON" = true ]; then
-        printf '{"command":"status","tools":{"git":"%s","node":"%s","npm":"%s","pnpm":"%s","live_server":"%s","zip":"%s","unzip":"%s"}}\n' \
+        printf '{"command":"status","terminal_packages":{"git":"%s","node":"%s","npm":"%s","pnpm":"%s","zip":"%s","unzip":"%s"},"app_managed_services":{"lsp":"app-managed","preview":"app-managed"}}\n' \
             "$(json_escape "$(command -v git 2>/dev/null || printf missing)")" "$(json_escape "$(command -v node 2>/dev/null || printf missing)")" \
             "$(json_escape "$(command -v npm 2>/dev/null || printf missing)")" "$(json_escape "$(command -v pnpm 2>/dev/null || printf missing)")" \
-            "app-managed" "$(json_escape "$(command -v zip 2>/dev/null || printf missing)")" \
+            "$(json_escape "$(command -v zip 2>/dev/null || printf missing)")" \
             "$(json_escape "$(command -v unzip 2>/dev/null || printf missing)")"
         app_request tools.status
         app_request app.status
     else
-        printf 'Android IDE terminal tools\n'
+        printf 'Terminal packages (user/runtime environment)\n'
         for tool in git node npm pnpm zip unzip; do
             path=$(command -v "$tool" 2>/dev/null) || path=missing
-            printf '  %-12s %s\n' "$tool" "$path"
+            version=missing
+            [ "$path" = missing ] || version=$($tool --version 2>/dev/null | head -n 1)
+            [ -n "$version" ] || version=unknown
+            printf '  %-12s %-42s version=%s\n' "$tool" "$path" "$version"
         done
-        printf '  %-12s %s\n' live-server app-managed
+        printf '\nApp-managed services (not terminal packages)\n'
+        printf '  %-12s %s\n' lsp 'Android IDE managed'
+        printf '  %-12s %s\n' preview 'Android IDE managed'
         app_request tools.status || return $?
         app_request app.status || return $?
     fi

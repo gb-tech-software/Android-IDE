@@ -3,7 +3,9 @@
   const NATIVE_APPLICATION = "android_ide";
   const contentPorts = new Set();
   let nativePort = null;
-  let visibility = { type: "developer-tools", enabled: true, open: false };
+  // Stay hidden until the native settings relay explicitly authorizes user
+  // exposure. The page bridge remains injected and owned by Eruda itself.
+  let visibility = { type: "developer-tools", enabled: false, open: false };
 
   function broadcast(message) {
     for (const port of [...contentPorts]) {

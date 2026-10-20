@@ -124,6 +124,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
@@ -186,6 +187,7 @@ import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.browser.BrowserPermissionAnswer
 import dev.android.ide.data.ThemeResolver
+import dev.android.ide.ui.components.FloatingOverlayFrame
 import dev.android.ide.ui.theme.AndroidIDETheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -438,24 +440,35 @@ fun BrowserFloatingPanel(
     onInitialNavigationConsumed: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
+    visible: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    androidx.compose.material3.Card(
+    FloatingOverlayFrame(
         modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        visible = visible,
+        initialWidth = 460f,
+        initialHeight = 460f,
+        minWidth = 300f,
+        minHeight = 260f,
+        startFromRight = true,
     ) {
-        BrowserSurface(
-            browser = browser,
-            onOpenNavigation = {},
-            onOpenSettings = onOpenSettings,
-            initialNavigation = initialNavigation,
-            onInitialNavigationConsumed = onInitialNavigationConsumed,
-            floating = true,
-            onDismiss = onDismiss,
+        androidx.compose.material3.Card(
             modifier = Modifier.fillMaxSize(),
-        )
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            BrowserSurface(
+                browser = browser,
+                onOpenNavigation = {},
+                onOpenSettings = onOpenSettings,
+                initialNavigation = initialNavigation,
+                onInitialNavigationConsumed = onInitialNavigationConsumed,
+                floating = true,
+                onDismiss = onDismiss,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 
@@ -788,6 +801,7 @@ private fun BrowserSurfaceContent(
                             onRetry = browser::retryNavigationFailure,
                         )
                     } ?: state.selectedTabId?.let { tabId ->
+                        key(tabId) {
                         AndroidView(
                             factory = { browserContext ->
                                 BrowserSurfaceBinding(browserContext).apply {
@@ -810,6 +824,7 @@ private fun BrowserSurfaceContent(
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
+                        }
                         if (state.loading && state.navigationFailure == null) {
                             Box(
                                 Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),

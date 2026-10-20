@@ -12,7 +12,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -77,6 +76,7 @@ import dev.android.ide.data.model.TerminalSettings
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
 import dev.android.ide.ui.components.EditorToolbarGlyph
+import dev.android.ide.ui.components.FloatingOverlayFrame
 
 @Composable
 fun TerminalSurface(
@@ -87,6 +87,7 @@ fun TerminalSurface(
     onOpenSettings: () -> Unit = {},
     onSettingsChanged: (TerminalSettings) -> Unit = {},
     floating: Boolean = false,
+    showSessionCreationInMenu: Boolean = floating,
     onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -95,7 +96,6 @@ fun TerminalSurface(
     var escapeLatched by remember { mutableStateOf(false) }
     var terminalTextSize by remember { mutableStateOf(terminalSettings.textSize) }
     var appearanceMenuOpen by remember { mutableStateOf(false) }
-    var sessionMenuOpen by remember { mutableStateOf(false) }
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
@@ -146,56 +146,15 @@ fun TerminalSurface(
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             if (!floating) IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
-            Box(Modifier.weight(1f)) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .pointerInput(Unit) { detectTapGestures(onTap = { sessionMenuOpen = true }) },
-                ) {
-                    Text("Terminal", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        selected?.name ?: "No active session",
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                androidx.compose.material3.DropdownMenu(
-                    expanded = sessionMenuOpen,
-                    onDismissRequest = { sessionMenuOpen = false },
-                ) {
-                    sessions.filter { it.availability == SessionAvailability.AVAILABLE }.forEach { session ->
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(session.name, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-                                    session.workingDirectory?.let {
-                                        Text(it, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                            },
-                            onClick = {
-                                sessionMenuOpen = false
-                                viewModel.selectTerminalSession(session.id)
-                            },
-                            trailingIcon = {
-                                IconButton(onClick = {
-                                    sessionMenuOpen = false
-                                    viewModel.closeTerminalSession(session.id)
-                                }) { Icon(Icons.Default.Close, "Close ${session.name}") }
-                            },
-                        )
-                    }
-                    androidx.compose.material3.HorizontalDivider()
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("New session") },
-                        onClick = {
-                            sessionMenuOpen = false
-                            viewModel.createTerminalSession()
-                        },
-                    )
-                }
+            Column(Modifier.weight(1f)) {
+                Text("Terminal", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    selected?.name ?: "No active session",
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             if (floating) IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close floating terminal") }
             Box {
@@ -206,6 +165,15 @@ fun TerminalSurface(
                     expanded = appearanceMenuOpen,
                     onDismissRequest = { appearanceMenuOpen = false },
                 ) {
+                    if (showSessionCreationInMenu) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("New session") },
+                            onClick = {
+                                appearanceMenuOpen = false
+                                viewModel.createTerminalSession()
+                            },
+                        )
+                    }
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Terminal settings") },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -371,26 +339,37 @@ fun TerminalFloatingPanel(
     terminalSettings: TerminalSettings,
     onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
+    visible: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    BackHandler(onBack = onDismiss)
-    Card(
+    BackHandler(enabled = visible, onBack = onDismiss)
+    FloatingOverlayFrame(
         modifier = modifier,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        visible = visible,
+        initialWidth = 420f,
+        initialHeight = 380f,
+        minWidth = 280f,
+        minHeight = 220f,
+        startFromRight = false,
     ) {
-        TerminalSurface(
-            state = state,
-            viewModel = viewModel,
-            terminalSettings = terminalSettings,
-            onOpenNavigation = {},
-            onOpenSettings = onOpenSettings,
-            onSettingsChanged = viewModel::setTerminalSettings,
-            floating = true,
-            onDismiss = onDismiss,
+        Card(
             modifier = Modifier.fillMaxSize(),
-        )
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        ) {
+            TerminalSurface(
+                state = state,
+                viewModel = viewModel,
+                terminalSettings = terminalSettings,
+                onOpenNavigation = {},
+                onOpenSettings = onOpenSettings,
+                onSettingsChanged = viewModel::setTerminalSettings,
+                floating = true,
+                onDismiss = onDismiss,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
     }
 }
 

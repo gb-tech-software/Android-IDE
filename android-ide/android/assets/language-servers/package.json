@@ -4,12 +4,12 @@
   "version": "1.0.0",
   "description": "Pinned language-server packages managed by Android IDE",
   "engines": {
-    "node": ">=24.18"
+    "node": ">=20 <21"
   },
   "dependencies": {
     "pyright": "1.1.414",
     "typescript": "6.0.3",
-    "typescript-language-server": "6.0.1",
-    "vscode-langservers-extracted": "4.10.0"
+    "typescript-language-server": "5.0.1",
+    "vscode-langservers-extracted": "4.8.0"
   }
 }

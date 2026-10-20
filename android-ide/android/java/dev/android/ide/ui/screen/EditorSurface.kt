@@ -84,6 +84,7 @@ import dev.android.ide.contracts.Surface
 import dev.android.ide.ui.components.EditorPane
 import dev.android.ide.ui.components.EditorProjectActionsMenu
 import dev.android.ide.ui.components.EditorTabBar
+import dev.android.ide.ui.components.FileTypeBadge
 import dev.android.ide.ui.components.FileTreePanel
 import dev.android.ide.ui.theme.LocalIdeColors
 import dev.android.ide.viewmodel.IdeViewModel
@@ -133,6 +134,12 @@ fun EditorSurface(
         project?.location?.stableId?.let(ideViewModel::openProject)
     }
 
+    LaunchedEffect(visible, state.projectRootUri) {
+        if (visible && !shellState.restoring) {
+            ideViewModel.refreshActiveTabFromDisk()
+        }
+    }
+
     if (state.projectRootUri == null && !shellState.restoring) {
         if (visible) {
             EditorEmptyState(
@@ -159,7 +166,6 @@ fun EditorSurface(
         onOpenBrowserContent = onOpenBrowserContent,
         onOpenProjectPreview = onOpenProjectPreview,
         onOpenFloatingBrowserPreview = onOpenFloatingBrowserPreview,
-        onToggleTerminalOverlay = shellViewModel::toggleTerminalOverlay,
         showChrome = visible,
         modifier = modifier.fillMaxSize().background(LocalIdeColors.current.background),
     )
@@ -452,7 +458,6 @@ private fun EditorWorkspace(
     onOpenBrowserContent: (String) -> Unit,
     onOpenProjectPreview: (String, String) -> Unit,
     onOpenFloatingBrowserPreview: (String, String) -> Unit,
-    onToggleTerminalOverlay: () -> Unit,
     showChrome: Boolean,
     modifier: Modifier,
 ) {
@@ -516,8 +521,6 @@ private fun EditorWorkspace(
                 loadNavChildren = ideViewModel::loadNavChildren,
                 onFeedback = onFeedback,
                 onOpenSettings = onOpenSettings,
-                onToggleTerminalOverlay = onToggleTerminalOverlay,
-                terminalOverlayVisible = shellState.terminalOverlayVisible,
                 onRetryLanguageServerPackages = ideViewModel::retryLanguageServerPackageInstallation,
                 onRevealDiagnostic = ideViewModel::revealDiagnostic,
             )
@@ -561,33 +564,44 @@ private fun EditorWorkspace(
             )
             if (showChrome && state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
         }
-        if (showChrome && shellState.terminalOverlayVisible) {
+        if (showChrome) {
+            IconButton(
+                onClick = shellViewModel::toggleTerminalOverlay,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = 72.dp)
+                    .zIndex(3f),
+            ) {
+                Icon(
+                    Icons.Default.Terminal,
+                    "Toggle floating terminal",
+                    tint = if (shellState.terminalOverlayVisible) colors.primary else colors.textPrimary,
+                )
+            }
+        }
+        if (showChrome) {
             TerminalFloatingPanel(
                 state = shellState,
                 viewModel = shellViewModel,
                 terminalSettings = shellState.terminalSettings,
                 onOpenSettings = onOpenSettings,
                 onDismiss = shellViewModel::hideTerminalOverlay,
+                visible = shellState.terminalOverlayVisible,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(12.dp)
-                    .heightIn(min = 240.dp, max = 440.dp)
+                    .fillMaxSize()
                     .zIndex(2f),
             )
         }
-        if (showChrome && shellState.browserOverlayVisible) {
+        if (showChrome) {
             BrowserFloatingPanel(
                 browser = browserViewModel,
                 initialNavigation = shellState.pendingBrowserNavigations.firstOrNull(),
                 onInitialNavigationConsumed = shellViewModel::consumeBrowserNavigationRequest,
                 onOpenSettings = onOpenSettings,
                 onDismiss = shellViewModel::hideBrowserOverlay,
+                visible = shellState.browserOverlayVisible,
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .padding(12.dp)
-                    .heightIn(min = 280.dp, max = 560.dp)
+                    .fillMaxSize()
                     .zIndex(2f),
             )
         }
@@ -636,8 +650,6 @@ private fun EditorTopBar(
     loadNavChildren: suspend (String) -> List<FileNode>,
     onFeedback: (String) -> Unit,
     onOpenSettings: () -> Unit,
-    onToggleTerminalOverlay: () -> Unit,
-    terminalOverlayVisible: Boolean,
     onRetryLanguageServerPackages: () -> Unit,
     onRevealDiagnostic: (EditorDiagnostic) -> Unit,
 ) {
@@ -689,18 +701,19 @@ private fun EditorTopBar(
     }
     Row(Modifier.fillMaxWidth().height(56.dp).background(colors.surface).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onOpenGlobalNavigation) { Icon(Icons.Default.Menu, "Open application navigation", tint = colors.textPrimary) }
-        IconButton(onClick = onToggleTerminalOverlay) {
-            Icon(
-                Icons.Default.Terminal,
-                "Toggle floating terminal",
-                tint = if (terminalOverlayVisible) colors.primary else colors.textPrimary,
-            )
-        }
         Box(Modifier.weight(1f)) {
-            Text(
-                text = path.ifBlank { "No file selected" }, color = colors.textPrimary, style = MaterialTheme.typography.titleSmall,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.clickable { if (activeTab != null) pathOpen = true }.padding(horizontal = 6.dp, vertical = 10.dp),
-            )
+            Row(
+                modifier = Modifier
+                    .clickable { if (activeTab != null) pathOpen = true }
+                    .padding(horizontal = 6.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                activeTab?.let { FileTypeBadge(it.displayName) }
+                Text(
+                    text = path.ifBlank { "No file selected" }, color = colors.textPrimary, style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                )
+            }
             DropdownMenu(expanded = pathOpen, onDismissRequest = { pathOpen = false }) {
                 val currentUri = navCurrentUri ?: activeParentUri
                 val parentUri = currentUri?.let { uri -> fileTree.findNode(uri)?.parentDocumentUri }
@@ -720,8 +733,8 @@ private fun EditorTopBar(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     if (sibling.isDirectory) {
                                         Icon(Icons.Default.FolderOpen, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-                                        Spacer(Modifier.width(8.dp))
-                                    }
+                                    } else FileTypeBadge(sibling.displayName)
+                                    Spacer(Modifier.width(8.dp))
                                     Text(if (sibling.isDirectory) "${sibling.displayName}/" else sibling.displayName, color = if (sibling.documentUri == activeTab?.documentUri) colors.primary else colors.textPrimary)
                                 }
                             },

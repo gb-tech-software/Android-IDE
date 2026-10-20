@@ -155,7 +155,7 @@ sealed class EditorOutbound {
         val readOnly: Boolean = false,
     ) : EditorOutbound()
 
-    /** Replace a clean cached model with bytes freshly read from storage. */
+    /** Update a clean cached model with bytes freshly read from storage. */
     data class ReloadFile(
         val path: String,
         val expectedCurrentContent: String?,

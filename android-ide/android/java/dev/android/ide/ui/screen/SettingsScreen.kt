@@ -97,9 +97,7 @@ import kotlinx.coroutines.launch
 enum class SettingsCategory(val title: String, val description: String, val icon: ImageVector) {
     GENERAL("General", "Theme and interface", Icons.Default.Palette),
     EDITOR("Editor", "Appearance, editing, and file tree", Icons.Default.Code),
-    EDITOR_SERVICES("Editor Services", "Language tools and preview", Icons.Default.Tune),
     PROJECTS("Projects", "Project and storage defaults", Icons.Default.FolderOpen),
-    CREDENTIALS("Credentials", "Secure sign-in data", Icons.Default.Lock),
     SECURITY("Security", "Storage and permissions", Icons.Default.Lock),
     TERMINAL("Terminal", "Runtime and session settings", Icons.Default.Terminal),
     BROWSER("Browser", "Browsing and web-project settings", Icons.Default.Language),
@@ -131,10 +129,9 @@ fun SettingsScreen(
         val category = when (requested) {
             "App Theme", "UI Font Size" -> SettingsCategory.GENERAL
             "Editor Theme", "Editor", "Controls", "File Tree" -> SettingsCategory.EDITOR
-            "Editor Services", "Language Support", "Project Preview" -> SettingsCategory.EDITOR_SERVICES
+            "Editor Services", "Language Support", "Project Preview" -> SettingsCategory.EDITOR
             "Project Storage" -> SettingsCategory.PROJECTS
             "Permissions", "Folder Access", "Android App Permissions" -> SettingsCategory.SECURITY
-            "Credentials", "Manage Credentials" -> SettingsCategory.CREDENTIALS
             "Terminal" -> SettingsCategory.TERMINAL
             "Browser" -> SettingsCategory.BROWSER
             else -> null
@@ -251,11 +248,9 @@ private fun SettingsCategoryContent(
         when (category) {
             SettingsCategory.GENERAL -> item { GeneralSettings(applicationTheme, onApplicationThemeChanged, s, ideViewModel) }
             SettingsCategory.EDITOR -> item { EditorSettingsContent(uiState, s, ideViewModel) }
-            SettingsCategory.EDITOR_SERVICES -> item { EditorServicesSettingsContent(uiState, ideViewModel) }
             SettingsCategory.PROJECTS -> item { ProjectsSettingsContent() }
             SettingsCategory.TERMINAL -> item { TerminalSettingsContent(terminalSettings, onTerminalSettingsChanged) }
             SettingsCategory.BROWSER -> item { BrowserSettingsContent() }
-            SettingsCategory.CREDENTIALS -> item { DomainPlaceholder(category) }
             SettingsCategory.SECURITY -> item { StorageAccessSettings() }
         }
     }
@@ -401,6 +396,32 @@ private fun GeneralSettings(applicationTheme: AppTheme, onApplicationThemeChange
 @Composable
 private fun EditorSettingsContent(uiState: IdeUiState, s: EditorSettings, ideViewModel: IdeViewModel) {
     val colors = LocalIdeColors.current
+    var servicesOpen by rememberSaveable { mutableStateOf(false) }
+    if (servicesOpen) {
+        BackHandler { servicesOpen = false }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { servicesOpen = false }) {
+                    Icon(Icons.Default.ArrowBack, contentDescription = "Back to editor settings")
+                }
+                Text("Language tools and preview", style = MaterialTheme.typography.titleLarge)
+            }
+            EditorServicesSettingsContent(uiState, ideViewModel)
+        }
+        return
+    }
+    SettingsCard {
+        Row(
+            modifier = Modifier.fillMaxWidth().clickable { servicesOpen = true },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Language tools and preview", style = MaterialTheme.typography.titleSmall)
+                Text("Manage LSP packages and the IDE-managed preview service.", style = MaterialTheme.typography.bodySmall, color = colors.textSecondary)
+            }
+            Text("Open", color = colors.textSecondary)
+        }
+    }
     SettingsCard {
         ChoiceSetting(
             title = "Editor appearance",
@@ -861,25 +882,6 @@ private fun SitePermissionsSettingsScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun DomainPlaceholder(category: SettingsCategory) {
-    SettingsCard {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(category.icon, contentDescription = null, tint = LocalIdeColors.current.primary, modifier = Modifier.size(24.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(category.title, color = LocalIdeColors.current.textPrimary, style = MaterialTheme.typography.titleSmall)
-                Text(category.description, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        HorizontalDivider()
-        Text(
-            text = "Settings for this area are not configured yet.",
-            color = LocalIdeColors.current.textSecondary,
-            style = MaterialTheme.typography.bodyMedium,
-        )
     }
 }
 

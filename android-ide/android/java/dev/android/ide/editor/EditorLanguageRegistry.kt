@@ -117,7 +117,7 @@ object EditorLanguageRegistry {
         Definition("sql", extensions = setOf("sql"), mimeType = "text/x-sql", iconKind = FileIconKind.SQL),
         Definition("protobuf", extensions = setOf("proto"), mimeType = "text/plain", iconKind = FileIconKind.PROTO),
         Definition("graphql", extensions = setOf("graphql", "gql"), mimeType = "text/graphql", iconKind = FileIconKind.GRAPHQL),
-        Definition("ini", extensions = setOf("ini", "properties", "conf", "cfg", "env"), fileNames = setOf(".env", ".env.local", ".env.example", ".env.examples", ".env.development", ".env.production", ".env.test", ".env.development.local", ".env.production.local", "env.example", "env.examples", ".editorconfig"), mimeType = "text/plain", iconKind = FileIconKind.ENV),
+        Definition("ini", extensions = setOf("ini", "properties", "conf", "cfg", "env"), fileNames = setOf(".env", ".env.local", ".env.example", ".env.examples", ".env.development", ".env.production", ".env.test", ".env.development.local", ".env.production.local", ".editorconfig", ".envrc", ".dev.vars", ".dev.vars.local", ".dev.vars.example", "env.example", "env.examples", "dev.vars", "dev.vars.example"), mimeType = "text/plain", iconKind = FileIconKind.ENV),
         Definition("dart", extensions = setOf("dart"), mimeType = "text/x-dart", iconKind = FileIconKind.DART),
         Definition("lua", extensions = setOf("lua"), mimeType = "text/x-lua", iconKind = FileIconKind.LUA),
         Definition("r", extensions = setOf("r"), mimeType = "text/x-r-source", iconKind = FileIconKind.R),
@@ -132,6 +132,10 @@ object EditorLanguageRegistry {
         Definition("json", fileNames = setOf("package-lock.json", "npm-shrinkwrap.json"), mimeType = "application/json", iconKind = FileIconKind.LOCKFILE),
         Definition("yaml", fileNames = setOf("pnpm-lock.yaml"), mimeType = "text/x-yaml", iconKind = FileIconKind.LOCKFILE),
         Definition("yaml", fileNames = setOf("yarn.lock"), mimeType = "text/plain", iconKind = FileIconKind.LOCKFILE),
+        Definition("json", fileNames = setOf("bun.lock", "composer.lock"), mimeType = "application/json", iconKind = FileIconKind.LOCKFILE),
+        Definition("yaml", fileNames = setOf("bun.lockb"), mimeType = "application/octet-stream", iconKind = FileIconKind.LOCKFILE, contentKind = FileContentKind.BINARY),
+        Definition(PLAIN_TEXT, fileNames = setOf("cargo.lock", "gemfile.lock", "podfile.lock", "mix.lock", "poetry.lock"), mimeType = "text/plain", iconKind = FileIconKind.LOCKFILE),
+        Definition(PLAIN_TEXT, extensions = setOf("lock"), mimeType = "text/plain", iconKind = FileIconKind.LOCKFILE),
         Definition("ini", fileNames = setOf("gradle.properties"), mimeType = "text/plain", iconKind = FileIconKind.GRADLE),
         Definition("shell", fileNames = setOf("gradlew"), mimeType = "text/x-sh", iconKind = FileIconKind.GRADLE),
         Definition("bat", fileNames = setOf("gradlew.bat"), mimeType = "text/x-batch", iconKind = FileIconKind.GRADLE),
@@ -173,7 +177,7 @@ object EditorLanguageRegistry {
         if (fileName.endsWith(".gradle.kts")) return byFileName["build.gradle.kts"]
         // Monaco has no bundled dotenv language ID; its built-in INI grammar
         // provides highlighting for the shared key/value and comment syntax.
-        if (fileName == ".env" || fileName.startsWith(".env.")) return byExtension["env"]
+        if (fileName == ".env" || fileName.startsWith(".env.") || fileName == ".envrc" || fileName == ".dev.vars" || fileName.startsWith(".dev.vars.") || fileName == "dev.vars" || fileName.startsWith("dev.vars.")) return byExtension["env"]
         val extension = fileName.substringAfterLast('.', "")
         return byFileName[fileName] ?: byExtension[extension]
     }

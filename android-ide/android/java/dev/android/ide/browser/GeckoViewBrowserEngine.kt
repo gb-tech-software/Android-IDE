@@ -565,12 +565,17 @@ private class GeckoBrowserEngineSession(
         geckoSession.settings.setUserAgentMode(
             if (enabled) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE,
         )
+        geckoSession.settings.setViewportMode(
+            if (enabled) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE,
+        )
     }
 
     override fun saveState(): BrowserSerializedState? = serializedState
 
     override fun restoreState(state: BrowserSerializedState) {
-        GeckoSession.SessionState.fromString(state.value)?.let(geckoSession::restoreState)
+        val restored = GeckoSession.SessionState.fromString(state.value)
+            ?: throw IllegalArgumentException("Persisted Gecko session state is invalid")
+        geckoSession.restoreState(restored)
         serializedState = state
     }
 
@@ -720,7 +725,7 @@ private class GeckoBrowserEngineSession(
     }
 }
 
-/** Owns the bundled browser DevTools extension, installing it only on demand. */
+/** Owns the bundled browser DevTools extension; user exposure is controlled separately. */
 class GeckoBrowserDeveloperToolsService(
     private val runtime: GeckoRuntime,
 ) : BrowserDeveloperToolsService {
@@ -733,12 +738,8 @@ class GeckoBrowserDeveloperToolsService(
 
     override fun setEnabled(enabled: Boolean) {
         this.enabled = enabled
-        if (!enabled) {
-            close()
-        } else {
-            installIfNeeded()
-            postVisibility(opened)
-        }
+        installIfNeeded()
+        postVisibility(opened && enabled)
     }
 
     override fun open() {
@@ -754,7 +755,7 @@ class GeckoBrowserDeveloperToolsService(
     }
 
     private fun installIfNeeded() {
-        if (installed || installing || !enabled) return
+        if (installed || installing) return
         installing = true
         runtime.webExtensionController.ensureBuiltIn(
             "resource://android/assets/devtools/",

@@ -39,17 +39,17 @@
   }
 
   function syncVisibility() {
-    if (!enabled || !visibilityOpen) {
+    if (!enabled) {
       interactionActive = false;
-      if (bridgeReady) postToPage("visibility", { open: false, destroy: false });
+      if (bridgeReady) postToPage("visibility", { exposed: false, open: false });
       return;
     }
     if (document.visibilityState !== "visible") {
       interactionActive = false;
-      if (bridgeReady) postToPage("visibility", { open: false, destroy: false });
+      if (bridgeReady) postToPage("visibility", { exposed: true, open: false });
       return;
     }
-    if (bridgeReady) postToPage("visibility", { open: true });
+    if (bridgeReady) postToPage("visibility", { exposed: true, open: visibilityOpen });
     else injectPageBridge();
   }
 

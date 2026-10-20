@@ -198,7 +198,12 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun createTerminalSession(workingDirectory: String? = null, name: String = "") {
+    fun createTerminalSession(
+        workingDirectory: String? = null,
+        name: String = "",
+        navigateToTerminal: Boolean = false,
+        toggleOverlay: Boolean = false,
+    ) {
         viewModelScope.launch {
             // A new session opened from the terminal drawer follows the active
             // session. Explicit project/folder launches still supply their own
@@ -229,16 +234,28 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 )
             }
             refreshTerminalSessions()
+            if (session.availability == SessionAvailability.AVAILABLE) {
+                if (toggleOverlay) toggleTerminalOverlay()
+                if (navigateToTerminal) navigate(Surface.TERMINAL)
+            }
         }
     }
 
     /** Open a terminal for a project using its accessible filesystem directory when available. */
-    fun openTerminalForProject(projectId: String, directoryUri: String? = null) {
+    fun openTerminalForProject(
+        projectId: String,
+        directoryUri: String? = null,
+        navigateToTerminal: Boolean = true,
+        toggleOverlay: Boolean = false,
+    ) {
         _state.update { it.copy(selectedProjectId = projectId, terminalFeedback = null, statusMessage = null) }
         viewModelScope.launch {
             val project = _state.value.projects.firstOrNull { it.id == projectId }
             if (project == null) {
-                reportTerminalLaunchFailure(OperationReport(OperationOutcome.BLOCKED, "The selected project is no longer available", ErrorCategory.PERMISSION_LOST))
+                reportTerminalLaunchFailure(
+                    OperationReport(OperationOutcome.BLOCKED, "The selected project is no longer available", ErrorCategory.PERMISSION_LOST),
+                    navigateToTerminal,
+                )
                 return@launch
             }
             val terminalProject = directoryUri?.let { uri ->
@@ -248,36 +265,30 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
             if (!access.available) {
                 val message = access.explanation
                     ?: "This project is on a storage path that Terminal cannot access. Move it to Android IDE storage or Android external storage for full access."
-                if (!openTerminalWithAccessNotice(project.name, message)) {
+                if (!openTerminalWithAccessNotice(project.name, message, navigateToTerminal, toggleOverlay)) {
                     reportTerminalLaunchFailure(OperationReport(
                         OperationOutcome.BLOCKED,
                         message,
                         ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
-                    ))
+                    ), navigateToTerminal)
                 }
                 return@launch
             }
             val directory = terminalRuntime.workingDirectory(terminalProject)
             if (directory == null) {
-                reportTerminalLaunchFailure(OperationReport(OperationOutcome.BLOCKED, "The selected project or folder has no accessible terminal working directory", ErrorCategory.PERMISSION_LOST))
+                reportTerminalLaunchFailure(OperationReport(OperationOutcome.BLOCKED, "The selected project or folder has no accessible terminal working directory", ErrorCategory.PERMISSION_LOST), navigateToTerminal)
                 return@launch
             }
             if (!terminalRuntime.isUsableWorkingDirectory(directory)) {
-                reportTerminalLaunchFailure(OperationReport(OperationOutcome.BLOCKED, "Terminal cannot read, write, or enter the selected project folder: $directory", ErrorCategory.PERMISSION_LOST))
+                reportTerminalLaunchFailure(OperationReport(OperationOutcome.BLOCKED, "Terminal cannot read, write, or enter the selected project folder: $directory", ErrorCategory.PERMISSION_LOST), navigateToTerminal)
                 return@launch
             }
-            val session = terminalRuntime.createSession(directory, project.name)
-            if (session.availability != SessionAvailability.AVAILABLE) {
-                reportTerminalLaunchFailure(OperationReport(
-                    OperationOutcome.BLOCKED,
-                    session.terminationReason ?: "Terminal could not start in the selected project folder",
-                    ErrorCategory.UNAVAILABLE_RUNTIME,
-                ))
-                return@launch
-            }
-            _state.update { it.copy(selectedTerminalSessionId = session.id, terminalFeedback = null, operationReport = null, statusMessage = null) }
-            refreshTerminalSessions()
-            navigate(Surface.TERMINAL)
+            createTerminalSession(
+                workingDirectory = directory,
+                name = project.name,
+                navigateToTerminal = navigateToTerminal,
+                toggleOverlay = toggleOverlay,
+            )
         }
     }
 
@@ -291,18 +302,24 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                     "Open a project before opening its folder in Terminal",
                     ErrorCategory.DESTINATION_CONFLICT,
                 ),
+                navigateToTerminal = false,
             )
             return
         }
-        openTerminalForProject(projectId, directoryUri)
+        openTerminalForProject(projectId, directoryUri, navigateToTerminal = false, toggleOverlay = true)
     }
 
-    private fun reportTerminalLaunchFailure(report: OperationReport) {
+    private fun reportTerminalLaunchFailure(report: OperationReport, navigateToTerminal: Boolean = true) {
         _state.update { it.copy(terminalFeedback = report, operationReport = report, statusMessage = report.message) }
-        if (_state.value.surface != Surface.TERMINAL) navigate(Surface.TERMINAL)
+        if (navigateToTerminal && _state.value.surface != Surface.TERMINAL) navigate(Surface.TERMINAL)
     }
 
-    private suspend fun openTerminalWithAccessNotice(projectName: String, message: String): Boolean {
+    private suspend fun openTerminalWithAccessNotice(
+        projectName: String,
+        message: String,
+        navigateToTerminal: Boolean,
+        toggleOverlay: Boolean,
+    ): Boolean {
         val session = terminalRuntime.createSession(null, "$projectName access information")
         if (session.availability != SessionAvailability.AVAILABLE) return false
         _state.update {
@@ -313,7 +330,8 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
                 statusMessage = null,
             )
         }
-        navigate(Surface.TERMINAL)
+        if (navigateToTerminal) navigate(Surface.TERMINAL)
+        else if (toggleOverlay) toggleTerminalOverlay()
         val safeMessage = message.replace("'", "’").replace("\n", " ")
         val command = "printf '\\n%s\\n\\n' '$safeMessage'\n"
         val report = terminalRuntime.sendInput(session.id, command.toByteArray(Charsets.UTF_8))

@@ -29,6 +29,7 @@ class IdePackageManager(
         val id: String,
         val installed: Boolean,
         val version: String? = null,
+        val dependencyVersions: Map<String, String> = emptyMap(),
         val message: String? = null,
     )
 
@@ -97,6 +98,7 @@ class IdePackageManager(
             if (expectedDependencies != null && installedDependencies == null) {
                 return PackageStatus(spec.id, false, message = "Package manifest is incomplete")
             }
+            val dependencyVersions = linkedMapOf<String, String>()
             expectedDependencies?.keys()?.forEach { name ->
                 val expected = expectedDependencies.optString(name)
                 val actual = installedDependencies?.optString(name)
@@ -107,12 +109,18 @@ class IdePackageManager(
                     throw IOException("Unexpected $name version: $actualVersion")
                 }
                 if (actual.isNullOrBlank()) throw IOException("Missing manifest dependency: $name")
+                dependencyVersions[name] = actualVersion
             }
             spec.requiredExecutables.forEach { executable ->
                 val file = File(spec.root, "node_modules/.bin/$executable")
                 if (!file.isFile) throw IOException("Missing package entrypoint: $executable")
             }
-            PackageStatus(spec.id, true, installedJson.optString("version").takeIf { it.isNotBlank() })
+            PackageStatus(
+                id = spec.id,
+                installed = true,
+                version = installedJson.optString("version").takeIf { it.isNotBlank() },
+                dependencyVersions = dependencyVersions,
+            )
         }.getOrElse { PackageStatus(spec.id, false, message = it.message ?: "Package validation failed") }
     }
 

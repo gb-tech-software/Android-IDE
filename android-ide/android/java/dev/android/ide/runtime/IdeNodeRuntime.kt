@@ -28,8 +28,16 @@ class IdeNodeRuntime(
         if (!node.canExecute()) throw IOException("Android IDE Node.js runtime is unavailable")
         if (!npm.canExecute()) throw IOException("Android IDE npm runtime is unavailable")
         if (!shell.canExecute()) throw IOException("Android IDE shell runtime is unavailable")
-        val version = runCatching {
-            ProcessBuilder(node.absolutePath, "-p", "process.versions.node")
+        val version = nodeVersion()
+            ?: throw IOException("Unable to determine Node.js version")
+        val parts = version.removePrefix("v").split('.').mapNotNull { it.toIntOrNull() }
+        if (parts.size < 2 || parts[0] != REQUIRED_NODE_MAJOR) {
+            throw IOException("Android IDE services require Node.js $REQUIRED_NODE_MAJOR.x; available version is $version")
+        }
+    }
+
+    fun nodeVersion(): String? = runCatching {
+        ProcessBuilder(node.absolutePath, "-p", "process.versions.node")
                 .redirectErrorStream(true)
                 .start()
                 .also { process ->
@@ -40,12 +48,7 @@ class IdeNodeRuntime(
                     if (process.exitValue() != 0) throw IOException("Node.js version check failed")
                 }
                 .inputStream.bufferedReader().use { it.readText().trim() }
-        }.getOrElse { throw IOException(it.message ?: "Unable to determine Node.js version", it) }
-        val parts = version.removePrefix("v").split('.').mapNotNull { it.toIntOrNull() }
-        if (parts.size < 2 || parts[0] < MIN_NODE_MAJOR || (parts[0] == MIN_NODE_MAJOR && parts[1] < MIN_NODE_MINOR)) {
-            throw IOException("Android IDE services require Node.js $MIN_NODE_MAJOR.$MIN_NODE_MINOR or newer; available version is $version")
-        }
-    }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
 
     fun environment(packageRoot: File? = null): MutableMap<String, String> = mutableMapOf<String, String>().apply {
         bundledRuntime.sessionEnvironment(shell.absolutePath).forEach { entry ->
@@ -82,8 +85,7 @@ class IdeNodeRuntime(
     }
 
     private companion object {
-        const val MIN_NODE_MAJOR = 24
-        const val MIN_NODE_MINOR = 18
+        const val REQUIRED_NODE_MAJOR = 20
         const val NODE_CHECK_TIMEOUT_SECONDS = 5L
     }
 

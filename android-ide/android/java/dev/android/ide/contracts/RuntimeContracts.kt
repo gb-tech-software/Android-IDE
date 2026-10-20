@@ -21,6 +21,7 @@ enum class RuntimeAvailability {
 data class RuntimeCapabilities(
     val availability: RuntimeAvailability,
     val architecture: String? = null,
+    val nodeVersion: String? = null,
     val shellAvailable: Boolean = false,
     val ptyAvailable: Boolean = false,
     val executableFilesSupported: Boolean = false,

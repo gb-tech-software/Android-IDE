@@ -243,12 +243,24 @@ class MainActivity : ComponentActivity() {
                     }.getOrNull() != false)
                 }
                 .map { it.displayName }
+            fun terminalPackageVersion(name: String): String {
+                val executable = File(services.bundledRuntimeInstaller.prefix(), "bin/$name")
+                if (!executable.canExecute()) return "missing"
+                return runCatching {
+                    ProcessBuilder(executable.absolutePath, "--version")
+                        .redirectErrorStream(true)
+                        .start()
+                        .also { process -> process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS) }
+                        .inputStream.bufferedReader().use { it.readLine()?.trim().orEmpty() }
+                        .ifBlank { "unknown" }
+                }.getOrDefault("unknown")
+            }
             val (exitCode, message) = runCatching {
                 when (command) {
                     "app.status" -> {
                         val terminal = services.terminalRuntime.capabilities()
                         val preview = services.projectLiveServer.status()
-                        0 to "app=ready terminal=${terminal.availability.name.lowercase()} shell=${terminal.shellAvailable} pty=${terminal.ptyAvailable} preview=${if (preview.running) "running" else "stopped"}"
+                        0 to "app=ready terminal=${terminal.availability.name.lowercase()} node=${terminal.nodeVersion ?: "unknown"} shell=${terminal.shellAvailable} pty=${terminal.ptyAvailable} preview=${if (preview.running) "running" else "stopped"}"
                     }
                     "app.test" -> {
                         val terminal = services.terminalRuntime.capabilities()
@@ -701,16 +713,20 @@ class MainActivity : ComponentActivity() {
                         else 0 to "PASS storage: ${required.size} standard shared-storage links exist"
                     }
                     "tools.status", "tools.test" -> {
-                        val lspInstalled = services.languageServerPackageInstaller.arePackagesInstalled()
-                        val liveServerInstalled = services.projectLiveServer.packageStatus().installed
+                        val lspStatus = services.languageServerPackageInstaller.packageStatus()
+                        val previewStatus = services.projectLiveServer.packageStatus()
                         val packageNames = listOf("git", "node", "npm", "pnpm", "zip", "unzip")
                         val present = packageNames.filter { File(services.bundledRuntimeInstaller.prefix(), "bin/$it").canExecute() }
                         val missing = packageNames - present.toSet()
-                        val summary = "base=${present.joinToString(",")} preview-package=$liveServerInstalled lsp-packages=$lspInstalled"
+                        val terminalVersions = packageNames.joinToString(",") { "$it=${terminalPackageVersion(it)}" }
+                        val managedVersions = "node=${services.nodeRuntime.nodeVersion() ?: "unknown"} " +
+                            "lsp=${if (lspStatus.installed) lspStatus.dependencyVersions.entries.joinToString("|") { "${it.key}@${it.value}" } else "missing"} " +
+                            "preview=${if (previewStatus.installed) previewStatus.dependencyVersions.entries.joinToString("|") { "${it.key}@${it.value}" } else "missing"}"
+                        val summary = "[terminal packages] $terminalVersions [app-managed services] $managedVersions"
                         if (command == "tools.status") 0 to summary
                         else if (!services.terminalRuntime.capabilities().shellAvailable) 3 to "FAIL tools: terminal runtime is unavailable"
-                        else if (missing.isNotEmpty()) 4 to "FAIL base tools: missing ${missing.joinToString(", ")}; run ide init; optional preview/LSP=$liveServerInstalled/$lspInstalled"
-                        else 0 to "PASS base tools: ${packageNames.joinToString(", ")} are executable; optional preview=$liveServerInstalled lsp-packages=$lspInstalled"
+                        else if (missing.isNotEmpty()) 4 to "FAIL terminal packages: missing ${missing.joinToString(", ")}; run ide init; [app-managed services] lsp=${lspStatus.installed} preview=${previewStatus.installed}"
+                        else 0 to "PASS terminal packages: ${packageNames.joinToString(", ")} are executable; [app-managed services] lsp=${lspStatus.installed} preview=${previewStatus.installed}"
                     }
                     "projects.status", "projects.test", "projects.list" -> {
                         val registered = services.projectManagement.registeredProjects()

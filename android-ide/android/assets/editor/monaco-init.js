@@ -228,6 +228,15 @@ function applyLspDiagnostics(path) {
   if (model) monaco.editor.setModelMarkers(model, 'androidide-lsp', lspDiagnosticsToMarkers(lspDiagnosticsByPath[path] || []));
 }
 
+// Monaco's bundled grammars use the base JavaScript/TypeScript IDs. Keep the
+// React-specific IDs for LSP routing, but never pass them to Monaco model
+// creation or tokenizer selection.
+function monacoSyntaxLanguage(language) {
+  if (language === 'javascriptreact') return 'javascript';
+  if (language === 'typescriptreact') return 'typescript';
+  return language || 'plaintext';
+}
+
 function normalizeCompletionItems(result) {
   var items = Array.isArray(result) ? result : (result && result.items) || [];
   return items.map(function (item) {
@@ -1257,17 +1266,18 @@ function loadFile(requestId, path, content, language, readOnly) {
   var safeSegment = encodeURIComponent(path);
   var uri         = monaco.Uri.parse('androidide:///files/' + safeSegment);
   var model       = monaco.editor.getModel(uri);
+  var syntaxLanguage = monacoSyntaxLanguage(language);
 
   if (model) {
     // An existing model is the authoritative in-memory document. Kotlin's
     // draft event is debounced, so replacing it here with the last disk value
     // during a rotation/rebind can erase keystrokes that Monaco already owns.
     // Recovery explicitly sends closeTab first when it must replace a model.
-    if (model.getLanguageId() !== language) {
-      monaco.editor.setModelLanguage(model, language);
+    if (model.getLanguageId() !== syntaxLanguage) {
+      monaco.editor.setModelLanguage(model, syntaxLanguage);
     }
   } else {
-    model = monaco.editor.createModel(content, language, uri);
+    model = monaco.editor.createModel(content, syntaxLanguage, uri);
   }
 
   editor.setModel(model);
@@ -1293,18 +1303,27 @@ function reloadFile(path, expectedCurrentContent, content, language) {
   if (wasActive) flushPendingContentChange();
   var uri = monaco.Uri.parse('androidide:///files/' + encodeURIComponent(path));
   var oldModel = monaco.editor.getModel(uri);
+  var syntaxLanguage = monacoSyntaxLanguage(language);
   if (oldModel && expectedCurrentContent != null && oldModel.getValue() !== expectedCurrentContent) {
     if (wasActive) {
       postToNative({ type: 'contentChanged', path: path, content: oldModel.getValue() });
     }
     return;
   }
-  if (oldModel) oldModel.dispose();
-  var model = monaco.editor.createModel(content, language, uri);
+  // Keep the model identity when reconciling disk changes. This is a refresh
+  // of an already-open tab, not a new tab load; disposing the model here
+  // discards Monaco state and can make the native side treat the return as a
+  // newly opened document.
+  var model = oldModel;
+  if (model) {
+    model.setValue(content);
+    if (monaco.editor.setModelLanguage) monaco.editor.setModelLanguage(model, syntaxLanguage);
+  } else {
+    model = monaco.editor.createModel(content, syntaxLanguage, uri);
+  }
   if (wasActive) {
     currentPath = path;
     editor.setModel(model);
-    editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });
     applyLayout();
     requestAnimationFrame(applyLayout);
   }

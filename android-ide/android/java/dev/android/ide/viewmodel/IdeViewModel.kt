@@ -870,6 +870,20 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun refreshProjectFromTools(): Boolean = refreshProjectNow()
 
+    /**
+     * Reconcile the currently visible tab with disk after the editor workspace
+     * returns to the foreground. This deliberately operates on the existing
+     * tab/model identity; it never calls openFileInternal and never recreates
+     * the editor tab. A clean tab is sent through ReloadFile only when its disk
+     * content differs, while dirty tabs retain their Monaco draft and use the
+     * normal external-change conflict path.
+     */
+    fun refreshActiveTabFromDisk() {
+        val tab = _uiState.value.openTabs.firstOrNull { it.id == _uiState.value.activeTabId } ?: return
+        if (tab.isBlank || tab.isImagePreview || tab.content == null) return
+        viewModelScope.launch { reopenExistingTab(tab) }
+    }
+
     private suspend fun visibleFileTreeChildren(parentUri: String): List<FileNode> =
         fileMutations.listChildren(parentUri).filterNot { node ->
             (node.displayName == ".git" && _uiState.value.editorSettings.hideGitFolder) ||

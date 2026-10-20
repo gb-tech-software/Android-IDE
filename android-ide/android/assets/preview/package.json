@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.0",
   "description": "Pinned Live Server provider owned by Android IDE",
+  "engines": {
+    "node": ">=20 <21"
+  },
   "dependencies": {
     "live-server": "1.2.2"
   }
