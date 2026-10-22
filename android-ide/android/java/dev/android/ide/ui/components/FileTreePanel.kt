@@ -173,6 +173,11 @@ fun FileTreePanel(
     onOpenBrowserContent: (FileNode) -> Unit = {},
     defaultPreviewPath: String? = null,
     onSetDefaultPreview: (FileNode) -> Unit = {},
+    /** Wire these to the editor ViewModel's recursive loader. Defaults are intentionally no-op. */
+    onCollapseAllChildren: (FileNode) -> Unit = {},
+    onExpandAllChildren: (FileNode) -> Unit = {},
+    onCollapseAllRootChildren: () -> Unit = {},
+    onExpandAllRootChildren: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalIdeColors.current
@@ -306,6 +311,8 @@ fun FileTreePanel(
                             onRemove       = onRemoveProject,
                             onPasteAtRoot  = onPasteAtRoot,
                             onOpenTerminal = onOpenTerminalAtRoot,
+                            onCollapseAllChildren = onCollapseAllRootChildren,
+                            onExpandAllChildren = onExpandAllRootChildren,
                         )
                         HorizontalDivider(thickness = 0.5.dp, color = colors.separator)
                     }
@@ -346,6 +353,8 @@ fun FileTreePanel(
                         onOpenBrowserContent     = onOpenBrowserContent,
                         isDefaultPreview         = defaultPreviewPath != null && nodes.pathTo(node.documentUri)?.removePrefix("/") == defaultPreviewPath,
                         onSetDefaultPreview      = onSetDefaultPreview,
+                        onCollapseAllChildren    = onCollapseAllChildren,
+                        onExpandAllChildren      = onExpandAllChildren,
                     )
                 }
             }
@@ -465,9 +474,12 @@ private fun RootProjectNode(
     onRemove: () -> Unit,
     onPasteAtRoot: () -> Unit,
     onOpenTerminal: () -> Unit,
+    onCollapseAllChildren: () -> Unit = {},
+    onExpandAllChildren: () -> Unit = {},
 ) {
     val colors     = LocalIdeColors.current
     var menuOpen   by remember { mutableStateOf(false) }
+    var childrenMenuOpen by remember { mutableStateOf(false) }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -491,6 +503,15 @@ private fun RootProjectNode(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        Box {
+            IconButton(onClick = { childrenMenuOpen = true }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.ExpandMore, contentDescription = "Expand or collapse project children", tint = colors.textDisabled, modifier = Modifier.size(14.dp))
+            }
+            DropdownMenu(expanded = childrenMenuOpen, onDismissRequest = { childrenMenuOpen = false }) {
+                DropdownMenuItem(leadingIcon = { Icon(Icons.Default.ExpandMore, null) }, text = { Text("Expand all children") }, onClick = { childrenMenuOpen = false; onExpandAllChildren() })
+                DropdownMenuItem(leadingIcon = { Icon(Icons.Default.ChevronRight, null) }, text = { Text("Collapse all children") }, onClick = { childrenMenuOpen = false; onCollapseAllChildren() })
+            }
+        }
         Box {
             IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
                 Icon(
@@ -554,6 +575,8 @@ private fun FileTreeRow(
     onOpenBrowserContent: (FileNode) -> Unit,
     isDefaultPreview: Boolean,
     onSetDefaultPreview: (FileNode) -> Unit,
+    onCollapseAllChildren: (FileNode) -> Unit = {},
+    onExpandAllChildren: (FileNode) -> Unit = {},
 ) {
     val colors   = LocalIdeColors.current
     var menuOpen by remember { mutableStateOf(false) }
@@ -666,6 +689,9 @@ private fun FileTreeRow(
 
                 if (node.isDirectory) {
                     // ── Folder menu ──────────────────────────────────────
+                    DropdownMenuItem(leadingIcon = { Icon(Icons.Default.ExpandMore, null) }, text = { Text("Expand all children") }, onClick = { menuOpen = false; onExpandAllChildren(node) })
+                    DropdownMenuItem(leadingIcon = { Icon(Icons.Default.ChevronRight, null) }, text = { Text("Collapse all children") }, onClick = { menuOpen = false; onCollapseAllChildren(node) })
+                    HorizontalDivider()
                     if (localStorageConfirmed) {
                         DropdownMenuItem(
                             leadingIcon = { Icon(Icons.Default.Article, null) },

@@ -185,6 +185,8 @@ data class BrowserScrollChanged(val tabId: String, val scrollY: Int)
 interface BrowserEngineEventSink {
     fun onNavigationChanged(event: BrowserNavigationChanged)
     fun onNavigationCapabilitiesChanged(event: BrowserNavigationCapabilitiesChanged)
+    fun onContentPaintStatusReset(tabId: String)
+    fun onFirstContentfulPaint(tabId: String)
     fun onSerializedStateChanged(tabId: String, state: BrowserSerializedState)
     fun onTitleChanged(event: BrowserTitleChanged)
     fun onProgressChanged(event: BrowserProgressChanged)
@@ -206,6 +208,8 @@ interface BrowserSurfaceHost
 interface BrowserEngineSession {
     fun open()
     fun attach(host: BrowserSurfaceHost)
+    fun setActive(active: Boolean)
+    fun setFocused(focused: Boolean)
     fun load(request: BrowserNavigation)
     /** Fetches an HTTP(S) resource in the engine's browsing context and emits it as a download. */
     fun downloadResource(url: String, referrer: String?): Boolean = false
@@ -266,6 +270,8 @@ interface BrowserSessionService {
         sink: BrowserEngineEventSink,
     ): BrowserEngineSession
     fun existingSession(tabId: String): BrowserEngineSession?
+    /** Marks the one tab currently presented by the browser surface, or none when detached. */
+    fun setPresentedTab(tabId: String?, expectedPreviousTabId: String? = null): Boolean
     fun saveState(tabId: String): BrowserSerializedState?
     fun closeSession(tabId: String)
     fun closeAll()

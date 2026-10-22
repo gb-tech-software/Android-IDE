@@ -318,6 +318,28 @@ class AppShellViewModel(application: Application) : AndroidViewModel(application
         openTerminalForProject(projectId, directoryUri, navigateToTerminal = false, toggleOverlay = true)
     }
 
+    /** Open an accessible File Manager folder directly, without requiring project registration. */
+    fun openTerminalAtStorageLocation(resourceUri: String, displayName: String) {
+        viewModelScope.launch {
+            val directory = saf.localFilesystemPath(resourceUri)
+            if (directory == null || !terminalRuntime.isUsableWorkingDirectory(directory)) {
+                reportTerminalLaunchFailure(
+                    OperationReport(
+                        OperationOutcome.BLOCKED,
+                        "Terminal cannot access this storage provider location. Choose an Android IDE or Android shared-storage folder instead.",
+                        ErrorCategory.UNSUPPORTED_PROVIDER_CAPABILITY,
+                    ),
+                )
+                return@launch
+            }
+            createTerminalSession(
+                workingDirectory = directory,
+                name = displayName,
+                navigateToTerminal = true,
+            )
+        }
+    }
+
     private fun reportTerminalLaunchFailure(report: OperationReport, navigateToTerminal: Boolean = true) {
         _state.update { it.copy(terminalFeedback = report, operationReport = report, statusMessage = report.message) }
         if (navigateToTerminal && _state.value.surface != Surface.TERMINAL) navigate(Surface.TERMINAL)

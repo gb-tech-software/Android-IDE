@@ -13,11 +13,11 @@
       IDE UI natively — no native Surface, no WebView overlay positioning needed.
       The Monaco editor WebView is embedded directly as a Compose AndroidView.
 
-    Storage permission strategy (unchanged from prior implementation):
-      API 26–28: READ + WRITE external storage required (scoped storage not yet
-                 available). Both declared with maxSdkVersion to cap exposure.
-      API 29+:   SAF (Intent.ACTION_OPEN_DOCUMENT_TREE) grants access without
-                 manifest permissions. No changes needed for API 29+.
+    Storage permission strategy:
+      API 26–29: request legacy READ + WRITE shared-storage permissions.
+      API 30+:   request MANAGE_EXTERNAL_STORAGE through Android's special app
+                 access settings. SAF remains available for additional providers.
+      The target SDK remains 28 for the Termux-compatible executable runtime.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -47,10 +47,10 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- API 26–28: required to write files on external storage. -->
+    <!-- Legacy shared-storage access for Android versions below Android 11. -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="32" />
 
     <application
         android:name="dev.android.ide.AndroidIdeApplication"
@@ -147,6 +147,15 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Visible terminal session input and output" />
+        </service>
+
+        <service
+            android:name="dev.android.ide.postgres.PostgresForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started local PostgreSQL database service for on-device development" />
         </service>
 
         <service

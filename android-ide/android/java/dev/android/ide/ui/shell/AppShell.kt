@@ -1,6 +1,7 @@
 package dev.android.ide.ui.shell
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Home
@@ -86,6 +88,7 @@ import dev.android.ide.browser.BrowserDownloadStatus
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.CrashReportSummary
 import dev.android.ide.contracts.Surface
+import dev.android.ide.contracts.FileSystemNode
 import dev.android.ide.CrashReporter
 import dev.android.ide.ui.screen.HomeSurface
 import dev.android.ide.ui.screen.CrashConsoleSurface
@@ -97,6 +100,9 @@ import dev.android.ide.ui.screen.ProjectsSurface
 import dev.android.ide.ui.screen.SettingsScreen
 import dev.android.ide.ui.screen.TerminalSurface
 import dev.android.ide.ui.screen.BrowserSurface
+import dev.android.ide.ui.screen.FileManagerSurface
+import dev.android.ide.ui.screen.PostgresSurface
+import dev.android.ide.postgres.PostgresViewModel
 import dev.android.ide.ui.screen.EditorPanel
 import dev.android.ide.ui.screen.EditorSidebar
 import dev.android.ide.viewmodel.model.FileNode
@@ -111,6 +117,8 @@ fun AppShell(
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
     onImportZip: () -> Unit,
+    onAcquireProjectFromFolder: (String, String) -> Unit,
+    onAcquireProjectFromArchive: (String, String) -> Unit,
     onExportProject: (String) -> Unit,
     onExportProjects: (Set<String>) -> Unit,
     onDuplicateProject: (String) -> Unit,
@@ -209,7 +217,7 @@ fun AppShell(
     LaunchedEffect(state.surface) {
         sidebarSection = when (state.surface) {
             Surface.EDITOR -> SidebarSection.EDITOR
-            Surface.TERMINAL -> SidebarSection.TERMINAL
+            Surface.TERMINAL, Surface.POSTGRESQL -> SidebarSection.TERMINAL
             Surface.BROWSER -> SidebarSection.BROWSER
             else -> SidebarSection.NAVIGATION
         }
@@ -258,6 +266,8 @@ fun AppShell(
             onCreateProject = onCreateProject,
             onImportFolder = onImportFolder,
             onImportZip = onImportZip,
+            onAcquireProjectFromFolder = onAcquireProjectFromFolder,
+            onAcquireProjectFromArchive = onAcquireProjectFromArchive,
             onExportProject = onExportProject,
             onExportProjects = onExportProjects,
             onDuplicateProject = onDuplicateProject,
@@ -520,14 +530,16 @@ private fun ContextualNavigation(
                         ) {
                             Text("Navigation", style = MaterialTheme.typography.titleSmall)
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                NavigationGridItem(Icons.Default.Home, "Home") { onNavigate(Surface.HOME, true) }
-                                NavigationGridItem(Icons.Default.FolderOpen, "Projects") { onNavigate(Surface.PROJECTS, true) }
+                                NavigationGridItem(Icons.Default.Home, "Home", state.surface == Surface.HOME) { onNavigate(Surface.HOME, true) }
+                                NavigationGridItem(Icons.Default.FolderOpen, "Projects", state.surface == Surface.PROJECTS) { onNavigate(Surface.PROJECTS, true) }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                NavigationGridItem(Icons.Default.Settings, "Settings") { onNavigate(Surface.SETTINGS, true) }
+                                NavigationGridItem(Icons.Default.Folder, "Files", state.surface == Surface.FILE_MANAGER) { onNavigate(Surface.FILE_MANAGER, true) }
+                                NavigationGridItem(Icons.Default.Settings, "Settings", state.surface == Surface.SETTINGS) { onNavigate(Surface.SETTINGS, true) }
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                NavigationGridItem(Icons.Default.BugReport, "Console") { onNavigate(Surface.DIAGNOSTICS, true) }
+                                NavigationGridItem(Icons.Default.BugReport, "Console", state.surface == Surface.DIAGNOSTICS) { onNavigate(Surface.DIAGNOSTICS, true) }
+                                NavigationGridItem(Icons.Default.Terminal, "PostgreSQL", state.surface == Surface.POSTGRESQL) { onNavigate(Surface.POSTGRESQL, true) }
                             }
                         }
                         if (state.backgroundOperations.isNotEmpty()) {
@@ -630,6 +642,7 @@ private fun ContextualNavigation(
                         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 108.dp),
                     ) {
                         item { Text("Terminal sessions", style = MaterialTheme.typography.labelLarge) }
+                        item { NavigationItem(Icons.Default.Terminal, "Local PostgreSQL", state.surface == Surface.POSTGRESQL, onClick = { onNavigate(Surface.POSTGRESQL, true) }) }
                         item { NavigationItem(Icons.Default.Add, "New terminal session", false, onClick = { appViewModel.createTerminalSession(); onDismissDrawer() }) }
                         state.terminalSessions.forEach { session ->
                             item {
@@ -821,7 +834,12 @@ private fun TerminalSessionSidebarItem(
 }
 
 @Composable
-private fun androidx.compose.foundation.layout.RowScope.NavigationGridItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+private fun androidx.compose.foundation.layout.RowScope.NavigationGridItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
     val tileShape = RoundedCornerShape(12.dp)
     TextButton(
         onClick = onClick,
@@ -830,12 +848,13 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationGridItem(icon:
             .height(92.dp)
             .border(
                 width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
                 shape = tileShape,
             )
-            .background(MaterialTheme.colorScheme.surface, tileShape)
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface, tileShape)
             .semantics {
                 role = Role.Button
+                this.selected = selected
             },
         contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
     ) {
@@ -846,12 +865,12 @@ private fun androidx.compose.foundation.layout.RowScope.NavigationGridItem(icon:
             Icon(
                 icon,
                 contentDescription = label,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
                 label,
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface,
+                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
             )
         }
     }
@@ -899,6 +918,8 @@ private fun SurfaceHost(
     onCreateProject: (String?) -> Unit,
     onImportFolder: () -> Unit,
     onImportZip: () -> Unit,
+    onAcquireProjectFromFolder: (String, String) -> Unit,
+    onAcquireProjectFromArchive: (String, String) -> Unit,
     onExportProject: (String) -> Unit,
     onExportProjects: (Set<String>) -> Unit,
     onDuplicateProject: (String) -> Unit,
@@ -917,6 +938,7 @@ private fun SurfaceHost(
     onExportCrashReport: (CrashReportSummary) -> Unit,
 ) {
     val ideState by ideViewModel.uiState.collectAsState()
+    val postgresViewModel: PostgresViewModel = composeViewModel()
     androidx.compose.foundation.layout.Box(modifier.fillMaxSize()) {
         EditorSurface(
             shellState = state,
@@ -959,6 +981,32 @@ private fun SurfaceHost(
             onExport = onExportCrashReport,
         )
         Surface.PROJECTS -> ProjectsSurface(state, viewModel, onCreateProject, onImportFolder, onImportZip, onExportProject, onExportProjects, onDuplicateProject, onRelocateProject, viewModel::openTerminalForProject, onFeedback, onOpenNavigation, modifier)
+        Surface.FILE_MANAGER -> FileManagerSurface(
+            onOpenNavigation = onOpenNavigation,
+            modifier = modifier,
+            onOpenTerminalAt = { node ->
+                val resourceUri = fileManagerResourceUri(node)
+                if (resourceUri == null) onFeedback("This location cannot be opened in the terminal")
+                else viewModel.openTerminalAtStorageLocation(resourceUri, node.displayLabel)
+            },
+            onAcquireProjectFromFolder = { node ->
+                val resourceUri = fileManagerResourceUri(node)
+                if (resourceUri == null) onFeedback("This folder cannot be used as a project location")
+                else onAcquireProjectFromFolder(resourceUri, node.displayLabel)
+            },
+            onAcquireProjectFromArchive = { node ->
+                val resourceUri = fileManagerResourceUri(node)
+                if (resourceUri == null) onFeedback("This archive cannot be opened as a project")
+                else onAcquireProjectFromArchive(resourceUri, node.displayLabel)
+            },
+        )
+        Surface.POSTGRESQL -> PostgresSurface(
+            viewModel = postgresViewModel,
+            onOpenNavigation = onOpenNavigation,
+            projectId = state.selectedProjectId,
+            projectName = state.projects.firstOrNull { it.id == state.selectedProjectId }?.name,
+            modifier = modifier,
+        )
         Surface.PROJECT_DETAILS -> ProjectDetailsSurface(state, viewModel, onExportProject, onDuplicateProject, onRelocateProject, onOpenNavigation, modifier)
         Surface.EDITOR -> Unit
         Surface.TERMINAL -> TerminalSurface(
@@ -1013,6 +1061,13 @@ private fun DomainPlaceholderSurface(title: String, modifier: Modifier, onOpenNa
     }
 }
 
+private fun fileManagerResourceUri(node: FileSystemNode): String? {
+    val wrapper = Uri.parse(node.virtualPath)
+    if (wrapper.scheme != "androidide" || wrapper.authority != "filesystem") return null
+    val encodedResource = wrapper.encodedPath?.removePrefix("/")?.takeIf(String::isNotBlank) ?: return null
+    return Uri.decode(encodedResource)
+}
+
 private fun placeholderPhase(label: String): Int = when (label) {
     "Editor", "Find", "Replace", "Save", "Save As", "Preview", "Project Filename Search",
     "Project Content Search", "Create file", "Create folder", "Import files", "Locate Current File" -> 4
@@ -1027,9 +1082,11 @@ private fun surfaceTitle(surface: Surface): String = when (surface) {
     Surface.HOME -> "Home"
     Surface.DIAGNOSTICS -> "Diagnostics"
     Surface.PROJECTS -> "Projects"
+    Surface.FILE_MANAGER -> "Files"
     Surface.PROJECT_DETAILS -> "Project Details"
     Surface.EDITOR -> "Editor"
     Surface.TERMINAL -> "Terminal"
+    Surface.POSTGRESQL -> "PostgreSQL"
     Surface.BROWSER -> "Browser"
     Surface.SETTINGS -> "Settings"
 }

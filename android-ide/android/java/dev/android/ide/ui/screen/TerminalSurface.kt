@@ -10,11 +10,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -34,7 +37,19 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -43,6 +58,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,16 +68,20 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
@@ -72,11 +94,11 @@ import dev.android.ide.app.AppShellState
 import dev.android.ide.app.AppShellViewModel
 import dev.android.ide.contracts.RuntimeAvailability
 import dev.android.ide.contracts.SessionAvailability
+import dev.android.ide.contracts.SessionDescriptor
 import dev.android.ide.data.model.TerminalSettings
 import dev.android.ide.data.ThemeResolver
 import dev.android.ide.data.ResolvedTheme
 import dev.android.ide.ui.components.EditorToolbarGlyph
-import dev.android.ide.ui.components.FloatingOverlayFrame
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -88,7 +110,6 @@ fun TerminalSurface(
     onOpenSettings: () -> Unit = {},
     onSettingsChanged: (TerminalSettings) -> Unit = {},
     floating: Boolean = false,
-    showSessionCreationInMenu: Boolean = floating,
     onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -98,6 +119,9 @@ fun TerminalSurface(
     var terminalTextSize by remember { mutableStateOf(terminalSettings.textSize) }
     var appearanceMenuOpen by remember { mutableStateOf(false) }
     var sessionMenuOpen by remember { mutableStateOf(false) }
+    var renamingSession by remember { mutableStateOf<SessionDescriptor?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var closeAllConfirmation by remember { mutableStateOf(false) }
     var initialSessionRequested by remember { mutableStateOf(false) }
     val sessions = state.terminalSessions
     val selected = sessions.firstOrNull { it.id == state.selectedTerminalSessionId && it.availability == SessionAvailability.AVAILABLE }
@@ -144,46 +168,59 @@ fun TerminalSurface(
         }
     }
 
+    val contentPadding = if (floating) 8.dp else 16.dp
+    val sectionSpacing = if (floating) 6.dp else 10.dp
     Box(modifier.fillMaxSize()) {
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(Modifier.fillMaxSize().padding(contentPadding), verticalArrangement = Arrangement.spacedBy(sectionSpacing)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
             if (!floating) IconButton(onClick = onOpenNavigation) { Icon(Icons.Default.Menu, "Open sidebar") }
             Box(Modifier.weight(1f)) {
                 if (floating) {
                     Row(
-                        Modifier
-                            .combinedClickable(onClick = { sessionMenuOpen = true }, onLongClick = { sessionMenuOpen = true })
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        Modifier.clickable { sessionMenuOpen = true }.padding(horizontal = 4.dp, vertical = 2.dp),
                         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                     ) {
-                        Text(
-                            "Terminal>${selected?.name ?: "No active session"}",
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
+                        Text("Terminal", style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(selected?.name ?: "No active session", maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                        Icon(Icons.Default.ExpandMore, contentDescription = "Choose terminal session", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     androidx.compose.material3.DropdownMenu(
                         expanded = sessionMenuOpen,
                         onDismissRequest = { sessionMenuOpen = false },
                     ) {
                         sessions.filter { it.availability == SessionAvailability.AVAILABLE }.forEach { session ->
-                            androidx.compose.material3.DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        session.name,
-                                        color = if (session.id == state.selectedTerminalSessionId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    )
-                                },
-                                leadingIcon = {
-                                    Text(if (session.id == state.selectedTerminalSessionId) "✓" else "  ", color = MaterialTheme.colorScheme.primary)
-                                },
-                                onClick = {
+                            Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                Row(Modifier.weight(1f).clickable {
                                     sessionMenuOpen = false
                                     viewModel.selectTerminalSession(session.id)
-                                },
-                            )
+                                }.padding(start = 4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                                    RadioButton(selected = session.id == state.selectedTerminalSessionId, onClick = {
+                                        sessionMenuOpen = false
+                                        viewModel.selectTerminalSession(session.id)
+                                    })
+                                    Text(session.name, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                }
+                                IconButton(onClick = { renameValue = session.name; renamingSession = session; sessionMenuOpen = false }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Rename session ${session.name}")
+                                }
+                                IconButton(onClick = { sessionMenuOpen = false; viewModel.closeTerminalSession(session.id) }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Close session ${session.name}")
+                                }
+                            }
                         }
+                        HorizontalDivider()
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Create new session") },
+                            leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                            onClick = { sessionMenuOpen = false; viewModel.createTerminalSession() },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Close all sessions") },
+                            leadingIcon = { Icon(Icons.Default.Close, contentDescription = null) },
+                            enabled = sessions.any { it.availability == SessionAvailability.AVAILABLE },
+                            onClick = { sessionMenuOpen = false; closeAllConfirmation = true },
+                        )
                     }
                 } else {
                     Text("Terminal", style = MaterialTheme.typography.titleMedium)
@@ -198,15 +235,6 @@ fun TerminalSurface(
                     expanded = appearanceMenuOpen,
                     onDismissRequest = { appearanceMenuOpen = false },
                 ) {
-                    if (showSessionCreationInMenu) {
-                        androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("New session") },
-                            onClick = {
-                                appearanceMenuOpen = false
-                                viewModel.createTerminalSession()
-                            },
-                        )
-                    }
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("Terminal settings") },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -238,8 +266,8 @@ fun TerminalSurface(
         }
         state.terminalProgress?.let { progress ->
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(12.dp),
+                    Row(
+                        Modifier.fillMaxWidth().padding(if (floating) 8.dp else 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -250,7 +278,7 @@ fun TerminalSurface(
         }
         if (selected == null || selected.availability != dev.android.ide.contracts.SessionAvailability.AVAILABLE) {
             Card(Modifier.fillMaxWidth().weight(1f), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.fillMaxSize().padding(if (floating) 12.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("No active terminal session", style = MaterialTheme.typography.titleMedium)
                     Text(if (runtimeAvailable) "Start a fresh command-line session from the sidebar." else "The terminal runtime is not available yet.")
                 }
@@ -342,6 +370,22 @@ fun TerminalSurface(
             )
         }
     }
+    renamingSession?.let { session ->
+        AlertDialog(
+            onDismissRequest = { renamingSession = null },
+            title = { Text("Rename session") },
+            text = { OutlinedTextField(renameValue, { renameValue = it }, label = { Text("Session name") }, singleLine = true) },
+            confirmButton = { TextButton(enabled = renameValue.isNotBlank(), onClick = { renamingSession = null; viewModel.renameTerminalSession(session.id, renameValue.trim()) }) { Text("Rename") } },
+            dismissButton = { TextButton(onClick = { renamingSession = null }) { Text("Cancel") } },
+        )
+    }
+    if (closeAllConfirmation) AlertDialog(
+        onDismissRequest = { closeAllConfirmation = false },
+        title = { Text("Close all terminal sessions?") },
+        text = { Text("All open terminal sessions and their running shell processes will be closed.") },
+        confirmButton = { TextButton(onClick = { closeAllConfirmation = false; viewModel.closeAllTerminalSessions() }) { Text("Close all") } },
+        dismissButton = { TextButton(onClick = { closeAllConfirmation = false }) { Text("Cancel") } },
+    )
     blockingFeedback?.let { report ->
         AlertDialog(
             onDismissRequest = {},
@@ -361,12 +405,12 @@ fun TerminalSurface(
 }
 
 /**
- * Terminal-owned presentation host for use above another domain surface.
- * The PTY, selected session, output, settings, and redraw binding remain
- * exactly the same as [TerminalSurface]; only the presentation frame changes.
+ * Terminal-owned bottom sheet placed below the editor controls and document-info bar.
+ * Its height is taken from the editor viewport, while PTY/session state remains in
+ * [TerminalSurface].
  */
 @Composable
-fun TerminalFloatingPanel(
+fun TerminalBottomSheet(
     state: AppShellState,
     viewModel: AppShellViewModel,
     terminalSettings: TerminalSettings,
@@ -376,32 +420,67 @@ fun TerminalFloatingPanel(
     modifier: Modifier = Modifier,
 ) {
     BackHandler(enabled = visible, onBack = onDismiss)
-    FloatingOverlayFrame(
-        modifier = modifier,
-        visible = visible,
-        initialWidth = 420f,
-        initialHeight = 380f,
-        minWidth = 280f,
-        minHeight = 220f,
-        startFromRight = false,
-    ) {
-        Card(
-            modifier = Modifier.fillMaxSize(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    var savedHeight by rememberSaveable { mutableFloatStateOf(0f) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val density = LocalDensity.current
+    BoxWithConstraints(modifier = modifier) {
+        val maxPanelHeight = (maxHeight - 120.dp).coerceAtLeast(0.dp)
+        val minPanelHeight = 260.dp.coerceAtMost(maxPanelHeight)
+        val collapsedHeight = if (savedHeight > 0f) savedHeight.dp.coerceIn(minPanelHeight, maxPanelHeight)
+            else (maxPanelHeight * 0.56f).coerceIn(minPanelHeight, maxPanelHeight)
+        val panelHeight = if (expanded) maxPanelHeight else collapsedHeight
+        AnimatedVisibility(
+            visible = visible,
+            modifier = Modifier.fillMaxWidth(),
+            enter = slideInVertically(animationSpec = tween(240)) { it },
+            exit = slideOutVertically(animationSpec = tween(180)) { it },
         ) {
-            TerminalSurface(
-                state = state,
-                viewModel = viewModel,
-                terminalSettings = terminalSettings,
-                onOpenNavigation = {},
-                onOpenSettings = onOpenSettings,
-                onSettingsChanged = viewModel::setTerminalSettings,
-                floating = true,
-                onDismiss = onDismiss,
-                modifier = Modifier.fillMaxSize(),
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth().height(panelHeight),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+                shadowElevation = 10.dp,
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().height(34.dp),
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier.weight(1f).height(34.dp).pointerInput(panelHeight, expanded) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    expanded = false
+                                    val delta = with(density) { dragAmount.y.toDp().value }
+                                    savedHeight = (panelHeight.value - delta).coerceIn(minPanelHeight.value, maxPanelHeight.value)
+                                }
+                            },
+                            contentAlignment = androidx.compose.ui.Alignment.Center,
+                        ) { Icon(Icons.Default.DragHandle, contentDescription = "Resize terminal panel", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = {
+                            expanded = !expanded
+                            if (!expanded && savedHeight <= 0f) savedHeight = collapsedHeight.value
+                        }) {
+                            Icon(if (expanded) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                                contentDescription = if (expanded) "Reduce terminal panel height" else "Expand terminal panel height",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    TerminalSurface(
+                        state = state,
+                        viewModel = viewModel,
+                        terminalSettings = terminalSettings,
+                        onOpenNavigation = {},
+                        onOpenSettings = onOpenSettings,
+                        onSettingsChanged = viewModel::setTerminalSettings,
+                        floating = true,
+                        onDismiss = onDismiss,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
+                }
+            }
         }
     }
 }

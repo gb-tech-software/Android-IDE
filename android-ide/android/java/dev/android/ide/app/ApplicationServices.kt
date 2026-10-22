@@ -25,6 +25,10 @@ import dev.android.ide.project.ProjectRegistryStore
 import dev.android.ide.project.ProjectStorageAdapterImpl
 import dev.android.ide.project.GitMetadataReader
 import dev.android.ide.project.ProjectResourceLock
+import dev.android.ide.filemanager.FileManagerApplicationService
+import dev.android.ide.filemanager.FileManagerMutationAdapter
+import dev.android.ide.filemanager.FileManagerStorageAdapter
+import dev.android.ide.postgres.PostgresApplicationService
 import dev.android.ide.runtime.RuntimeStateStore
 import dev.android.ide.runtime.BundledTermuxRuntimeInstaller
 import dev.android.ide.runtime.LanguageServerPackageInstaller
@@ -94,7 +98,14 @@ class ApplicationServices private constructor(application: Application) {
     val themeRepository = ThemeRepository(context)
     val terminalSettingsRepository = TerminalSettingsRepository(context)
     val projectWorkspace = ProjectWorkspaceService(fileSystem.resources)
+    val fileManagerApplicationService by lazy {
+        FileManagerApplicationService(
+            FileManagerStorageAdapter(fileSystem.resources),
+            FileManagerMutationAdapter(context, fileSystem.operations, FileManagerStorageAdapter(fileSystem.resources)),
+        )
+    }
     val bundledRuntimeInstaller = BundledTermuxRuntimeInstaller(context)
+    val postgresApplicationService by lazy { PostgresApplicationService(context, bundledRuntimeInstaller) }
     val languageServerPackageInstaller by lazy { LanguageServerPackageInstaller(packageManager, nodeRuntime) }
     val terminalRuntime = TerminalRuntimeAdapterImpl(context, projectWorkspace, bundledRuntimeInstaller)
 

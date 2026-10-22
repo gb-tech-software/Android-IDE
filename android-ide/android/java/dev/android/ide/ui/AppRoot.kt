@@ -220,6 +220,23 @@ fun AppRoot(viewModel: AppShellViewModel, ideViewModel: IdeViewModel, onExit: ()
             },
             onImportFolder = { openFolder.launch(null) },
             onImportZip = { openZip.launch(arrayOf("application/zip", "application/octet-stream")) },
+            onAcquireProjectFromFolder = { uri, displayName ->
+                viewModel.clearOperationFeedback()
+                folderUri = uri
+                folderName = displayName
+                folderConfirmationVisible = false
+                viewModel.inspectExistingFolder(uri)
+                folderReviewVisible = true
+            },
+            onAcquireProjectFromArchive = { uri, displayName ->
+                viewModel.clearOperationFeedback()
+                zipUri = uri
+                zipName = displayName.removeSuffix(".zip").ifBlank { "Imported project" }
+                zipDescription = ""
+                zipDestination = null
+                zipConfirmationVisible = false
+                zipReviewVisible = true
+            },
             onExportProject = { projectId -> viewModel.clearOperationFeedback(); pendingExportProjectId = projectId; exportReviewVisible = true },
             onExportProjects = { projectIds -> pendingBatchExportIds = projectIds; batchExportDestinationPicker.launch(null) },
             onDuplicateProject = { projectId ->

@@ -1,6 +1,8 @@
 package dev.android.ide.app
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import dev.android.ide.contracts.OperationReport
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +35,15 @@ data class BackgroundProjectOperation(
 class ProjectOperationManager(
     private val context: Context,
 ) {
+    private val serviceHandler = Handler(Looper.getMainLooper())
+    private val serviceRequestLock = Any()
+    private val stopServiceIfIdle = Runnable {
+        synchronized(serviceRequestLock) {
+            if (_operations.value.none { it.background }) {
+                context.stopService(android.content.Intent(context, ProjectOperationForegroundService::class.java))
+            }
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
     private val _operations = MutableStateFlow<List<BackgroundProjectOperation>>(emptyList())
@@ -94,15 +105,28 @@ class ProjectOperationManager(
     fun isRunning(id: String?): Boolean = id != null && _operations.value.any { it.id == id }
 
     private fun updateForegroundService() {
-        val background = _operations.value.filter { it.background }
-        if (background.isEmpty()) {
-            context.stopService(android.content.Intent(context, ProjectOperationForegroundService::class.java))
-            return
+        serviceHandler.post {
+            synchronized(serviceRequestLock) {
+                val background = _operations.value.filter { it.background }
+                if (background.isEmpty()) {
+                    serviceHandler.removeCallbacks(stopServiceIfIdle)
+                    serviceHandler.postDelayed(stopServiceIfIdle, SERVICE_STOP_GRACE_MS)
+                } else {
+                    serviceHandler.removeCallbacks(stopServiceIfIdle)
+                    val intent = android.content.Intent(context, ProjectOperationForegroundService::class.java).apply {
+                        putExtra(ProjectOperationForegroundService.EXTRA_COUNT, background.size)
+                        putExtra(ProjectOperationForegroundService.EXTRA_LABEL, background.first().label)
+                    }
+                    // All start/stop requests are issued serially on the main looper.
+                    // The grace-period stop lets a just-started service execute
+                    // onCreate/startForeground before a fast operation can stop it.
+                    ContextCompat.startForegroundService(context, intent)
+                }
+            }
         }
-        val intent = android.content.Intent(context, ProjectOperationForegroundService::class.java).apply {
-            putExtra(ProjectOperationForegroundService.EXTRA_COUNT, background.size)
-            putExtra(ProjectOperationForegroundService.EXTRA_LABEL, background.first().label)
-        }
-        ContextCompat.startForegroundService(context, intent)
+    }
+
+    private companion object {
+        const val SERVICE_STOP_GRACE_MS = 1_500L
     }
 }

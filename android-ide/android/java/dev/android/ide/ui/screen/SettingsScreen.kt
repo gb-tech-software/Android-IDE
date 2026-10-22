@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -258,6 +259,9 @@ private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: Ide
     val scope = rememberCoroutineScope()
     val colors = LocalIdeColors.current
     var operationMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val languageOperation = uiState.languageServerPackageOperation
+    val previewOperation = uiState.previewPackageOperation
+    val anyPackageOperationActive = languageOperation.active || previewOperation.active
     SettingsCard {
         Text("Language support", style = MaterialTheme.typography.titleSmall)
         VisibilitySettingRow(
@@ -266,17 +270,26 @@ private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: Ide
             uiState.editorSettings.languageServerEnabled,
             { ideViewModel.setEditorSettings(uiState.editorSettings.copy(languageServerEnabled = it)) },
         )
-        Text(uiState.languageServerPackageSetupMessage ?: "Language tools are managed by Android IDE.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        PackageOperationStatus(
+            message = languageOperation.message ?: uiState.languageServerPackageSetupMessage ?: "Language tools are managed by Android IDE.",
+            active = languageOperation.active,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = ideViewModel::installLanguageServerTools) { Text("Install") }
-            OutlinedButton(onClick = ideViewModel::updateLanguageServerTools) { Text("Update") }
-            OutlinedButton(onClick = ideViewModel::retryLanguageServerPackageInstallation) { Text("Check") }
-            OutlinedButton(onClick = { scope.launch { operationMessage = if (ideViewModel.removeLanguageServerTools()) "Language tools removed." else "Language tools could not be removed." } }) { Text("Remove") }
+            OutlinedButton(onClick = ideViewModel::installLanguageServerTools, enabled = !anyPackageOperationActive && !languageOperation.installed) { Text("Install") }
+            OutlinedButton(onClick = ideViewModel::updateLanguageServerTools, enabled = !anyPackageOperationActive && languageOperation.installed) { Text("Update") }
+            OutlinedButton(onClick = ideViewModel::retryLanguageServerPackageInstallation, enabled = !anyPackageOperationActive) { Text("Check") }
+            OutlinedButton(
+                onClick = { scope.launch { operationMessage = if (ideViewModel.removeLanguageServerTools()) "Language tools removed." else "Language tools could not be removed." } },
+                enabled = !anyPackageOperationActive && languageOperation.installed,
+            ) { Text("Remove") }
         }
     }
     SettingsCard {
         Text("Project preview", style = MaterialTheme.typography.titleSmall)
-        Text("Uses Android IDE’s managed preview server.", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        PackageOperationStatus(
+            message = previewOperation.message ?: "Uses Android IDE’s managed preview server.",
+            active = previewOperation.active,
+        )
         VisibilitySettingRow(
             "Open Preview in floating browser",
             "Show the browser above the editor instead of switching domains.",
@@ -284,12 +297,36 @@ private fun EditorServicesSettingsContent(uiState: IdeUiState, ideViewModel: Ide
             { ideViewModel.setEditorSettings(uiState.editorSettings.copy(previewOpensFloatingBrowser = it)) },
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.installPreviewPackage(); "Preview server installed." }.getOrElse { it.message ?: "Preview installation failed." } } }) { Text("Install") }
-            OutlinedButton(onClick = { scope.launch { operationMessage = runCatching { ideViewModel.updatePreviewPackage(); "Preview server updated." }.getOrElse { it.message ?: "Preview update failed." } } }) { Text("Update") }
-            OutlinedButton(onClick = { scope.launch { operationMessage = if (ideViewModel.removePreviewPackage()) "Preview server removed." else "Preview server could not be removed." } }) { Text("Remove") }
+            OutlinedButton(
+                onClick = { scope.launch { operationMessage = runCatching { ideViewModel.installPreviewPackage(); "Preview server installed." }.getOrElse { it.message ?: "Preview installation failed." } } },
+                enabled = !anyPackageOperationActive && !previewOperation.installed,
+            ) { Text("Install") }
+            OutlinedButton(
+                onClick = { scope.launch { operationMessage = runCatching { ideViewModel.updatePreviewPackage(); "Preview server updated." }.getOrElse { it.message ?: "Preview update failed." } } },
+                enabled = !anyPackageOperationActive && previewOperation.installed,
+            ) { Text("Update") }
+            OutlinedButton(
+                onClick = { scope.launch { operationMessage = runCatching { ideViewModel.checkPreviewPackage(); "Preview server checked." }.getOrElse { it.message ?: "Preview check failed." } } },
+                enabled = !anyPackageOperationActive,
+            ) { Text("Check") }
+            OutlinedButton(
+                onClick = { scope.launch { operationMessage = if (ideViewModel.removePreviewPackage()) "Preview server removed." else "Preview server could not be removed." } },
+                enabled = !anyPackageOperationActive && previewOperation.installed,
+            ) { Text("Remove") }
         }
     }
     operationMessage?.let { Text(it, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall) }
+}
+
+@Composable
+private fun PackageOperationStatus(message: String, active: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (active) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+        Text(message, color = LocalIdeColors.current.textSecondary, style = MaterialTheme.typography.bodySmall)
+    }
 }
 
 @Composable
@@ -443,7 +480,7 @@ private fun EditorAppearanceSettingsContent(s: EditorSettings, ideViewModel: Ide
         )
         HorizontalDivider(color = colors.separator)
         SettingStepper("Code font size", "${s.fontSize} sp", {
-            if (s.fontSize > 10) ideViewModel.setEditorSettings(s.copy(fontSize = s.fontSize - 1))
+            if (s.fontSize > 8) ideViewModel.setEditorSettings(s.copy(fontSize = s.fontSize - 1))
         }, {
             if (s.fontSize < 28) ideViewModel.setEditorSettings(s.copy(fontSize = s.fontSize + 1))
         })

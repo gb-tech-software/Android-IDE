@@ -91,6 +91,7 @@ class BrowserSessionRegistry(
     private val engine: BrowserEngine,
 ) : BrowserSessionService {
     private val sessions = linkedMapOf<String, BrowserEngineSession>()
+    private var presentedTabId: String? = null
 
     override fun createUnopenedSession(
         tabId: String,
@@ -123,13 +124,31 @@ class BrowserSessionRegistry(
 
     override fun existingSession(tabId: String): BrowserEngineSession? = sessions[tabId]
 
+    override fun setPresentedTab(tabId: String?, expectedPreviousTabId: String?): Boolean {
+        if (expectedPreviousTabId != null && presentedTabId != expectedPreviousTabId) return false
+        if (tabId != null && tabId !in sessions) return false
+        if (presentedTabId == tabId) return true
+        presentedTabId?.let(sessions::get)?.let { previous ->
+            previous.setFocused(false)
+            previous.setActive(false)
+        }
+        presentedTabId = tabId
+        tabId?.let(sessions::get)?.let { next ->
+            next.setActive(true)
+            next.setFocused(true)
+        }
+        return true
+    }
+
     override fun saveState(tabId: String): BrowserSerializedState? = sessions[tabId]?.saveState()
 
     override fun closeSession(tabId: String) {
+        if (presentedTabId == tabId) setPresentedTab(null)
         sessions.remove(tabId)?.close()
     }
 
     override fun closeAll() {
+        setPresentedTab(null)
         sessions.values.forEach(BrowserEngineSession::close)
         sessions.clear()
     }

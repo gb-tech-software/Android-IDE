@@ -31,6 +31,7 @@ data class BrowserTabUi(
     val canGoForward: Boolean,
     val viewportWidth: Int?,
     val thumbnailPath: String?,
+    val contentReady: Boolean = false,
 )
 
 data class BrowserUiState(
@@ -98,6 +99,7 @@ internal data class BrowserTabRuntime(
     var scrollListener: ((Int) -> Unit)? = null,
     var visualRevision: Int = 0,
     var thumbnailRevision: Int = -1,
+    var contentReady: Boolean = false,
     var navigationFailure: BrowserNavigationFailure? = null,
 )
 
@@ -256,6 +258,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             tab.canGoBack = event.canGoBack
             tab.canGoForward = event.canGoForward
             publish()
+        }
+
+        override fun onContentPaintStatusReset(tabId: String) {
+            if (sessions[tabId] !== tab) return
+            tab.contentReady = false
+            if (_uiState.value.selectedTabId == tabId) publish()
+        }
+
+        override fun onFirstContentfulPaint(tabId: String) {
+            if (sessions[tabId] !== tab) return
+            tab.contentReady = true
+            if (_uiState.value.selectedTabId == tabId) publish()
         }
 
         override fun onSerializedStateChanged(tabId: String, state: BrowserSerializedState) {
@@ -626,6 +640,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(tabId: String) {
         if (!sessions.containsKey(tabId)) return
+        // A painted GeckoSession remains ready when reattached; only Gecko's
+        // onPaintStatusReset callback should hide content for a real navigation.
         permissionService.pending.value?.tabId?.takeIf { it != tabId }?.let(permissionService::onTabDeselected)
         tabService.selectedTabId.value?.takeIf { it != tabId }?.let(permissionService::onTabDeselected)
         if (_uiState.value.websitePrompt?.tabId != null && _uiState.value.websitePrompt?.tabId != tabId) {
@@ -636,6 +652,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         tabService.select(tabId)
         storageService.saveSelectedTab(tabId)
         publish(selectedId = tabId)
+    }
+
+    /** Called by the stable Android host when it begins or ends presenting a tab's GeckoSession. */
+    fun setPresentedTab(tabId: String?, expectedPreviousTabId: String? = null): Boolean {
+        if (tabId != null && _uiState.value.selectedTabId != tabId) return false
+        if (!sessionService.setPresentedTab(tabId, expectedPreviousTabId)) return false
+        if (tabId == null) {
+            // Surface detach is not navigation and may not produce another first-paint callback.
+            publish()
+        }
+        return true
     }
 
     /** Returns true when closing this tab created a replacement because it was the last tab. */
@@ -891,7 +918,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(
             tabs = descriptors.map { descriptor ->
                 val runtime = sessions[descriptor.id]
-                BrowserTabUi(descriptor.id, descriptor.url, descriptor.title, descriptor.url.hostOrNewTab(), runtime?.canGoBack ?: false, runtime?.canGoForward ?: false, descriptor.viewportWidth, descriptor.thumbnail?.path)
+                BrowserTabUi(descriptor.id, descriptor.url, descriptor.title, descriptor.url.hostOrNewTab(), runtime?.canGoBack ?: false, runtime?.canGoForward ?: false, descriptor.viewportWidth, descriptor.thumbnail?.path, runtime?.contentReady == true)
             },
             selectedTabId = activeId,
             address = selected?.url?.takeUnless { it == DEFAULT_HOME }.orEmpty(),

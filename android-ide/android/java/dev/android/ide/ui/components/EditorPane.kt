@@ -104,11 +104,17 @@ fun EditorPane(
     keyboardToolbarOrder: List<String> = EditorSettings.DEFAULT_KEYBOARD_TOOLBAR_ORDER,
     tabCursorPositions: Map<String, Pair<Int, Int>> = emptyMap(),
     tabScrollPositions: Map<String, Int> = emptyMap(),
+    bottomAccessory: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val colors  = LocalIdeColors.current
     val rendererGone by rememberUpdatedState(onEditorRendererGone)
+    var keyboardToolbarPage by rememberSaveable { mutableIntStateOf(0) }
+
+    LaunchedEffect(keyboardToolbarOrder) {
+        keyboardToolbarPage = 0
+    }
 
     // ── EditorBridge — survives recompositions ─────────────────────────────
     val editorBridge: EditorBridge = remember { EditorBridge() }
@@ -408,6 +414,10 @@ fun EditorPane(
             }
         }
 
+        // Compact workspace controls belong to the same bottom stack as the
+        // editor symbol and keyboard bars, never as floating overlays.
+        bottomAccessory?.invoke()
+
         // Symbol shortcut bar — shown above keyboard toolbar when a tab is active
         if (activeTab != null && activeTab.content != null && !modelIsLoading && showSymbolBar) {
             HorizontalDivider(thickness = 1.dp, color = colors.separator)
@@ -443,6 +453,8 @@ fun EditorPane(
                 hasEditorSelection   = hasEditorSelection,
                 languageServerFeatures = languageServerFeatures,
                 actionOrder          = keyboardToolbarOrder,
+                selectedPage          = keyboardToolbarPage,
+                onSelectedPageChange  = { keyboardToolbarPage = it },
                 onToggleKeyboard     = { shouldShow ->
                     editorWebView.requestFocus()
                     val inputMethodManager = context.getSystemService(InputMethodManager::class.java)
@@ -623,6 +635,8 @@ private fun KeyboardToolbar(
     hasEditorSelection: Boolean,
     languageServerFeatures: Set<LanguageServerFeature>,
     actionOrder: List<String>,
+    selectedPage: Int,
+    onSelectedPageChange: (Int) -> Unit,
     onToggleKeyboard: (Boolean) -> Unit,
 ) {
     val colors = LocalIdeColors.current
@@ -631,14 +645,9 @@ private fun KeyboardToolbar(
         .mapNotNull(actionCatalog::get)
         .filter { it.requiredServerFeature == null || it.requiredServerFeature in languageServerFeatures }
     val pages = orderedActions.chunked(KEYBOARD_TOOLBAR_PAGE_SIZE)
-    var selectedPage by rememberSaveable { mutableIntStateOf(0) }
     val pageIndex = selectedPage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
     val density = LocalDensity.current
     val keyboardShowing = WindowInsets.ime.getBottom(density) > 0
-
-    LaunchedEffect(actionOrder) {
-        selectedPage = 0
-    }
 
     Column(
         modifier = Modifier
@@ -664,7 +673,7 @@ private fun KeyboardToolbar(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(
-                    onClick = { selectedPage = (pageIndex - 1).coerceAtLeast(0) },
+                    onClick = { onSelectedPageChange((pageIndex - 1).coerceAtLeast(0)) },
                     enabled = pageIndex > 0,
                     modifier = Modifier.size(44.dp).semantics { contentDescription = "Previous toolbar page" },
                 ) {
@@ -702,7 +711,7 @@ private fun KeyboardToolbar(
                     }
                 }
                 IconButton(
-                    onClick = { selectedPage = (pageIndex + 1).coerceAtMost(pages.lastIndex) },
+                    onClick = { onSelectedPageChange((pageIndex + 1).coerceAtMost(pages.lastIndex)) },
                     enabled = pageIndex < pages.lastIndex,
                     modifier = Modifier.size(44.dp).semantics { contentDescription = "Next toolbar page" },
                 ) {

@@ -43,6 +43,8 @@ import dev.android.ide.viewmodel.model.FileNode
 import dev.android.ide.viewmodel.model.FileOpDialog
 import dev.android.ide.viewmodel.model.FileSearchResult
 import dev.android.ide.viewmodel.model.IdeUiState
+import dev.android.ide.viewmodel.model.PackageOperation
+import dev.android.ide.viewmodel.model.PackageOperationSnapshot
 import dev.android.ide.viewmodel.model.ProjectSwitchRequest
 import dev.android.ide.project.ResourcePathResolution
 import dev.android.ide.project.ResourcePathResolver
@@ -118,6 +120,8 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val sessionRepository = services.sessionRepository
     private val editorSettingsRepo = services.editorSettingsRepository
     private val languageServerPackageInstaller = services.languageServerPackageInstaller
+    private val packageOperationGuard = Any()
+    @Volatile private var previewPackageOperationActive = false
     private val crashRecovery     = services.crashRecoveryRepository
     private val lifecycleStore    = services.lifecycleStateStore
     private val themeResolver     = services.themeResolver
@@ -125,7 +129,9 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(
         IdeUiState(
             recentProjects = projectRepository.getAll(),
-            editorSettings = editorSettingsRepo.getEditorSettings(),
+            editorSettings = editorSettingsRepo.getEditorSettings().let { settings ->
+                settings.copy(fontSize = settings.fontSize.coerceIn(8, 28))
+            },
             volumeKeyMode  = editorSettingsRepo.getVolumeKeyMode(),
         )
     )
@@ -177,14 +183,27 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             languageServerPackageInstaller.state.collect { setup ->
                 val enabled = _uiState.value.editorSettings.languageServerEnabled
                 _uiState.update { state ->
-                    if (state.editorSettings.languageServerEnabled) {
-                        state.copy(
-                            languageServerPackageSetupMessage = setup.message ?: "Checking language-server packages…",
-                            languageServerPackageSetupCanRetry = setup.canRetry,
-                        )
-                    } else {
-                        state.copy(languageServerPackageSetupMessage = null, languageServerPackageSetupCanRetry = false)
+                    val operation = when (setup.operation) {
+                        LanguageServerPackageInstaller.Operation.INSTALL -> PackageOperation.INSTALL
+                        LanguageServerPackageInstaller.Operation.UPDATE -> PackageOperation.UPDATE
+                        LanguageServerPackageInstaller.Operation.CHECK -> PackageOperation.CHECK
+                        LanguageServerPackageInstaller.Operation.REMOVE -> PackageOperation.REMOVE
+                        LanguageServerPackageInstaller.Operation.NONE -> PackageOperation.NONE
                     }
+                    state.copy(
+                        languageServerPackageOperation = PackageOperationSnapshot(
+                            operation = operation,
+                            active = setup.state == LanguageServerPackageInstaller.State.QUEUED ||
+                                setup.state == LanguageServerPackageInstaller.State.INSTALLING,
+                            installed = setup.installed,
+                            version = setup.version,
+                            message = setup.message,
+                        ),
+                        languageServerPackageSetupMessage = if (state.editorSettings.languageServerEnabled) {
+                            setup.message ?: "Checking language-server packages…"
+                        } else null,
+                        languageServerPackageSetupCanRetry = state.editorSettings.languageServerEnabled && setup.canRetry,
+                    )
                 }
                 if (enabled && setup.state == LanguageServerPackageInstaller.State.READY) {
                     val current = _uiState.value
@@ -198,6 +217,16 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
         restoreSession(previousSessionDirty)
         refreshProjectMetadata()
+        viewModelScope.launch(Dispatchers.IO) {
+            val status = services.projectLiveServer.packageStatus()
+            _uiState.update {
+                it.copy(previewPackageOperation = PackageOperationSnapshot(
+                    installed = status.installed,
+                    version = status.version,
+                    message = status.message,
+                ))
+            }
+        }
     }
 
     override fun onCleared() {
@@ -413,12 +442,13 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
     // ── Editor settings ─────────────────────────────────────────────────────
 
     fun setEditorSettings(settings: EditorSettings) {
+        val normalizedSettings = settings.copy(fontSize = settings.fontSize.coerceIn(8, 28))
         val previousSettings = _uiState.value.editorSettings
         val previousTheme = previousSettings.editorTheme
-        editorSettingsRepo.setEditorSettings(settings)
-        _uiState.update { it.copy(editorSettings = settings) }
-        if (settings.languageServerEnabled != previousSettings.languageServerEnabled) {
-            if (settings.languageServerEnabled) {
+        editorSettingsRepo.setEditorSettings(normalizedSettings)
+        _uiState.update { it.copy(editorSettings = normalizedSettings) }
+        if (normalizedSettings.languageServerEnabled != previousSettings.languageServerEnabled) {
+            if (normalizedSettings.languageServerEnabled) {
                 if (editorFeatureBoundaryReached) activateLanguageFeaturesAfterEditorReady()
             } else {
                 languageServerPackageInstaller.setEnabled(false)
@@ -441,46 +471,129 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         sendEditorCommand(EditorOutbound.SetEditorOptions(
-            tabSize                = settings.tabSize,
-            wordWrap               = settings.wordWrap,
-            lineNumbers            = settings.lineNumbers,
-            fontSize               = settings.fontSize,
-            renderWhitespace       = settings.renderWhitespace,
-            minimapEnabled         = settings.minimapEnabled,
-            scrollBeyondLastLine   = settings.scrollBeyondLastLine,
-            cursorStyle            = settings.cursorStyle,
-            bracketPairColorization= settings.bracketPairColorization,
-            autoClosingBrackets    = settings.autoClosingBrackets,
+            tabSize                = normalizedSettings.tabSize,
+            wordWrap               = normalizedSettings.wordWrap,
+            lineNumbers            = normalizedSettings.lineNumbers,
+            fontSize               = normalizedSettings.fontSize,
+            renderWhitespace       = normalizedSettings.renderWhitespace,
+            minimapEnabled         = normalizedSettings.minimapEnabled,
+            scrollBeyondLastLine   = normalizedSettings.scrollBeyondLastLine,
+            cursorStyle            = normalizedSettings.cursorStyle,
+            bracketPairColorization= normalizedSettings.bracketPairColorization,
+            autoClosingBrackets    = normalizedSettings.autoClosingBrackets,
         ))
-        if (_uiState.value.isEditorReady && settings.editorTheme != previousTheme) {
+        if (_uiState.value.isEditorReady && normalizedSettings.editorTheme != previousTheme) {
             sendEditorCommand(EditorOutbound.SetTheme(resolveMonacoTheme()))
         }
-        if (settings.hideGitFolder != previousSettings.hideGitFolder ||
-            settings.hideProjectMetadataFolder != previousSettings.hideProjectMetadataFolder
+        if (normalizedSettings.hideGitFolder != previousSettings.hideGitFolder ||
+            normalizedSettings.hideProjectMetadataFolder != previousSettings.hideProjectMetadataFolder
         ) {
             refreshProject()
         }
     }
 
-    fun retryLanguageServerPackageInstallation() {
-        if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.retry()
+    fun retryLanguageServerPackageInstallation(): Boolean {
+        if (_uiState.value.previewPackageOperation.active) return false
+        return if (_uiState.value.editorSettings.languageServerEnabled) languageServerPackageInstaller.retry() else false
     }
 
-    fun installLanguageServerTools() = languageServerPackageInstaller.installExplicitly()
+    fun installLanguageServerTools(): Boolean {
+        if (_uiState.value.previewPackageOperation.active) return false
+        return languageServerPackageInstaller.installExplicitly(LanguageServerPackageInstaller.Operation.INSTALL)
+    }
 
-    fun updateLanguageServerTools() = languageServerPackageInstaller.installExplicitly()
+    fun updateLanguageServerTools(): Boolean {
+        if (_uiState.value.previewPackageOperation.active) return false
+        return languageServerPackageInstaller.installExplicitly(LanguageServerPackageInstaller.Operation.UPDATE)
+    }
 
     suspend fun removeLanguageServerTools(): Boolean {
+        if (_uiState.value.previewPackageOperation.active) return false
         setEditorSettings(_uiState.value.editorSettings.copy(languageServerEnabled = false))
         languageServers.stopAll()
         return languageServerPackageInstaller.removePackages()
     }
 
-    suspend fun installPreviewPackage() = services.projectLiveServer.install()
+    suspend fun installPreviewPackage() {
+        runPreviewPackageOperation(PackageOperation.INSTALL) {
+            services.projectLiveServer.install()
+            true
+        }
+    }
 
-    suspend fun updatePreviewPackage() = services.projectLiveServer.update()
+    suspend fun updatePreviewPackage() {
+        runPreviewPackageOperation(PackageOperation.UPDATE) {
+            services.projectLiveServer.update()
+            true
+        }
+    }
 
-    suspend fun removePreviewPackage(): Boolean = services.projectLiveServer.remove()
+    suspend fun checkPreviewPackage() {
+        runPreviewPackageOperation(PackageOperation.CHECK) {
+            services.projectLiveServer.packageStatus()
+            true
+        }
+    }
+
+    suspend fun removePreviewPackage(): Boolean = runPreviewPackageOperation(PackageOperation.REMOVE) {
+        services.projectLiveServer.remove()
+    }
+
+    private suspend fun runPreviewPackageOperation(
+        operation: PackageOperation,
+        action: suspend () -> Boolean,
+    ): Boolean {
+        synchronized(packageOperationGuard) {
+            if (previewPackageOperationActive || _uiState.value.languageServerPackageOperation.active) return false
+            previewPackageOperationActive = true
+            _uiState.update {
+                it.copy(previewPackageOperation = PackageOperationSnapshot(
+                    operation = operation,
+                    active = true,
+                    installed = it.previewPackageOperation.installed,
+                    version = it.previewPackageOperation.version,
+                    message = when (operation) {
+                        PackageOperation.INSTALL -> "Installing preview server…"
+                        PackageOperation.UPDATE -> "Updating preview server…"
+                        PackageOperation.REMOVE -> "Removing preview server…"
+                        else -> "Checking preview server…"
+                    },
+                ))
+            }
+        }
+        return try {
+            val result = action()
+            val status = services.projectLiveServer.packageStatus()
+            _uiState.update {
+                it.copy(previewPackageOperation = PackageOperationSnapshot(
+                    operation = operation,
+                    installed = status.installed,
+                    version = status.version,
+                    message = when (operation) {
+                        PackageOperation.INSTALL -> "Preview server installed."
+                        PackageOperation.UPDATE -> "Preview server updated."
+                        PackageOperation.REMOVE -> "Preview server removed."
+                        else -> status.message
+                    },
+                ))
+            }
+            result
+        } catch (error: Throwable) {
+            val status = services.projectLiveServer.packageStatus()
+            _uiState.update {
+                it.copy(previewPackageOperation = PackageOperationSnapshot(
+                    operation = operation,
+                    installed = status.installed,
+                    version = status.version,
+                    message = error.message ?: "Preview package operation failed.",
+                ))
+            }
+            throw error
+        } finally {
+            synchronized(packageOperationGuard) { previewPackageOperationActive = false }
+            _uiState.update { it.copy(previewPackageOperation = it.previewPackageOperation.copy(active = false)) }
+        }
+    }
 
     fun setVolumeKeyMode(mode: VolumeKeyMode) {
         editorSettingsRepo.setVolumeKeyMode(mode)
@@ -960,6 +1073,91 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    private data class RecursiveTreeExpansionBudget(
+        val maximumNodes: Int = 10_000,
+        val maximumDepth: Int = 48,
+        var visitedNodes: Int = 0,
+        var truncated: Boolean = false,
+    )
+
+    /** Load and expand every descendant of a directory without blocking the UI thread. */
+    fun expandAllChildren(node: FileNode) {
+        if (node.documentUri == _uiState.value.projectRootUri) {
+            expandAllProjectChildren()
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val current = _uiState.value.fileTree.findNode(node.documentUri) ?: node
+            val budget = RecursiveTreeExpansionBudget()
+            val expanded = runCatching { expandTreeRecursively(current, budget, depth = 0) }
+                .getOrElse {
+                    _uiState.update { state -> state.copy(statusMessage = "Could not expand all folders") }
+                    return@launch
+                }
+            _uiState.update { state ->
+                state.copy(
+                    fileTree = state.fileTree.replaceNode(node.documentUri, expanded),
+                    statusMessage = if (budget.truncated) "Expanded the first ${budget.maximumNodes} file-tree entries; expand remaining folders individually" else state.statusMessage,
+                )
+            }
+        }
+    }
+
+    /** Expand every folder below the project root, fetching missing SAF children recursively. */
+    fun expandAllProjectChildren() {
+        val rootUri = _uiState.value.projectRootUri ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val budget = RecursiveTreeExpansionBudget()
+            val topLevel = runCatching {
+                _uiState.value.fileTree.ifEmpty { visibleFileTreeChildren(rootUri).sortedForTree() }
+                    .map { expandTreeRecursively(it, budget, depth = 0) }
+            }.getOrElse {
+                _uiState.update { state -> state.copy(statusMessage = "Could not expand all project folders") }
+                return@launch
+            }
+            _uiState.update { state ->
+                state.copy(
+                    fileTree = topLevel,
+                    statusMessage = if (budget.truncated) "Expanded the first ${budget.maximumNodes} file-tree entries; expand remaining folders individually" else state.statusMessage,
+                )
+            }
+        }
+    }
+
+    /** Collapse all descendant folders but keep the selected directory itself open. */
+    fun collapseAllChildren(node: FileNode) {
+        _uiState.update { state ->
+            val current = state.fileTree.findNode(node.documentUri) ?: node
+            val updated = current.copy(children = collapseTreeRecursively(current.children))
+            state.copy(fileTree = state.fileTree.replaceNode(node.documentUri, updated))
+        }
+    }
+
+    /** Collapse every folder below the project root while retaining the loaded child lists. */
+    fun collapseAllProjectChildren() {
+        _uiState.update { state -> state.copy(fileTree = collapseTreeRecursively(state.fileTree)) }
+    }
+
+    private suspend fun expandTreeRecursively(
+        node: FileNode,
+        budget: RecursiveTreeExpansionBudget,
+        depth: Int,
+    ): FileNode {
+        if (!node.isDirectory) return node
+        if (depth >= budget.maximumDepth || budget.visitedNodes >= budget.maximumNodes) {
+            budget.truncated = true
+            return node.copy(isExpanded = true)
+        }
+        val children = if (node.children.isNotEmpty()) node.children else visibleFileTreeChildren(node.documentUri).sortedForTree()
+        budget.visitedNodes = (budget.visitedNodes + children.size).coerceAtMost(budget.maximumNodes)
+        val expandedChildren = children.map { child -> expandTreeRecursively(child, budget, depth + 1) }
+        return node.copy(children = expandedChildren, isExpanded = true)
+    }
+
+    private fun collapseTreeRecursively(nodes: List<FileNode>): List<FileNode> = nodes.map { node ->
+        node.copy(isExpanded = false, children = collapseTreeRecursively(node.children))
     }
 
     // ── File tree clipboard — supports multi-item ───────────────────────────

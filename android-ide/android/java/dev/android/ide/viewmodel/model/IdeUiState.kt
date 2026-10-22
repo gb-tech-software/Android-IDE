@@ -23,6 +23,16 @@ data class EditorDiagnostic(
     val source: String? = null,
 )
 
+enum class PackageOperation { NONE, INSTALL, UPDATE, CHECK, REMOVE }
+
+data class PackageOperationSnapshot(
+    val operation: PackageOperation = PackageOperation.NONE,
+    val active: Boolean = false,
+    val installed: Boolean = false,
+    val version: String? = null,
+    val message: String? = null,
+)
+
 data class IdeUiState(
     // ── Navigation ─────────────────────────────────────────────────────────
     /** Which top-level screen is visible. */
@@ -163,6 +173,8 @@ data class IdeUiState(
     /** Package setup information is surfaced in settings only while LSP is enabled. */
     val languageServerPackageSetupMessage: String? = null,
     val languageServerPackageSetupCanRetry: Boolean = false,
+    val languageServerPackageOperation: PackageOperationSnapshot = PackageOperationSnapshot(),
+    val previewPackageOperation: PackageOperationSnapshot = PackageOperationSnapshot(),
 
     /** True once Monaco sends the "ready" message. */
     val isEditorReady: Boolean = false,

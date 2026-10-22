@@ -422,6 +422,12 @@ class SafRepository(private val context: Context) {
 
     private fun androidExternalStorageRoots(): List<File> = buildList {
         runCatching { Environment.getExternalStorageDirectory().canonicalFile }.getOrNull()?.let(::add)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+            runCatching {
+                context.getSystemService(android.os.storage.StorageManager::class.java)
+                    .storageVolumes.mapNotNull { it.directory?.canonicalFile }
+            }.getOrDefault(emptyList()).forEach(::add)
+        }
         val marker = "/Android/data/${context.packageName}/files"
         context.getExternalFilesDirs(null).filterNotNull().forEach { externalFiles ->
             runCatching {

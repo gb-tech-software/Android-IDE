@@ -124,7 +124,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
@@ -187,7 +186,8 @@ import dev.android.ide.browser.BrowserTabUi
 import dev.android.ide.browser.BrowserViewModel
 import dev.android.ide.browser.BrowserPermissionAnswer
 import dev.android.ide.data.ThemeResolver
-import dev.android.ide.ui.components.FloatingOverlayFrame
+import dev.android.ide.ui.components.AnchoredOverlayPanel
+import dev.android.ide.ui.components.AnchoredPanelPlacement
 import dev.android.ide.ui.theme.AndroidIDETheme
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -432,9 +432,9 @@ fun BrowserSurface(
     }
 }
 
-/** Browser-owned presentation host for previewing content above another domain. */
+/** Browser-owned, bottom-right anchored drawer for previewing content above another domain. */
 @Composable
-fun BrowserFloatingPanel(
+fun BrowserRightDrawer(
     browser: BrowserViewModel,
     initialNavigation: BrowserNavigationRequest?,
     onInitialNavigationConsumed: (String) -> Unit,
@@ -443,14 +443,13 @@ fun BrowserFloatingPanel(
     visible: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    FloatingOverlayFrame(
+    AnchoredOverlayPanel(
         modifier = modifier,
         visible = visible,
-        initialWidth = 460f,
-        initialHeight = 460f,
-        minWidth = 300f,
-        minHeight = 260f,
-        startFromRight = true,
+        placement = AnchoredPanelPlacement.RIGHT,
+        widthFraction = 1f,
+        initialHeightFraction = 0.82f,
+        minHeight = 280.dp,
     ) {
         androidx.compose.material3.Card(
             modifier = Modifier.fillMaxSize(),
@@ -509,6 +508,7 @@ private fun BrowserSurfaceContent(
     val drawerScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val activeDownloadCount = state.downloads.count { it.status == BrowserDownloadStatus.DOWNLOADING }
+    val selectedTabContentReady = state.tabs.firstOrNull { it.id == state.selectedTabId }?.contentReady == true
     LaunchedEffect(state.downloadFeedback) {
         state.downloadFeedback?.let { message ->
             snackbarHostState.showSnackbar(message)
@@ -801,7 +801,6 @@ private fun BrowserSurfaceContent(
                             onRetry = browser::retryNavigationFailure,
                         )
                     } ?: state.selectedTabId?.let { tabId ->
-                        key(tabId) {
                         AndroidView(
                             factory = { browserContext ->
                                 BrowserSurfaceBinding(browserContext).apply {
@@ -811,7 +810,7 @@ private fun BrowserSurfaceContent(
                             update = { surfaceBinding: BrowserSurfaceBinding ->
                                 visibleBrowserSurface.value = surfaceBinding
                                 browser.engineSession(tabId)?.let { engineSession ->
-                                    surfaceBinding.bind(tabId, engineSession, registerScrollListener) { scrollY ->
+                                    surfaceBinding.bind(tabId, engineSession, registerScrollListener, browser::setPresentedTab) { scrollY ->
                                         setUrlRowVisible(when {
                                             scrollY <= 0 -> true
                                             scrollY > previousScrollY + 2 -> false
@@ -824,18 +823,22 @@ private fun BrowserSurfaceContent(
                             },
                             modifier = Modifier.fillMaxSize(),
                         )
-                        }
-                        if (state.loading && state.navigationFailure == null) {
+                        if ((state.loading || !selectedTabContentReady) && state.navigationFailure == null) {
                             Box(
                                 Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.72f))
-                                    Text("Loading…", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall)
+                                    if (state.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.72f))
+                                    Text(
+                                        if (state.loading) "Loading…" else "Restoring tab…",
+                                        modifier = Modifier.padding(top = 12.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
                                 }
                             }
                         }
+                    }
                 }
                 if (addressFocused && addressSuggestionsOpen) {
                     val currentPage = browser.addressEditSuggestion()
@@ -1056,11 +1059,7 @@ private fun BrowserSurfaceContent(
         )
     }
 }
-
 }
-
-}
-
 }
 
 @Composable

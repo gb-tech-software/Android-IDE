@@ -1,7 +1,12 @@
 package dev.android.ide.saf
 
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.os.storage.StorageManager
 import dev.android.ide.contracts.CapabilityState
 import dev.android.ide.contracts.FileSystemLocation
 import dev.android.ide.contracts.FileSystemNode
@@ -77,6 +82,39 @@ class SafBackedFileSystem(
                     isDirectory = true,
                 ),
             )
+        }
+        val hasLegacyStorageAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+            appContext.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED &&
+            appContext.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        val hasAllFilesAccess = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+        if (hasAllFilesAccess || hasLegacyStorageAccess) {
+            val volumes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                appContext.getSystemService(StorageManager::class.java).storageVolumes.mapNotNull { volume ->
+                    volume.directory?.let { directory -> directory to volume.isRemovable }
+                }
+            } else {
+                val candidates = mutableListOf(Environment.getExternalStorageDirectory() to false)
+                appContext.getExternalFilesDirs(null).filterNotNull().forEach { appSpecific ->
+                    val volumeRoot = appSpecific.absolutePath.substringBefore("/Android/data/")
+                    if (volumeRoot != appSpecific.absolutePath) candidates += File(volumeRoot) to true
+                }
+                candidates
+            }
+            volumes.distinctBy { it.first.canonicalPath }.forEachIndexed { index, (directory, removable) ->
+                if (directory.isDirectory && directory.canRead()) {
+                    add(
+                        FileSystemNode(
+                            virtualPath = virtualPath(Uri.fromFile(directory).toString()),
+                            displayLabel = when {
+                                removable -> "SD card"
+                                index == 0 -> "Shared storage"
+                                else -> "External storage ${index + 1}"
+                            },
+                            isDirectory = true,
+                        ),
+                    )
+                }
+            }
         }
         appContext.contentResolver.persistedUriPermissions
             .asSequence()

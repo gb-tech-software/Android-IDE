@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MyLocation
@@ -377,6 +379,10 @@ fun EditorSidebar(
                 },
                 defaultPreviewPath = state.defaultPreviewPath,
                 onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) },
+                onCollapseAllChildren = ideViewModel::collapseAllChildren,
+                onExpandAllChildren = ideViewModel::expandAllChildren,
+                onCollapseAllRootChildren = ideViewModel::collapseAllProjectChildren,
+                onExpandAllRootChildren = ideViewModel::expandAllProjectChildren,
                 modifier = Modifier.weight(1f),
             )
             EditorPanel.FILENAME_SEARCH -> FileTreePanel(
@@ -402,7 +408,7 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
+                onFileSearchIncludeFoldersChange = ideViewModel::setFileSearchIncludeFolders, onSearchFileSelect = { result -> onFileSelected(result.documentUri) }, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, onCollapseAllChildren = ideViewModel::collapseAllChildren, onExpandAllChildren = ideViewModel::expandAllChildren, onCollapseAllRootChildren = ideViewModel::collapseAllProjectChildren, onExpandAllRootChildren = ideViewModel::expandAllProjectChildren, modifier = Modifier.weight(1f),
             )
             EditorPanel.CONTENT_SEARCH -> FileTreePanel(
                 nodes = state.fileTree, clipboardItems = state.clipboardItems, clipboardIsCut = state.clipboardIsCut,
@@ -429,7 +435,7 @@ fun EditorSidebar(
                 onReplaceProjectContents = ideViewModel::replaceProjectContents,
                 onReplaceFileContents = ideViewModel::replaceFileContents,
                 onClearContentSearchResults = ideViewModel::clearContentSearchResults,
-                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, modifier = Modifier.weight(1f),
+                onSearchFileSelect = onSearchResultSelected, onExecuteContentSearch = { ideViewModel.searchProjectContents(state.contentSearchQuery) }, onOpenTerminalAtRoot = { onOpenTerminal(root.documentUri) }, onOpenTerminalAt = { onOpenTerminal(it.documentUri) }, onOpenBrowserContent = { node -> ideViewModel.browserContentUri(node.documentUri)?.let(onOpenBrowserContent) }, defaultPreviewPath = state.defaultPreviewPath, onSetDefaultPreview = { node -> ideViewModel.setDefaultPreviewFile(node.documentUri) }, onCollapseAllChildren = ideViewModel::collapseAllChildren, onExpandAllChildren = ideViewModel::expandAllChildren, onCollapseAllRootChildren = ideViewModel::collapseAllProjectChildren, onExpandAllRootChildren = ideViewModel::expandAllProjectChildren, modifier = Modifier.weight(1f),
             )
         }
         }
@@ -568,53 +574,62 @@ private fun EditorWorkspace(
                 languageServerFeatures = state.languageServerFeatures,
                 showKeyboardToolbar = state.editorSettings.showKeyboardToolbar, showSymbolBar = state.editorSettings.showSymbolBar,
                 keyboardToolbarOrder = state.editorSettings.keyboardToolbarOrder,
-                tabCursorPositions = state.tabCursorPositions, tabScrollPositions = state.tabScrollPositions, modifier = Modifier.weight(1f).fillMaxWidth(),
+                tabCursorPositions = state.tabCursorPositions, tabScrollPositions = state.tabScrollPositions,
+                bottomAccessory = if (showChrome) {
+                    {
+                        Column(
+                            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            IconButton(
+                                onClick = shellViewModel::toggleBrowserOverlay,
+                                modifier = Modifier.size(34.dp).background(
+                                    color = if (shellState.browserOverlayVisible) colors.primaryContainer else colors.surfaceVariant,
+                                    shape = RoundedCornerShape(8.dp),
+                                ),
+                            ) {
+                                Icon(
+                                    Icons.Default.Language,
+                                    contentDescription = if (shellState.browserOverlayVisible) "Hide browser panel" else "Show browser panel",
+                                    tint = if (shellState.browserOverlayVisible) colors.primary else colors.textPrimary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = shellViewModel::toggleTerminalOverlay,
+                                modifier = Modifier.size(34.dp).background(
+                                    color = if (shellState.terminalOverlayVisible) colors.primaryContainer else colors.surfaceVariant,
+                                    shape = RoundedCornerShape(8.dp),
+                                ),
+                            ) {
+                                Icon(
+                                    Icons.Default.Terminal,
+                                    contentDescription = if (shellState.terminalOverlayVisible) "Hide terminal panel" else "Show terminal panel",
+                                    tint = if (shellState.terminalOverlayVisible) colors.primary else colors.textPrimary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                } else null,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
             )
             if (showChrome && state.editorSettings.showStatusBar && !keyboardVisible) EditorStatusBar(state, activeTab)
-        }
-        if (showChrome) {
-            IconButton(
-                onClick = shellViewModel::toggleTerminalOverlay,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(
-                        end = 12.dp,
-                        bottom = when {
-                            keyboardVisible -> 116.dp
-                            state.editorSettings.showStatusBar -> 58.dp
-                            else -> 18.dp
-                        },
-                    )
-                    .size(56.dp)
-                    .background(
-                        color = if (shellState.terminalOverlayVisible) colors.primaryContainer else colors.surfaceVariant,
-                        shape = androidx.compose.foundation.shape.CircleShape,
-                    )
-                    .zIndex(3f),
-            ) {
-                Icon(
-                    Icons.Default.Terminal,
-                    "Toggle floating terminal",
-                    tint = if (shellState.terminalOverlayVisible) colors.primary else colors.textPrimary,
-                    modifier = Modifier.size(28.dp),
+            if (showChrome) {
+                TerminalBottomSheet(
+                    state = shellState,
+                    viewModel = shellViewModel,
+                    terminalSettings = shellState.terminalSettings,
+                    onOpenSettings = onOpenSettings,
+                    onDismiss = shellViewModel::hideTerminalOverlay,
+                    visible = shellState.terminalOverlayVisible,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
         if (showChrome) {
-            TerminalFloatingPanel(
-                state = shellState,
-                viewModel = shellViewModel,
-                terminalSettings = shellState.terminalSettings,
-                onOpenSettings = onOpenSettings,
-                onDismiss = shellViewModel::hideTerminalOverlay,
-                visible = shellState.terminalOverlayVisible,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(2f),
-            )
-        }
-        if (showChrome) {
-            BrowserFloatingPanel(
+            BrowserRightDrawer(
                 browser = browserViewModel,
                 initialNavigation = shellState.pendingBrowserNavigations.firstOrNull(),
                 onInitialNavigationConsumed = shellViewModel::consumeBrowserNavigationRequest,

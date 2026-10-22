@@ -32,9 +32,11 @@ enum class Surface {
     HOME,
     DIAGNOSTICS,
     PROJECTS,
+    FILE_MANAGER,
     PROJECT_DETAILS,
     EDITOR,
     TERMINAL,
+    POSTGRESQL,
     BROWSER,
     SETTINGS,
 }

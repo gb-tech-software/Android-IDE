@@ -70,6 +70,8 @@ private class GeckoBrowserEngineSession(
     settings: BrowserSessionSettings,
     private val sink: BrowserEngineEventSink,
     ) : BrowserEngineSession {
+    private var requestedActive = false
+    private var requestedFocused = false
     internal val geckoSession = GeckoSession(
         GeckoSessionSettings.Builder()
             .userAgentMode(if (settings.desktopSite) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
@@ -154,6 +156,14 @@ private class GeckoBrowserEngineSession(
             }
         })
         geckoSession.setContentDelegate(object : GeckoSession.ContentDelegate {
+            override fun onPaintStatusReset(session: GeckoSession) {
+                sink.onContentPaintStatusReset(tabId)
+            }
+
+            override fun onFirstContentfulPaint(session: GeckoSession) {
+                sink.onFirstContentfulPaint(tabId)
+            }
+
             override fun onTitleChange(session: GeckoSession, title: String?) {
                 sink.onTitleChanged(BrowserTitleChanged(tabId, title.orEmpty()))
             }
@@ -469,6 +479,8 @@ private class GeckoBrowserEngineSession(
 
     override fun open() {
         geckoSession.open(runtime)
+        geckoSession.setActive(requestedActive)
+        geckoSession.setFocused(requestedFocused)
     }
 
     override fun attach(host: BrowserSurfaceHost) {
@@ -477,6 +489,20 @@ private class GeckoBrowserEngineSession(
             view.session?.let { view.releaseSession() }
             view.setSession(geckoSession)
         }
+        if (geckoSession.isOpen) {
+            geckoSession.setActive(requestedActive)
+            geckoSession.setFocused(requestedFocused)
+        }
+    }
+
+    override fun setActive(active: Boolean) {
+        requestedActive = active
+        if (geckoSession.isOpen) geckoSession.setActive(active)
+    }
+
+    override fun setFocused(focused: Boolean) {
+        requestedFocused = focused
+        if (geckoSession.isOpen) geckoSession.setFocused(focused)
     }
 
     override fun load(request: BrowserNavigation) {
@@ -580,6 +606,12 @@ private class GeckoBrowserEngineSession(
     }
 
     override fun close() {
+        requestedFocused = false
+        requestedActive = false
+        if (geckoSession.isOpen) {
+            geckoSession.setFocused(false)
+            geckoSession.setActive(false)
+        }
         geckoSession.close()
     }
 

@@ -8,14 +8,19 @@ import dev.android.ide.browser.BrowserEngineSession
 import dev.android.ide.browser.GeckoViewBrowserSurfaceHost
 import org.mozilla.geckoview.GeckoView
 
-/** Owns a disposable Android host for one selected browser session. */
+/** A single reusable Android host whose attached GeckoSession follows the selected tab. */
 class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     val engineView = GeckoView(context)
     val pageScrollY: Int get() = trackedScrollY
+
     private val host = GeckoViewBrowserSurfaceHost(engineView)
     private var trackedScrollY = 0
     private var activeTabId: String? = null
     private var pendingSession: BrowserEngineSession? = null
+    private var presentedTabId: String? = null
+    private var presentedSession: BrowserEngineSession? = null
+    private var bindingGeneration = 0L
+    private var onPresentedTabChanged: ((String?, String?) -> Boolean)? = null
     private var onScrollChanged: ((Int) -> Unit)? = null
     private var scrollListenerOwner: String? = null
     private var setScrollListener: ((String, ((Int) -> Unit)?) -> Unit)? = null
@@ -25,9 +30,7 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     }
 
     init {
-        // Compose drawers and floating DevTools controls must be composited above
-        // the page. GeckoView defaults to SurfaceView, which is a separate layer
-        // and can paint over or blank Compose overlays while they animate.
+        // Compose overlays must be composited above the page during tab transitions.
         engineView.setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
         addView(engineView, ViewGroup.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
@@ -36,14 +39,17 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
         tabId: String,
         session: BrowserEngineSession,
         registerScrollListener: (String, ((Int) -> Unit)?) -> Unit,
+        onPresentedTabChanged: (String?, String?) -> Boolean,
         onScroll: (Int) -> Unit,
     ) {
         if (activeTabId != tabId) {
             activeTabId?.let { previous -> setScrollListener?.invoke(previous, null) }
+            activeTabId = tabId
             trackedScrollY = 0
+            bindingGeneration++
         }
-        activeTabId = tabId
         pendingSession = session
+        this.onPresentedTabChanged = onPresentedTabChanged
         onScrollChanged = onScroll
 
         if (scrollListenerOwner != tabId || setScrollListener !== registerScrollListener) {
@@ -53,31 +59,46 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
             registerScrollListener(tabId, stableScrollListener)
         }
 
-        attachSessionWhenReady()
+        attachSelectedSession()
         onScroll(trackedScrollY)
     }
 
-    private fun attachSessionWhenReady() {
+    private fun attachSelectedSession() {
         if (!isAttachedToWindow) return
-        pendingSession?.attach(host)
+        val tabId = activeTabId ?: return
+        val session = pendingSession ?: return
+        if (presentedTabId != tabId || presentedSession !== session) {
+            val expectedPreviousTabId = presentedTabId?.takeIf { it != tabId }
+            if (onPresentedTabChanged?.invoke(tabId, expectedPreviousTabId) != true) return
+            presentedTabId = tabId
+            presentedSession = session
+        }
+        // The adapter releases any old GeckoView association before setting the new session.
+        session.attach(host)
     }
 
     override fun onDetachedFromWindow() {
+        val detachedTabId = presentedTabId
         scrollListenerOwner?.let { setScrollListener?.invoke(it, null) }
         scrollListenerOwner = null
-        // Detach only the view host. The tab-owned GeckoSession remains open so
-        // history, page state, and navigation survive surface recreation.
         if (engineView.session != null) engineView.releaseSession()
+        if (detachedTabId != null) {
+            onPresentedTabChanged?.invoke(null, detachedTabId)
+            presentedTabId = null
+            presentedSession = null
+        }
         super.onDetachedFromWindow()
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        // AndroidView may deliver update before the GeckoView is attached. Bind
-        // after attachment and once more on the next UI turn so a fresh host is
-        // never left with only the browser chrome rendered.
-        attachSessionWhenReady()
-        post { attachSessionWhenReady() }
+        val generation = bindingGeneration
+        attachSelectedSession()
+        // AndroidView can update before the view is attached; retry only if this binding
+        // still represents the same selected tab when the view reaches the next UI turn.
+        post {
+            if (isAttachedToWindow && generation == bindingGeneration) attachSelectedSession()
+        }
         val tabId = activeTabId
         if (tabId != null && scrollListenerOwner == null) {
             scrollListenerOwner = tabId
@@ -86,5 +107,4 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     }
 
     fun thumbnailView(): View = engineView
-
 }
