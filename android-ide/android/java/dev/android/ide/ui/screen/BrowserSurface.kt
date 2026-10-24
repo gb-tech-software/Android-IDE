@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -124,6 +125,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
@@ -132,9 +134,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
@@ -190,7 +196,7 @@ import dev.android.ide.ui.components.AnchoredOverlayPanel
 import dev.android.ide.ui.components.AnchoredPanelPlacement
 import dev.android.ide.ui.theme.AndroidIDETheme
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
 fun BrowserSurface(
     browser: BrowserViewModel,
@@ -471,7 +477,7 @@ fun BrowserRightDrawer(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun BrowserSurfaceContent(
     modifier: Modifier,
@@ -508,7 +514,6 @@ private fun BrowserSurfaceContent(
     val drawerScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val activeDownloadCount = state.downloads.count { it.status == BrowserDownloadStatus.DOWNLOADING }
-    val selectedTabContentReady = state.tabs.firstOrNull { it.id == state.selectedTabId }?.contentReady == true
     LaunchedEffect(state.downloadFeedback) {
         state.downloadFeedback?.let { message ->
             snackbarHostState.showSnackbar(message)
@@ -800,42 +805,47 @@ private fun BrowserSurfaceContent(
                             failure = failure,
                             onRetry = browser::retryNavigationFailure,
                         )
-                    } ?: state.selectedTabId?.let { tabId ->
-                        AndroidView(
-                            factory = { browserContext ->
-                                BrowserSurfaceBinding(browserContext).apply {
-                                    visibleBrowserSurface.value = this
-                                }
-                            },
-                            update = { surfaceBinding: BrowserSurfaceBinding ->
-                                visibleBrowserSurface.value = surfaceBinding
-                                browser.engineSession(tabId)?.let { engineSession ->
-                                    surfaceBinding.bind(tabId, engineSession, registerScrollListener, browser::setPresentedTab) { scrollY ->
+                    }
+                    state.tabs.forEach { tab ->
+                        val selected = tab.id == state.selectedTabId && state.navigationFailure == null
+                        key(tab.id) {
+                            AndroidView(
+                                factory = { browserContext -> BrowserSurfaceBinding(browserContext) },
+                                update = { surfaceBinding: BrowserSurfaceBinding ->
+                                    if (selected) visibleBrowserSurface.value = surfaceBinding
+                                    browser.engineSession(tab.id)?.let { engineSession ->
+                                        surfaceBinding.bind(tab.id, engineSession, selected, registerScrollListener, browser::setPresentedTab) { scrollY ->
+                                            if (!selected) return@bind
                                         setUrlRowVisible(when {
                                             scrollY <= 0 -> true
                                             scrollY > previousScrollY + 2 -> false
                                             scrollY < previousScrollY - 2 -> true
                                             else -> urlRowVisible
                                         })
-                                        setPreviousScrollY(scrollY)
+                                            setPreviousScrollY(scrollY)
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        if ((state.loading || !selectedTabContentReady) && state.navigationFailure == null) {
-                            Box(
-                                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    if (state.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.72f))
-                                    Text(
-                                        if (state.loading) "Loading…" else "Restoring tab…",
-                                        modifier = Modifier.padding(top = 12.dp),
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .offset(x = if (selected) 0.dp else maxWidth)
+                                    .focusProperties { canFocus = selected }
+                                    .semantics { if (!selected) invisibleToUser() },
+                            )
+                        }
+                    }
+                    if ((state.loading || state.tabs.firstOrNull { it.id == state.selectedTabId }?.restoring == true) && state.navigationFailure == null) {
+                        Box(
+                            Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (state.loading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth(0.72f))
+                                Text(
+                                    if (state.loading) "Loading…" else "Restoring tab…",
+                                    modifier = Modifier.padding(top = 12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                         }
                     }

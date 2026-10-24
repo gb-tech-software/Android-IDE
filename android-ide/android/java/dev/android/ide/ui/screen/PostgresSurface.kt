@@ -75,12 +75,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.android.ide.postgres.PostgresServerState
+import dev.android.ide.postgres.PostgresConfiguration
+import dev.android.ide.postgres.PostgresNetworkAccess
 import dev.android.ide.postgres.PostgresState
 import dev.android.ide.postgres.PostgresViewModel
 import dev.android.ide.postgres.POSTGRES_DEVICE_RESERVE_BYTES
 import dev.android.ide.postgres.POSTGRES_MAX_DATA_BYTES
 import dev.android.ide.postgres.POSTGRES_MIN_CONTAINER_BYTES
 import java.util.Locale
+import java.net.NetworkInterface
 
 @Composable
 fun PostgresSurface(
@@ -94,6 +97,10 @@ fun PostgresSurface(
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
     var packageMenuOpen by remember { mutableStateOf(false) }
+    var configurationDialogOpen by remember { mutableStateOf(false) }
+    var connectionHelpOpen by remember { mutableStateOf(false) }
+    var confirmPasswordRotation by remember { mutableStateOf(false) }
+    var confirmTlsRenewal by remember { mutableStateOf(false) }
     var databaseDialog by remember { mutableStateOf(false) }
     var databaseName by remember { mutableStateOf("app_db") }
     var databaseToDelete by remember { mutableStateOf<String?>(null) }
@@ -116,6 +123,9 @@ fun PostgresSurface(
     }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) viewModel.importDatabase(uri, restoreDatabaseName)
+    }
+    val tlsCertificateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-pem-file")) { uri ->
+        if (uri != null) viewModel.exportTlsCertificate(uri)
     }
 
     LaunchedEffect(projectId, state.status.databases) {
@@ -166,6 +176,31 @@ fun PostgresSurface(
                             onClick = { packageMenuOpen = false; logDialogOpen = true; viewModel.loadServiceLog() },
                         )
                         DropdownMenuItem(
+                            text = { Text("Network and server settings") },
+                            enabled = state.status.clusterInitialized && !state.busy && state.status.serverState in setOf(PostgresServerState.STOPPED, PostgresServerState.ERROR),
+                            onClick = { packageMenuOpen = false; configurationDialogOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Connect another device") },
+                            enabled = state.status.clusterInitialized,
+                            onClick = { packageMenuOpen = false; connectionHelpOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rotate database password") },
+                            enabled = state.status.clusterInitialized && state.status.serverState == PostgresServerState.RUNNING && !state.busy,
+                            onClick = { packageMenuOpen = false; confirmPasswordRotation = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export TLS certificate") },
+                            enabled = state.status.configuration.tlsEnabled && state.status.tlsCertificateAvailable && !state.busy,
+                            onClick = { packageMenuOpen = false; tlsCertificateLauncher.launch("postgres-server.crt") },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Renew TLS certificate") },
+                            enabled = state.status.configuration.tlsEnabled && state.status.clusterInitialized && state.status.serverState in setOf(PostgresServerState.STOPPED, PostgresServerState.ERROR) && !state.busy,
+                            onClick = { packageMenuOpen = false; confirmTlsRenewal = true },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Update PostgreSQL tools") },
                             leadingIcon = { Icon(Icons.Default.Refresh, null) },
                             enabled = state.status.packageInstalled && state.status.serverState != PostgresServerState.RUNNING && !state.busy,
@@ -192,6 +227,7 @@ fun PostgresSurface(
                     state.status.serverState,
                     state.status.packageInstalled,
                     state.status.clusterInitialized,
+                    state.status.configuration.networkAccess,
                     state.busy,
                     onInstall = { viewModel.installPackage() },
                     onInitialize = { viewModel.initializeCluster() },
@@ -235,6 +271,19 @@ fun PostgresSurface(
                     }
                 }
             }
+            if (state.operationLog.isNotEmpty()) {
+                item {
+                    PostgresOperationConsole(
+                        lines = state.operationLog,
+                        active = state.busy,
+                        onClear = viewModel::clearOperationLog,
+                        onCopy = {
+                            copyToClipboard(context, "PostgreSQL operation logs", state.operationLog.joinToString("\n"))
+                            viewModel.reportFeedback("PostgreSQL operation logs copied")
+                        },
+                    )
+                }
+            }
             if (!state.loading && !state.status.clusterInitialized) item {
                 ContainerBudgetCard(
                     configuredBytes = state.status.containerLimitBytes,
@@ -259,10 +308,13 @@ fun PostgresSurface(
                     ConnectionCard(
                         state = state,
                         selectedDatabase = selectedDatabase,
+                        configuration = state.status.configuration,
+                        certificateAvailable = state.status.tlsCertificateAvailable,
                         onReveal = { viewModel.loadConnectionUri(selectedDatabase) },
                         onHide = viewModel::hideConnectionUri,
                         onCopy = { uri -> copyToClipboard(context, "PostgreSQL connection URI", uri); viewModel.reportFeedback("Connection URI copied") },
                         onCopyPsqlCommand = { uri -> copyToClipboard(context, "PostgreSQL psql command", "psql '${uri}'"); viewModel.reportFeedback("psql connection command copied") },
+                        onExportTlsCertificate = { tlsCertificateLauncher.launch("postgres-server.crt") },
                     )
                 }
                 item {
@@ -324,6 +376,60 @@ fun PostgresSurface(
                 }
             }
         }
+    }
+
+    if (configurationDialogOpen) {
+        PostgresConfigurationDialog(
+            configuration = state.status.configuration,
+            serverRunning = state.status.serverState !in setOf(PostgresServerState.STOPPED, PostgresServerState.ERROR),
+            busy = state.busy,
+            onSave = { configuration -> viewModel.saveConfiguration(configuration) },
+            onDismiss = { configurationDialogOpen = false },
+        )
+    }
+    if (connectionHelpOpen) PostgresHelpDialog(configuration = state.status.configuration, onDismiss = { connectionHelpOpen = false })
+
+    if (confirmPasswordRotation) {
+        AlertDialog(
+            onDismissRequest = { confirmPasswordRotation = false },
+            icon = { Icon(Icons.Default.WarningAmber, null) },
+            title = { Text("Rotate the PostgreSQL password?") },
+            text = { Text("A new random password will immediately replace the current one. Existing connection strings and clients using the old password will stop working for new connections. The new password is shown once after rotation; copy it then.") },
+            confirmButton = {
+                Button(onClick = { confirmPasswordRotation = false; viewModel.rotatePassword() }, enabled = !state.busy && state.status.serverState == PostgresServerState.RUNNING) { Text("Rotate password") }
+            },
+            dismissButton = { TextButton(onClick = { confirmPasswordRotation = false }) { Text("Cancel") } },
+        )
+    }
+
+    if (confirmTlsRenewal) {
+        AlertDialog(
+            onDismissRequest = { confirmTlsRenewal = false },
+            icon = { Icon(Icons.Default.WarningAmber, null) },
+            title = { Text("Renew the TLS certificate?") },
+            text = { Text("A new self-signed certificate will replace the current one. Every client must receive and trust the new certificate. Stop PostgreSQL first, then export the renewed public certificate and distribute it securely. The private key is never exported.") },
+            confirmButton = {
+                Button(onClick = { confirmTlsRenewal = false; viewModel.renewTlsCertificate() }, enabled = !state.busy && state.status.serverState in setOf(PostgresServerState.STOPPED, PostgresServerState.ERROR)) { Text("Renew certificate") }
+            },
+            dismissButton = { TextButton(onClick = { confirmTlsRenewal = false }) { Text("Cancel") } },
+        )
+    }
+
+    state.rotatedPassword?.let { password ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissRotatedPassword,
+            title = { Text("New database password") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Copy and store this password securely. It will not be shown again after you close this message.", style = MaterialTheme.typography.bodySmall)
+                    Text(password, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace), modifier = Modifier.horizontalScroll(rememberScrollState()))
+                }
+            },
+            confirmButton = {
+                Button(onClick = { copyToClipboard(context, "PostgreSQL password", password); viewModel.reportFeedback("New PostgreSQL password copied"); viewModel.dismissRotatedPassword() }) { Text("Copy password") }
+            },
+            dismissButton = { TextButton(onClick = viewModel::dismissRotatedPassword) { Text("Done") } },
+        )
     }
 
     if (databaseDialog) {
@@ -414,10 +520,57 @@ fun PostgresSurface(
 }
 
 @Composable
+private fun PostgresOperationConsole(
+    lines: List<String>,
+    active: Boolean,
+    onClear: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    val consoleScrollState = rememberScrollState()
+    LaunchedEffect(lines.size) {
+        consoleScrollState.animateScrollTo(consoleScrollState.maxValue)
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Terminal, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("Operation console", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                if (active) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+                IconButton(onClick = onCopy) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy all operation logs")
+                }
+                TextButton(onClick = onClear, enabled = !active) { Text("Clear") }
+            }
+            Text(
+                if (active) "Live output from the current PostgreSQL operation" else "Output from the latest PostgreSQL operation",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 72.dp, max = 260.dp)
+                    .verticalScroll(consoleScrollState),
+            ) {
+                Text(
+                    lines.joinToString("\n"),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PostgresStatusCard(
     serverState: PostgresServerState,
     packageInstalled: Boolean,
     clusterInitialized: Boolean,
+    networkAccess: PostgresNetworkAccess,
     busy: Boolean,
     onInstall: () -> Unit,
     onInitialize: () -> Unit,
@@ -435,7 +588,11 @@ private fun PostgresStatusCard(
                         !packageInstalled -> "PostgreSQL tools are not installed"
                         !clusterInitialized -> "Package installed · cluster not initialized"
                         else -> when (serverState) {
-                            PostgresServerState.RUNNING -> "Running · accepting local connections"
+                            PostgresServerState.RUNNING -> when (networkAccess) {
+                                PostgresNetworkAccess.LOCAL_ONLY -> "Running · local connections only"
+                                PostgresNetworkAccess.ALLOWED_HOSTS -> "Running · selected remote IPs allowed"
+                                PostgresNetworkAccess.ALL_NETWORKS -> "Running · all reachable networks"
+                            }
                             PostgresServerState.STARTING -> "Starting the server…"
                             PostgresServerState.STOPPING -> "Stopping the server…"
                             PostgresServerState.ERROR -> "Server reported an error"
@@ -538,17 +695,43 @@ private fun StorageCard(usedBytes: Long, limitBytes: Long, availableBytes: Long,
 private fun ConnectionCard(
     state: PostgresState,
     selectedDatabase: String,
+    configuration: PostgresConfiguration,
+    certificateAvailable: Boolean,
     onReveal: () -> Unit,
     onHide: () -> Unit,
     onCopy: (String) -> Unit,
     onCopyPsqlCommand: (String) -> Unit,
+    onExportTlsCertificate: () -> Unit,
 ) {
+    val deviceAddresses = remember(configuration.networkAccess) { currentDeviceAddresses() }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("Connection", style = MaterialTheme.typography.titleSmall)
-            Text("Host  ${state.status.connection.host}    Port  ${state.status.connection.port}", style = MaterialTheme.typography.bodySmall)
+            Text("Local host  ${state.status.connection.host}    Port  ${configuration.port}", style = MaterialTheme.typography.bodySmall)
             Text("User  ${state.status.connection.user}    Database  ${state.revealedConnectionDatabase ?: selectedDatabase}", style = MaterialTheme.typography.bodySmall)
-            Text("Connect using a client you choose. The server listens only on this device's 127.0.0.1; it is not exposed to your Wi-Fi/LAN. The app does not launch or manage clients. psql accepts the URI as a connection argument; Node's pg driver accepts it as connectionString.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                when (configuration.networkAccess) {
+                    PostgresNetworkAccess.LOCAL_ONLY -> "Access is limited to this phone's 127.0.0.1. Other devices on Wi-Fi or a hotspot cannot connect."
+                    PostgresNetworkAccess.ALLOWED_HOSTS -> "Remote access is enabled only for: ${configuration.allowedHosts.joinToString()}. Other client addresses are rejected."
+                    PostgresNetworkAccess.ALL_NETWORKS -> "Remote access listens on all network interfaces. Any routed client can attempt to connect; use only a trusted private network."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (configuration.tlsEnabled) {
+                Text("TLS is enabled for remote connections. Export this server certificate and configure client trust before connecting.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                if (certificateAvailable) TextButton(onClick = onExportTlsCertificate) { Text("Export public TLS certificate") }
+            } else if (configuration.networkAccess != PostgresNetworkAccess.LOCAL_ONLY) {
+                Text("Remote PostgreSQL traffic is not TLS-encrypted. Use a trusted network or enable TLS in server settings.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (configuration.networkAccess != PostgresNetworkAccess.LOCAL_ONLY) {
+                Text(
+                    if (deviceAddresses.isEmpty()) "No current phone network address could be detected. Check Android's hotspot/network details." else "Possible phone addresses: ${deviceAddresses.take(4).joinToString()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("Addresses can change. On a hotspot, use this phone's hotspot-side address and allow the client device's own IP, whether it is a computer or another phone.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (!state.status.credentialsAvailable) {
                 Text("The protected connection credential is unavailable, so a password-bearing URI cannot be shown. Export any important data before attempting credential recovery.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
             }
@@ -572,6 +755,13 @@ private fun ConnectionCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text("This URI contains the generated database password. Share it only with trusted clients. Use it as a connection string or pass it to psql.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (configuration.networkAccess != PostgresNetworkAccess.LOCAL_ONLY) {
+                    deviceAddresses.take(4).forEach { address ->
+                        TextButton(onClick = { onCopy(uriWithHost(uri, address, configuration.port)) }) {
+                            Text("Copy URI for $address")
+                        }
+                    }
+                }
             }
         }
     }
@@ -627,6 +817,24 @@ private fun DatabaseRow(
             }
         }
     }
+}
+
+private fun currentDeviceAddresses(): List<String> = runCatching {
+    val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching emptyList()
+    java.util.Collections.list(interfaces)
+        .filter { runCatching { it.isUp && !it.isLoopback }.getOrDefault(false) }
+        .flatMap { networkInterface -> java.util.Collections.list(networkInterface.inetAddresses) }
+        .filterNot { it.isLoopbackAddress || it.isLinkLocalAddress || it.isMulticastAddress }
+        .map { it.hostAddress.substringBefore('%') }
+        .distinct()
+}.getOrDefault(emptyList())
+
+private fun uriWithHost(uri: String, address: String, port: Int): String {
+    val at = uri.lastIndexOf('@')
+    val slash = uri.indexOf('/', at)
+    if (at < 0 || slash < 0) return uri
+    val host = if (address.contains(':')) "[$address]" else address
+    return uri.substring(0, at + 1) + host + ":$port" + uri.substring(slash)
 }
 
 @Composable

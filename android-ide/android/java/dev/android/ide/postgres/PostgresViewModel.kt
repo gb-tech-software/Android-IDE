@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.text.DateFormat
+import java.util.Date
 
 class PostgresViewModel(application: Application) : AndroidViewModel(application), PostgresStateSource {
     private val service = ApplicationServices.from(application).postgresApplicationService
@@ -95,6 +97,41 @@ class PostgresViewModel(application: Application) : AndroidViewModel(application
 
     fun updatePackage() = requestWithSpaceCheck(PostgresPendingAction.UPDATE)
 
+    fun saveConfiguration(configuration: PostgresConfiguration) = perform("PostgreSQL settings saved") {
+        service.saveConfiguration(configuration)
+    }
+
+    fun rotatePassword() = viewModelScope.launch(Dispatchers.IO) {
+        mutableState.update { it.copy(busy = true, progress = "Rotating database password…", feedback = null, error = null, revealedConnectionUri = null, rotatedPassword = null) }
+        runCatching { service.rotatePassword() }
+            .onSuccess { password ->
+                val latest = runCatching { service.inspect() }.getOrNull()
+                mutableState.update {
+                    it.copy(
+                        busy = false,
+                        progress = null,
+                        status = latest ?: it.status,
+                        rotatedPassword = password,
+                        feedback = "Database password rotated. Copy the new password now.",
+                    )
+                }
+            }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                mutableState.update { it.copy(busy = false, progress = null, error = error.message ?: "The database password could not be rotated") }
+            }
+    }
+
+    fun dismissRotatedPassword() = mutableState.update { it.copy(rotatedPassword = null) }
+
+    fun exportTlsCertificate(destination: Uri) = perform("Exporting PostgreSQL TLS certificate") {
+        service.exportTlsCertificate(destination)
+    }
+
+    fun renewTlsCertificate() = perform("TLS certificate renewed · export it again to clients") {
+        service.renewTlsCertificate()
+    }
+
     fun createDatabase(name: String) = perform("Creating database") {
         service.createDatabase(name.trim())
     }
@@ -149,6 +186,7 @@ class PostgresViewModel(application: Application) : AndroidViewModel(application
             }
     }
     fun dismissServiceLog() = mutableState.update { it.copy(serviceLog = null) }
+    fun clearOperationLog() = mutableState.update { it.copy(operationLog = emptyList()) }
     fun clearStopReason() = viewModelScope.launch(Dispatchers.IO) {
         service.clearStopReason()
         refresh()
@@ -198,14 +236,17 @@ class PostgresViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun perform(successMessage: String, operation: suspend () -> Unit) = viewModelScope.launch(Dispatchers.IO) {
+        appendOperationLog("▶ $successMessage")
         mutableState.update { it.copy(busy = true, progress = successMessage, feedback = null, error = null, revealedConnectionUri = null) }
         runCatching { operation() }
             .onSuccess {
                 val latest = runCatching { service.inspect() }.getOrNull()
+                appendOperationLog("✓ $successMessage complete")
                 mutableState.update { it.copy(busy = false, progress = null, status = latest ?: it.status, feedback = successMessage) }
             }
             .onFailure { error ->
                 if (error is CancellationException) throw error
+                appendOperationLog("✕ ${error.message ?: "$successMessage failed"}")
                 mutableState.update {
                     it.copy(busy = false, progress = null, error = error.message ?: "$successMessage failed")
                 }
@@ -213,6 +254,23 @@ class PostgresViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun updateProgress(message: String) {
-        mutableState.update { it.copy(progress = message.take(180)) }
+        val bounded = message.take(180)
+        mutableState.update { current ->
+            if (current.progress == bounded) current
+            else current.copy(progress = bounded, operationLog = appendLog(current.operationLog, "· $bounded"))
+        }
+    }
+
+    private fun appendOperationLog(message: String) {
+        mutableState.update { it.copy(operationLog = appendLog(it.operationLog, message)) }
+    }
+
+    private fun appendLog(existing: List<String>, message: String): List<String> {
+        val timestamp = DateFormat.getTimeInstance(DateFormat.MEDIUM).format(Date())
+        return (existing + "[$timestamp] $message").takeLast(MAX_OPERATION_LOG_LINES)
+    }
+
+    private companion object {
+        const val MAX_OPERATION_LOG_LINES = 200
     }
 }

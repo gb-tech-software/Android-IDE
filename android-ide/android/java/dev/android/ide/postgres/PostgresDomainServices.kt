@@ -17,8 +17,10 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.net.NetworkInterface
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.KeyStore
@@ -37,6 +39,8 @@ class PostgresStorageAdapter(context: Context) {
     val socketDirectory = File(root, "socket")
     val log = File(root, "postgresql.log")
     val passwordFile = File(root, ".pgpass")
+    val serverCertificate = File(root, "postgres-server.crt")
+    val serverPrivateKey = File(root, "postgres-server.key")
     private val temporaryPasswordFile = File(root, ".initdb-password")
 
     fun availableBytes(): Long = root.parentFile?.usableSpace ?: root.usableSpace
@@ -136,13 +140,18 @@ class PostgresCredentialVault(context: Context) {
     fun create(): String {
         val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
         val password = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        store(password)
+        return password
+    }
+
+    @Synchronized
+    fun store(password: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val encrypted = cipher.iv + cipher.doFinal(password.toByteArray(Charsets.UTF_8))
         check(preferences.edit().putString(PASSWORD_KEY, Base64.getEncoder().encodeToString(encrypted)).commit()) {
             "The PostgreSQL credential could not be saved"
         }
-        return password
     }
 
     @Synchronized
@@ -188,6 +197,7 @@ class PostgresApplicationService(
     private val pgRestore get() = File(prefix, "bin/pg_restore")
     private val createDb get() = File(prefix, "bin/createdb")
     private val dropDb get() = File(prefix, "bin/dropdb")
+    private val openssl get() = File(prefix, "bin/openssl")
     private val requiredTools get() = listOf(pgCtl, initDb, psql, pgDump, pgRestore, createDb, dropDb)
     private val socketPath get() = storage.socketDirectory.absolutePath
     private val serviceLock = Mutex()
@@ -205,6 +215,7 @@ class PostgresApplicationService(
             result.exitCode == 0
         }.getOrDefault(false)
         val password = credentials.read()
+        val serverConfiguration = configuredServerConfiguration()
         PostgresStatus(
             packageInstalled = installed,
             clusterInitialized = initialized,
@@ -215,6 +226,9 @@ class PostgresApplicationService(
             availableBytes = storage.availableBytes(),
             credentialsAvailable = password != null && storage.passwordFile.isFile,
             lastStopReason = preferences.getString(STOP_REASON_KEY, null),
+            configuration = serverConfiguration,
+            connection = PostgresConnectionInfo(port = serverConfiguration.port),
+            tlsCertificateAvailable = storage.serverCertificate.isFile && storage.serverPrivateKey.isFile,
         )
     }
 
@@ -246,6 +260,157 @@ class PostgresApplicationService(
         if (bytes > maximum) throw IllegalArgumentException("The maximum available container size is ${maximum / 1_000_000} MB while preserving 0.5 GB for Android")
         if (bytes < usedBytes) throw IllegalArgumentException("The selected limit is smaller than current database usage (${usedBytes / 1_000_000} MB). Export or remove data first.")
         if (!preferences.edit().putLong(CONTAINER_LIMIT_KEY, bytes).commit()) throw IOException("The PostgreSQL storage limit could not be saved")
+    }
+
+    override suspend fun saveConfiguration(configuration: PostgresConfiguration): Unit = mutationLock.withLock {
+        serviceLock.withLock {
+            withContext(Dispatchers.IO) {
+                if (!File(storage.data, "PG_VERSION").isFile) throw IllegalStateException("Initialize the PostgreSQL cluster before configuring its network or server settings")
+                if (isServerRunning()) throw IllegalStateException("Stop PostgreSQL before saving settings; changes take effect on the next start")
+                val validated = PostgresConfigurationPolicy.validate(configuration)
+                val previous = configuredServerConfiguration()
+                try {
+                    if (validated.tlsEnabled) ensureTlsCertificate()
+                    writeManagedConfiguration(validated)
+                    if (!storeServerConfiguration(validated)) throw IOException("PostgreSQL settings could not be saved")
+                    credentials.read()?.let { password ->
+                        storage.writePrivate(storage.passwordFile, "127.0.0.1:${validated.port}:*:postgres:$password\n[::1]:${validated.port}:*:postgres:$password\n")
+                    }
+                } catch (error: Throwable) {
+                    runCatching { storeServerConfiguration(previous) }
+                    runCatching { writeManagedConfiguration(previous) }
+                    credentials.read()?.let { password ->
+                        runCatching { storage.writePrivate(storage.passwordFile, "127.0.0.1:${previous.port}:*:postgres:$password\n[::1]:${previous.port}:*:postgres:$password\n") }
+                    }
+                    throw error
+                }
+                Unit
+            }
+        }
+    }
+
+    private fun storeServerConfiguration(configuration: PostgresConfiguration): Boolean = preferences.edit()
+        .putString(NETWORK_ACCESS_KEY, configuration.networkAccess.name)
+        .putStringSet(ALLOWED_HOSTS_KEY, configuration.allowedHosts.toSet())
+        .putBoolean(TLS_ENABLED_KEY, configuration.tlsEnabled)
+        .putInt(PORT_KEY, configuration.port)
+        .putInt(MAX_CONNECTIONS_KEY, configuration.maxConnections)
+        .putInt(SHARED_BUFFERS_MB_KEY, configuration.sharedBuffersMb)
+        .putInt(WORK_MEM_MB_KEY, configuration.workMemMb)
+        .commit()
+
+    private fun configuredServerConfiguration(): PostgresConfiguration = PostgresConfigurationPolicy.validate(
+        PostgresConfiguration(
+            networkAccess = runCatching {
+                PostgresNetworkAccess.valueOf(preferences.getString(NETWORK_ACCESS_KEY, null) ?: PostgresNetworkAccess.LOCAL_ONLY.name)
+            }.getOrDefault(PostgresNetworkAccess.LOCAL_ONLY),
+            allowedHosts = preferences.getStringSet(ALLOWED_HOSTS_KEY, emptySet()).orEmpty().toList(),
+            tlsEnabled = preferences.getBoolean(TLS_ENABLED_KEY, false),
+            port = preferences.getInt(PORT_KEY, 5432),
+            maxConnections = preferences.getInt(MAX_CONNECTIONS_KEY, 10),
+            sharedBuffersMb = preferences.getInt(SHARED_BUFFERS_MB_KEY, 64),
+            workMemMb = preferences.getInt(WORK_MEM_MB_KEY, 4),
+        ),
+    )
+
+    private fun writeManagedConfiguration(configuration: PostgresConfiguration) {
+        val file = File(storage.data, "postgresql.conf")
+        val begin = "# BEGIN ANDROID IDE MANAGED SETTINGS"
+        val end = "# END ANDROID IDE MANAGED SETTINGS"
+        val settings = mutableListOf(
+            begin,
+            "listen_addresses = '${PostgresConfigurationPolicy.listenAddresses(configuration)}'",
+            "port = ${configuration.port}",
+            "unix_socket_directories = '${socketPath.replace("'", "''")}'",
+            "ssl = ${if (configuration.tlsEnabled) "on" else "off"}",
+        )
+        if (configuration.tlsEnabled) {
+            settings += "ssl_cert_file = '${storage.serverCertificate.absolutePath}'"
+            settings += "ssl_key_file = '${storage.serverPrivateKey.absolutePath}'"
+        }
+        settings += listOf(
+            "max_connections = ${configuration.maxConnections}",
+            "shared_buffers = '${configuration.sharedBuffersMb}MB'",
+            "work_mem = '${configuration.workMemMb}MB'",
+            "max_wal_size = '256MB'",
+            "temp_file_limit = '512MB'",
+            "password_encryption = 'scram-sha-256'",
+            "logging_collector = on",
+            "log_directory = 'log'",
+            "log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'",
+            "log_rotation_age = '1d'",
+            "log_rotation_size = '10MB'",
+            "log_truncate_on_rotation = on",
+            end,
+        )
+        val block = settings.joinToString("\n")
+        val current = if (file.isFile) file.readText(Charsets.UTF_8) else ""
+        val managed = Regex("(?s)\\Q$begin\\E.*?\\Q$end\\E\\s*")
+        val next = if (managed.containsMatchIn(current)) managed.replace(current, "$block\n") else "${current.trimEnd()}\n\n$block\n"
+        storage.writePrivate(file, next)
+
+        val hba = buildString {
+            appendLine("# Managed by Android IDE. Remote hosts always require SCRAM-SHA-256.")
+            appendLine("local all all scram-sha-256")
+            appendLine("host all all 127.0.0.1/32 scram-sha-256")
+            appendLine("host all all ::1/128 scram-sha-256")
+            PostgresConfigurationPolicy.hostRules(configuration).forEach { appendLine(it) }
+        }
+        storage.writePrivate(File(storage.data, "pg_hba.conf"), hba)
+    }
+
+    private fun ensureTlsCertificate(force: Boolean = false) {
+        if (!force && storage.serverCertificate.isFile && storage.serverPrivateKey.isFile) return
+        if (!openssl.canExecute()) throw IOException("The bundled OpenSSL command is unavailable; install or update the PostgreSQL tools before enabling TLS")
+        storage.ensurePrivateDirectory(storage.root)
+        val temporaryCertificate = File(storage.root, ".postgres-server-next.crt")
+        val temporaryKey = File(storage.root, ".postgres-server-next.key")
+        val previousCertificate = storage.serverCertificate.takeIf { it.isFile }?.readText(Charsets.UTF_8)
+        val previousKey = storage.serverPrivateKey.takeIf { it.isFile }?.readText(Charsets.UTF_8)
+        temporaryCertificate.delete()
+        temporaryKey.delete()
+        try {
+            val sanEntries = buildList {
+                add("DNS:android-ide-postgres")
+                add("IP:127.0.0.1")
+                val interfaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull()
+                if (interfaces != null) {
+                    java.util.Collections.list(interfaces)
+                        .filter { runCatching { it.isUp }.getOrDefault(false) }
+                        .flatMap { java.util.Collections.list(it.inetAddresses) }
+                        .filterNot { it.isLoopbackAddress || it.isLinkLocalAddress || it.isMulticastAddress }
+                        .map { "IP:${it.hostAddress.substringBefore('%')}" }
+                        .forEach { add(it) }
+                }
+            }.distinct().joinToString(",")
+            runProcess(
+                listOf(
+                    openssl.absolutePath, "req", "-new", "-x509", "-nodes", "-days", "3650",
+                    "-keyout", temporaryKey.absolutePath,
+                    "-out", temporaryCertificate.absolutePath,
+                    "-subj", "/CN=android-ide-postgres",
+                    "-addext", "subjectAltName=$sanEntries",
+                    "-addext", "basicConstraints=critical,CA:TRUE",
+                    "-addext", "keyUsage=critical,digitalSignature,keyCertSign,keyEncipherment",
+                    "-addext", "extendedKeyUsage=serverAuth",
+                ),
+                timeoutSeconds = 45,
+            ).requireSuccess("The PostgreSQL TLS certificate could not be generated")
+            if (!temporaryCertificate.isFile || !temporaryKey.isFile) throw IOException("OpenSSL did not create the PostgreSQL TLS certificate and key")
+            Os.chmod(temporaryCertificate.absolutePath, 0b110000000)
+            Os.chmod(temporaryKey.absolutePath, 0b110000000)
+            Files.move(temporaryCertificate.toPath(), storage.serverCertificate.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.move(temporaryKey.toPath(), storage.serverPrivateKey.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (error: Throwable) {
+            runCatching {
+                if (previousCertificate != null) storage.writePrivate(storage.serverCertificate, previousCertificate) else storage.serverCertificate.delete()
+                if (previousKey != null) storage.writePrivate(storage.serverPrivateKey, previousKey) else storage.serverPrivateKey.delete()
+            }.exceptionOrNull()?.let(error::addSuppressed)
+            throw error
+        } finally {
+            temporaryCertificate.delete()
+            temporaryKey.delete()
+        }
     }
 
     private fun configuredContainerLimit(): Long {
@@ -327,27 +492,9 @@ class PostgresApplicationService(
                     ),
                     timeoutSeconds = 180,
                 ).requireSuccess("PostgreSQL cluster initialization failed")
-                storage.writePrivate(storage.passwordFile, "127.0.0.1:5432:*:postgres:$password\n")
+                storage.writePrivate(storage.passwordFile, "127.0.0.1:5432:*:postgres:$password\n[::1]:5432:*:postgres:$password\n")
                 onProgress("Applying local-only server defaults…")
-                val config = File(storage.data, "postgresql.conf")
-                config.appendText(
-                    "\n# Android IDE local development defaults\n" +
-                        "listen_addresses = '127.0.0.1'\n" +
-                        "port = 5432\n" +
-                        "unix_socket_directories = '${socketPath.replace("'", "''")}'\n" +
-                        "max_connections = 10\n" +
-                        "shared_buffers = '64MB'\n" +
-                        "work_mem = '4MB'\n" +
-                        "max_wal_size = '256MB'\n" +
-                        "temp_file_limit = '512MB'\n" +
-                        "logging_collector = on\n" +
-                        "log_directory = 'log'\n" +
-                        "log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'\n" +
-                        "log_rotation_age = '1d'\n" +
-                        "log_rotation_size = '10MB'\n" +
-                        "log_truncate_on_rotation = on\n",
-                    Charsets.UTF_8,
-                )
+                writeManagedConfiguration(configuredServerConfiguration())
                 preferences.edit().remove(STOP_REASON_KEY).commit()
                 Unit
             } catch (error: Throwable) {
@@ -379,7 +526,7 @@ class PostgresApplicationService(
             storage.ensurePrivateDirectory(storage.socketDirectory)
             storage.rotateManagerLog()
             preferences.edit().remove(STOP_REASON_KEY).putBoolean(STOP_FAILURE_KEY, false).commit()
-            val options = "-c listen_addresses=127.0.0.1 -c port=5432 -c unix_socket_directories=$socketPath -c max_connections=10 -c shared_buffers=64MB -c work_mem=4MB -c max_wal_size=256MB -c temp_file_limit=512MB"
+            val options = "-c unix_socket_directories=$socketPath"
             runProcess(
                 listOf(
                     pgCtl.absolutePath, "-D", storage.data.absolutePath,
@@ -442,7 +589,7 @@ class PostgresApplicationService(
         withContext(Dispatchers.IO) {
             requireValidDatabaseName(name)
             requireServerReady()
-            runProcess(listOf(createDb.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", name), timeoutSeconds = 60, usePasswordFile = true)
+            runProcess(listOf(createDb.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", name), timeoutSeconds = 60, usePasswordFile = true)
                 .requireSuccess("Database could not be created")
         }
     }
@@ -452,7 +599,7 @@ class PostgresApplicationService(
             requireValidDatabaseName(name)
             if (name == "postgres" || name == "template0" || name == "template1") throw IOException("Built-in PostgreSQL databases cannot be removed")
             requireServerReady()
-            runProcess(listOf(dropDb.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", name), timeoutSeconds = 60, usePasswordFile = true)
+            runProcess(listOf(dropDb.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", name), timeoutSeconds = 60, usePasswordFile = true)
                 .requireSuccess("Database could not be removed")
         }
     }
@@ -465,7 +612,7 @@ class PostgresApplicationService(
                 ?: throw IOException("The selected export destination could not be opened")
             onProgress("Streaming a PostgreSQL custom-format backup…")
             val process = processBuilder(
-                listOf(pgDump.absolutePath, "--format=custom", "--file=-", "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", "--dbname=$name"),
+                listOf(pgDump.absolutePath, "--format=custom", "--file=-", "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", "--dbname=$name"),
                 usePasswordFile = true,
                 mergeError = false,
             ).redirectError(storage.log).start()
@@ -490,11 +637,11 @@ class PostgresApplicationService(
             if (storage.availableBytes() < MIN_START_SPACE_BYTES) throw IOException("Not enough free device storage to restore a database")
             val input = appContext.contentResolver.openInputStream(source) ?: throw IOException("The selected backup file could not be opened")
             try {
-                runProcess(listOf(createDb.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", newDatabaseName), 60, usePasswordFile = true)
+                runProcess(listOf(createDb.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", newDatabaseName), 60, usePasswordFile = true)
                     .requireSuccess("Could not create the destination database")
                 onProgress("Restoring into the new database; existing databases are unchanged…")
                 val process = processBuilder(
-                    listOf(pgRestore.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", "--no-owner", "--exit-on-error", "--dbname=$newDatabaseName"),
+                    listOf(pgRestore.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", "--no-owner", "--exit-on-error", "--dbname=$newDatabaseName"),
                     usePasswordFile = true,
                 ).redirectErrorStream(true).redirectOutput(storage.root.resolve("restore.log")).start()
                 input.use { sourceStream -> process.outputStream.use { target -> sourceStream.copyTo(target, DEFAULT_BUFFER_SIZE * 8) } }
@@ -508,7 +655,7 @@ class PostgresApplicationService(
                 }
             } catch (error: Throwable) {
                 runCatching {
-                    runProcess(listOf(dropDb.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--no-password", newDatabaseName), 30, usePasswordFile = true)
+                    runProcess(listOf(dropDb.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--no-password", newDatabaseName), 30, usePasswordFile = true)
                 }
                 if (error is CancellationException) throw error
                 throw error
@@ -519,7 +666,68 @@ class PostgresApplicationService(
     override suspend fun connectionUri(database: String): String? = withContext(Dispatchers.IO) {
         if (!database.matches(DATABASE_NAME_PATTERN)) return@withContext null
         val password = credentials.read() ?: return@withContext null
-        "postgresql://postgres:$password@127.0.0.1:5432/$database"
+        "postgresql://postgres:$password@127.0.0.1:${configuredServerConfiguration().port}/$database"
+    }
+
+    override suspend fun rotatePassword(): String = mutationLock.withLock {
+        serviceLock.withLock {
+            withContext(Dispatchers.IO) {
+                requireServerReady()
+                val previousPassword = credentials.read() ?: throw IOException("The protected PostgreSQL password is unavailable")
+                val bytes = ByteArray(32).also(SecureRandom()::nextBytes)
+                val nextPassword = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+                val sqlFile = File(storage.root, ".rotate-password.sql")
+                val nextPasswordFile = File(storage.root, ".pgpass-next")
+                var databasePasswordChanged = false
+                try {
+                    storage.writePrivate(sqlFile, "ALTER ROLE postgres WITH PASSWORD '$nextPassword';\n")
+                    storage.writePrivate(
+                        nextPasswordFile,
+                        "127.0.0.1:${configuredServerConfiguration().port}:*:postgres:$nextPassword\n[::1]:${configuredServerConfiguration().port}:*:postgres:$nextPassword\n",
+                    )
+                    credentials.store(nextPassword)
+                    runProcess(
+                        listOf(psql.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--dbname=postgres", "--no-password", "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--file=${sqlFile.absolutePath}"),
+                        timeoutSeconds = 30,
+                        usePasswordFile = true,
+                    ).requireSuccess("PostgreSQL password rotation failed")
+                    databasePasswordChanged = true
+                    if (!nextPasswordFile.renameTo(storage.passwordFile)) {
+                        storage.writePrivate(storage.passwordFile, nextPasswordFile.readText(Charsets.UTF_8))
+                        nextPasswordFile.delete()
+                    }
+                    nextPassword
+                } catch (error: Throwable) {
+                    // Restore the old vault value only when PostgreSQL rejected the change.
+                    if (!databasePasswordChanged) runCatching { credentials.store(previousPassword) }
+                    throw error
+                } finally {
+                    sqlFile.delete()
+                    nextPasswordFile.delete()
+                }
+            }
+        }
+    }
+
+    override suspend fun exportTlsCertificate(destination: Uri) {
+        withContext(Dispatchers.IO) {
+            if (!storage.serverCertificate.isFile) throw IOException("No PostgreSQL TLS certificate is available to export")
+            val output = appContext.contentResolver.openOutputStream(destination, "w")
+                ?: throw IOException("The selected certificate destination could not be opened")
+            storage.serverCertificate.inputStream().use { source -> output.use { source.copyTo(it) } }
+        }
+    }
+
+    override suspend fun renewTlsCertificate(): Unit = mutationLock.withLock {
+        serviceLock.withLock {
+            withContext(Dispatchers.IO) {
+                if (!File(storage.data, "PG_VERSION").isFile) throw IOException("Initialize the PostgreSQL cluster before creating its TLS certificate")
+                if (!configuredServerConfiguration().tlsEnabled) throw IOException("Enable TLS before renewing the server certificate")
+                if (isServerRunning()) throw IOException("Stop PostgreSQL before renewing its TLS certificate")
+                ensureTlsCertificate(force = true)
+                Unit
+            }
+        }
     }
 
     override suspend fun clearStopReason() { preferences.edit().remove(STOP_REASON_KEY).putBoolean(STOP_FAILURE_KEY, false).commit() }
@@ -544,7 +752,7 @@ class PostgresApplicationService(
     private fun listDatabaseNames(): List<String> {
         val query = "SELECT datname FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1"
         val result = runProcess(
-            listOf(psql.absolutePath, "--host=127.0.0.1", "--port=5432", "--username=postgres", "--dbname=postgres", "--no-password", "--no-psqlrc", "--tuples-only", "--no-align", "--command=$query"),
+            listOf(psql.absolutePath, "--host=127.0.0.1", "--port=${configuredServerConfiguration().port}", "--username=postgres", "--dbname=postgres", "--no-password", "--no-psqlrc", "--tuples-only", "--no-align", "--command=$query"),
             12,
             usePasswordFile = true,
         )
@@ -619,6 +827,13 @@ class PostgresApplicationService(
         const val STOP_FAILURE_KEY = "stop_failure"
         const val STOP_REASON_KEY = "stop_reason"
         const val CONTAINER_LIMIT_KEY = "container_limit_bytes"
+        const val NETWORK_ACCESS_KEY = "network_access"
+        const val ALLOWED_HOSTS_KEY = "allowed_hosts"
+        const val PORT_KEY = "postgres_port"
+        const val MAX_CONNECTIONS_KEY = "max_connections"
+        const val SHARED_BUFFERS_MB_KEY = "shared_buffers_mb"
+        const val WORK_MEM_MB_KEY = "work_mem_mb"
+        const val TLS_ENABLED_KEY = "tls_enabled"
         const val DEFAULT_CONTAINER_LIMIT_BYTES = 1_000_000_000L
         const val MIN_PACKAGE_SPACE_BYTES = POSTGRES_MIN_PACKAGE_SPACE_BYTES
         const val MIN_START_SPACE_BYTES = POSTGRES_MIN_START_SPACE_BYTES

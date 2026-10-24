@@ -8,7 +8,7 @@ import dev.android.ide.browser.BrowserEngineSession
 import dev.android.ide.browser.GeckoViewBrowserSurfaceHost
 import org.mozilla.geckoview.GeckoView
 
-/** A single reusable Android host whose attached GeckoSession follows the selected tab. */
+/** A tab-owned Android host; inactive hosts remain mounted without presenting their session. */
 class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     val engineView = GeckoView(context)
     val pageScrollY: Int get() = trackedScrollY
@@ -20,6 +20,7 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     private var presentedTabId: String? = null
     private var presentedSession: BrowserEngineSession? = null
     private var bindingGeneration = 0L
+    private var isSelected = false
     private var onPresentedTabChanged: ((String?, String?) -> Boolean)? = null
     private var onScrollChanged: ((Int) -> Unit)? = null
     private var scrollListenerOwner: String? = null
@@ -38,6 +39,7 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     fun bind(
         tabId: String,
         session: BrowserEngineSession,
+        selected: Boolean,
         registerScrollListener: (String, ((Int) -> Unit)?) -> Unit,
         onPresentedTabChanged: (String?, String?) -> Boolean,
         onScroll: (Int) -> Unit,
@@ -49,22 +51,42 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
             bindingGeneration++
         }
         pendingSession = session
+        isSelected = selected
         this.onPresentedTabChanged = onPresentedTabChanged
-        onScrollChanged = onScroll
+        onScrollChanged = onScroll.takeIf { selected }
 
-        if (scrollListenerOwner != tabId || setScrollListener !== registerScrollListener) {
+        isEnabled = selected
+        isFocusable = selected
+        isFocusableInTouchMode = selected
+        engineView.isEnabled = selected
+        engineView.isFocusable = selected
+        engineView.isFocusableInTouchMode = selected
+        importantForAccessibility = if (selected) View.IMPORTANT_FOR_ACCESSIBILITY_AUTO else View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+
+        if (selected && (scrollListenerOwner != tabId || setScrollListener !== registerScrollListener)) {
             scrollListenerOwner?.let { previous -> setScrollListener?.invoke(previous, null) }
             scrollListenerOwner = tabId
             setScrollListener = registerScrollListener
             registerScrollListener(tabId, stableScrollListener)
         }
 
-        attachSelectedSession()
-        onScroll(trackedScrollY)
+        if (selected) {
+            attachSelectedSession()
+            onScroll(trackedScrollY)
+        } else {
+            scrollListenerOwner?.let { setScrollListener?.invoke(it, null) }
+            scrollListenerOwner = null
+            if (presentedTabId != null) {
+                onPresentedTabChanged?.invoke(null, presentedTabId)
+                presentedTabId = null
+                presentedSession = null
+            }
+            if (isAttachedToWindow) session.attach(host)
+        }
     }
 
     private fun attachSelectedSession() {
-        if (!isAttachedToWindow) return
+        if (!isAttachedToWindow || !isSelected) return
         val tabId = activeTabId ?: return
         val session = pendingSession ?: return
         if (presentedTabId != tabId || presentedSession !== session) {
@@ -93,14 +115,14 @@ class BrowserSurfaceBinding(context: Context) : FrameLayout(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         val generation = bindingGeneration
-        attachSelectedSession()
+        if (isSelected) attachSelectedSession() else pendingSession?.attach(host)
         // AndroidView can update before the view is attached; retry only if this binding
         // still represents the same selected tab when the view reaches the next UI turn.
         post {
-            if (isAttachedToWindow && generation == bindingGeneration) attachSelectedSession()
+            if (isAttachedToWindow && isSelected && generation == bindingGeneration) attachSelectedSession()
         }
         val tabId = activeTabId
-        if (tabId != null && scrollListenerOwner == null) {
+        if (isSelected && tabId != null && scrollListenerOwner == null) {
             scrollListenerOwner = tabId
             setScrollListener?.invoke(tabId, stableScrollListener)
         }
