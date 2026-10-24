@@ -32,6 +32,7 @@ data class BrowserTabUi(
     val viewportWidth: Int?,
     val thumbnailPath: String?,
     val contentReady: Boolean = false,
+    val restoring: Boolean = false,
 )
 
 data class BrowserUiState(
@@ -100,6 +101,7 @@ internal data class BrowserTabRuntime(
     var visualRevision: Int = 0,
     var thumbnailRevision: Int = -1,
     var contentReady: Boolean = false,
+    var restoring: Boolean = false,
     var navigationFailure: BrowserNavigationFailure? = null,
 )
 
@@ -176,6 +178,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 title = descriptor.title,
                 reuseKey = descriptor.reuseKey,
                 sessionState = descriptor.serializedState?.value,
+                restoring = descriptor.serializedState != null,
                 viewportWidth = descriptor.viewportWidth,
                 thumbnailPath = descriptor.thumbnail?.path,
                 scrollY = descriptor.scrollY,
@@ -228,6 +231,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 )
             }.getOrElse {
                 restored = false
+                tab.restoring = false
                 sessionService.ensureSession(
                     tabId = tab.id,
                     settings = BrowserSessionSettings(_uiState.value.settings.desktopSiteDefault),
@@ -269,6 +273,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onFirstContentfulPaint(tabId: String) {
             if (sessions[tabId] !== tab) return
             tab.contentReady = true
+            tab.restoring = false
             if (_uiState.value.selectedTabId == tabId) publish()
         }
 
@@ -918,7 +923,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value = _uiState.value.copy(
             tabs = descriptors.map { descriptor ->
                 val runtime = sessions[descriptor.id]
-                BrowserTabUi(descriptor.id, descriptor.url, descriptor.title, descriptor.url.hostOrNewTab(), runtime?.canGoBack ?: false, runtime?.canGoForward ?: false, descriptor.viewportWidth, descriptor.thumbnail?.path, runtime?.contentReady == true)
+                BrowserTabUi(descriptor.id, descriptor.url, descriptor.title, descriptor.url.hostOrNewTab(), runtime?.canGoBack ?: false, runtime?.canGoForward ?: false, descriptor.viewportWidth, descriptor.thumbnail?.path, runtime?.contentReady == true, runtime?.restoring == true)
             },
             selectedTabId = activeId,
             address = selected?.url?.takeUnless { it == DEFAULT_HOME }.orEmpty(),

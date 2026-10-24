@@ -13,6 +13,19 @@ const val POSTGRES_MIN_START_SPACE_BYTES: Long = 96L * 1024L * 1024L
 enum class PostgresServerState { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
 enum class PostgresPendingAction { INSTALL, UPDATE, INITIALIZE, START }
 
+enum class PostgresNetworkAccess { LOCAL_ONLY, ALLOWED_HOSTS, ALL_NETWORKS }
+
+data class PostgresConfiguration(
+    val networkAccess: PostgresNetworkAccess = PostgresNetworkAccess.LOCAL_ONLY,
+    /** Client IP/CIDR rules or hostname rules. Hostnames rely on PostgreSQL DNS lookup behavior. */
+    val allowedHosts: List<String> = emptyList(),
+    val tlsEnabled: Boolean = false,
+    val port: Int = 5432,
+    val maxConnections: Int = 10,
+    val sharedBuffersMb: Int = 64,
+    val workMemMb: Int = 4,
+)
+
 data class PostgresConnectionInfo(
     val host: String = "127.0.0.1",
     val port: Int = 5432,
@@ -31,6 +44,8 @@ data class PostgresStatus(
     val availableBytes: Long = 0L,
     val credentialsAvailable: Boolean = false,
     val lastStopReason: String? = null,
+    val configuration: PostgresConfiguration = PostgresConfiguration(),
+    val tlsCertificateAvailable: Boolean = false,
 ) {
     val maximumContainerBytes: Long get() = minOf(
         POSTGRES_MAX_DATA_BYTES,
@@ -57,6 +72,8 @@ data class PostgresState(
     val revealedConnectionDatabase: String? = null,
     val serviceLog: String? = null,
     val logLoading: Boolean = false,
+    /** A newly rotated secret is held only in transient UI state until dismissed. */
+    val rotatedPassword: String? = null,
 )
 
 interface PostgresStateSource {
@@ -81,4 +98,8 @@ interface PostgresService {
     suspend fun importDatabase(source: Uri, newDatabaseName: String, onProgress: (String) -> Unit = {})
     suspend fun connectionUri(database: String): String?
     suspend fun clearStopReason()
+    suspend fun saveConfiguration(configuration: PostgresConfiguration)
+    suspend fun rotatePassword(): String
+    suspend fun exportTlsCertificate(destination: Uri)
+    suspend fun renewTlsCertificate()
 }

@@ -60,7 +60,8 @@ class PostgresForegroundService : Service() {
             commandMutex.withLock {
                 val result = runCatching { postgres.startFromForegroundService() }
                 result.onSuccess {
-                    updateNotification(this@PostgresForegroundService, "Running on 127.0.0.1:5432", canStop = true)
+                    val status = postgres.inspect()
+                    updateNotification(this@PostgresForegroundService, runningMessage(status), canStop = true)
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
                     postgres.markDesiredRunning(false)
@@ -123,7 +124,7 @@ class PostgresForegroundService : Service() {
             if (status.serverState == PostgresServerState.RUNNING) {
                 updateNotification(
                     this@PostgresForegroundService,
-                    "Running · ${formatBytes(status.dataBytes)} of ${formatBytes(status.containerLimitBytes)} · 127.0.0.1:5432",
+                    "${runningMessage(status)} · ${formatBytes(status.dataBytes)} of ${formatBytes(status.containerLimitBytes)}",
                     canStop = true,
                 )
             } else {
@@ -144,6 +145,16 @@ class PostgresForegroundService : Service() {
         const val ACTION_STOP = "dev.android.ide.postgres.STOP"
         const val CHANNEL_ID = "android_ide_postgresql"
         const val NOTIFICATION_ID = 4107
+
+        private fun runningMessage(status: PostgresStatus): String {
+            val endpoint = when (status.configuration.networkAccess) {
+                PostgresNetworkAccess.LOCAL_ONLY -> "127.0.0.1:${status.configuration.port}"
+                PostgresNetworkAccess.ALLOWED_HOSTS -> "LAN allowlist · port ${status.configuration.port}"
+                PostgresNetworkAccess.ALL_NETWORKS -> "all network interfaces · port ${status.configuration.port}"
+            }
+            val tls = if (status.configuration.tlsEnabled && status.configuration.networkAccess != PostgresNetworkAccess.LOCAL_ONLY) " · TLS required for remote clients" else ""
+            return "PostgreSQL running · $endpoint$tls"
+        }
 
         fun updateNotification(context: Context, text: String, canStop: Boolean) {
             val manager = context.applicationContext.getSystemService(NotificationManager::class.java) ?: return

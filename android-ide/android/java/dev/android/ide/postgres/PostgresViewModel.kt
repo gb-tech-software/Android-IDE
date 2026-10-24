@@ -95,6 +95,41 @@ class PostgresViewModel(application: Application) : AndroidViewModel(application
 
     fun updatePackage() = requestWithSpaceCheck(PostgresPendingAction.UPDATE)
 
+    fun saveConfiguration(configuration: PostgresConfiguration) = perform("PostgreSQL settings saved") {
+        service.saveConfiguration(configuration)
+    }
+
+    fun rotatePassword() = viewModelScope.launch(Dispatchers.IO) {
+        mutableState.update { it.copy(busy = true, progress = "Rotating database password…", feedback = null, error = null, revealedConnectionUri = null, rotatedPassword = null) }
+        runCatching { service.rotatePassword() }
+            .onSuccess { password ->
+                val latest = runCatching { service.inspect() }.getOrNull()
+                mutableState.update {
+                    it.copy(
+                        busy = false,
+                        progress = null,
+                        status = latest ?: it.status,
+                        rotatedPassword = password,
+                        feedback = "Database password rotated. Copy the new password now.",
+                    )
+                }
+            }
+            .onFailure { error ->
+                if (error is CancellationException) throw error
+                mutableState.update { it.copy(busy = false, progress = null, error = error.message ?: "The database password could not be rotated") }
+            }
+    }
+
+    fun dismissRotatedPassword() = mutableState.update { it.copy(rotatedPassword = null) }
+
+    fun exportTlsCertificate(destination: Uri) = perform("Exporting PostgreSQL TLS certificate") {
+        service.exportTlsCertificate(destination)
+    }
+
+    fun renewTlsCertificate() = perform("TLS certificate renewed · export it again to clients") {
+        service.renewTlsCertificate()
+    }
+
     fun createDatabase(name: String) = perform("Creating database") {
         service.createDatabase(name.trim())
     }
